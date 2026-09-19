@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "walkietalk"
+version = "0.1.0"
+description = "A Linux radio bridge, built one verified phase at a time"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["pyserial>=3.5,<4", "sounddevice>=0.5,<0.6", "PyYAML>=6,<7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1", "build>=1,<2"]
+
+[project.scripts]
+walkietalk = "walkietalk.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
