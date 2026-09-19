@@ -46,12 +46,16 @@ def check_serial(port: str) -> None:
         )
 
 
-def preflight(config: Config) -> int:
+def preflight(config: Config, *, require_serial: bool = True) -> int:
     devices = audio_devices()
     input_id = resolve_device(devices, config.input_device, "input")
     output_id = resolve_device(devices, config.output_device, "output")
     print(f"Capture [{input_id}]: {config.input_device}", flush=True)
     print(f"Playback [{output_id}]: {config.output_device}", flush=True)
-    print(f"PTT: {config.serial_port}; {config.line.upper()} active, other line low", flush=True)
-    check_serial(config.serial_port)
+    if require_serial:
+        print(
+            f"PTT: {config.serial_port}; {config.line.upper()} active, other line low",
+            flush=True,
+        )
+        check_serial(config.serial_port)
     return output_id

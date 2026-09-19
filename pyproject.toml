@@ -9,7 +9,13 @@ description = "A Linux radio bridge, built one verified phase at a time"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = ["pyserial>=3.5,<4", "sounddevice>=0.5,<0.6", "PyYAML>=6,<7"]
+dependencies = [
+    "pyserial>=3.5,<4",
+    "sounddevice>=0.5,<0.6",
+    "PyYAML>=6,<7",
+    "faster-whisper>=1.1,<2",
+    "numpy>=1.26,<3",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1", "build>=1,<2"]

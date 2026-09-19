@@ -3,12 +3,17 @@
 A Linux radio bridge, built with kids one verified phase at a time.
 
 **Phase 1:** control an AIOC's push-to-talk (PTT) line and play a short speech
-WAV through its audio interface. Speech recognition, wake names, AI backends,
-and generated voices are future phases. See [the phase checkpoints](docs/PHASES.md).
+WAV through its audio interface. **Phase 2:** capture radio speech on the pinned
+AIOC input, detect an utterance by energy, and transcribe it locally with
+faster-whisper. Wake names, pluggable STT, AI backends, and generated voices
+are future phases. See [the phase checkpoints](docs/PHASES.md).
 
-The family has verified the Python PTT pulse: the gateway transmit light turned
-on and off, and the girls understand what the test demonstrated. Live speech
-playback and interruption demonstrations are still pending.
+Phase 1 verification is complete: the family observed the Python PTT pulse,
+heard the spoken WAV on the receiving walkie with PTT released afterward, and
+confirmed that Ctrl+C releases PTT immediately. The girls understand the talk
+control demonstration. Phase 1's 36 automated tests and the CI checks passed.
+Phase 2 family radio transcription also passed; it is implemented on
+`phase-2-stt-listen` and is not committed until Brad authorizes publishing.
 
 The browser flasher is not part of this application. Python talks directly to
 the local AIOC through USB serial and PortAudio. No firmware update is required
@@ -25,7 +30,13 @@ cd walkietalk
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/walkietalk --help
+.venv/bin/walkietalk models
 ```
+
+`models` downloads the configured faster-whisper weights (tiny or base) into
+`~/.cache/walkietalk/faster-whisper/`. That is a one-time network step of about
+75 MB (tiny) or 145 MB (base). Listening fails clearly if the model is missing
+instead of starting a surprise download during a family demo.
 
 `main` contains accepted checkpoints. To review work before it is merged,
 check out its PR branch before installing.
@@ -34,11 +45,15 @@ check out its PR branch before installing.
 
 ```sh
 .venv/bin/walkietalk ptt --seconds 1
+.venv/bin/walkietalk listen speech.wav
 ```
 
-This logs simulated PTT ON/OFF without opening serial or audio hardware.
+`ptt` logs simulated PTT ON/OFF without opening serial or audio hardware.
 `play speech.wav` also defaults to simulation, validating the file but making
-no sound. Real transmission requires both a configuration file and `--transmit`.
+no sound. `listen speech.wav` runs energy detection and local transcription on
+that file; it does not open the AIOC or PTT. Real transmission still requires
+both a configuration file and `--transmit`. Live radio transcription uses
+`listen --capture` and is receive-only.
 
 ## Configure the AIOC
 
@@ -63,6 +78,12 @@ sent to the radio. See the [AIOC firmware documentation](https://github.com/skue
 `radio.max_tx_seconds` defaults to 10 and cannot exceed 30.
 `radio.settle_seconds` defaults to 0.2, allowing PTT to settle before playback.
 The WAV plus settle time must fit the transmit limit.
+
+`vad.energy_threshold` is RMS from 0 to 1; begin with 0.02 and tune from the
+logged values. `vad.hangover_ms` is how long silence may last before an
+utterance ends (400 ms). `vad.max_utterance_seconds` caps a single capture
+(12 seconds, at most 30). `stt.model` is `tiny` or `base`. Phase 3 wake fields
+and the `SttBackend` plug are still rejected.
 
 ### Linux serial permissions
 
@@ -99,10 +120,12 @@ Now verify names and permissions without opening PTT or transmitting:
 .venv/bin/walkietalk -c config.local.yaml check
 ```
 
-`check` verifies device enumeration and serial file permissions. The subsequent
-live command checks whether the serial port and audio device can actually open;
-an audio device may still be busy. If it is busy, close recording/playback apps
-or deselect the AIOC in desktop sound settings, then retry.
+`check` verifies device enumeration, serial file permissions, and whether the
+speech model is already downloaded. The subsequent live command checks whether
+the serial port and audio device can actually open; an audio device may still
+be busy. If it is busy, close recording/playback apps or deselect the AIOC in
+desktop sound settings, then retry. `listen --capture` does not open PTT and
+does not require serial permission.
 
 ## Phase 1 family demonstration
 
@@ -149,10 +172,70 @@ recording, and let go. It checks which cable to use first, and it tries to let
 go even if the sound fails or we stop the program. Now we can test speaking
 before adding the AI.”
 
-Phase 1 passes only when the live light/audio checks and automated checks pass.
-Logs alone cannot prove the physical radio released PTT. Brad runs the code and explains it to the girls before we commit or push any
-phase implementation. Then record the live result in its PR before accepting
-the checkpoint and beginning phase 2.
+Phase 1 is complete. Brad runs each new phase and explains it to the girls
+before we commit or push. Record live results on that phase's PR before
+accepting the checkpoint.
+
+## Phase 2 family demonstration
+
+The computer stays receive-only. Do not pass `--transmit`. Watch the gateway TX
+light: it must stay off. Speak on a handheld walkie on the shared channel.
+
+1. **Download the speech model once** (needs network; skip if `check` already
+   says the model is ready):
+
+   ```sh
+   .venv/bin/walkietalk -c config.local.yaml models
+   .venv/bin/walkietalk -c config.local.yaml check
+   ```
+
+   Expect `Ready at ~/.cache/walkietalk/faster-whisper/base (... MB)` and
+   `STT: base; ready`. `check` still opens neither the serial port nor PTT.
+
+2. **Optional file rehearsal, no radio.** Use any short mono 16-bit PCM WAV of
+   spoken words (not music), then:
+
+   ```sh
+   .venv/bin/walkietalk listen speech.wav
+   ```
+
+   Expect RMS / speech-started lines, then `Transcript:` followed by roughly
+   those words. Small mistakes are acceptable.
+
+3. **Live radio sentence.** After the program prints `Waiting for speech`, say a
+   clear sentence on a handheld walkie without long pauses, then stop talking:
+
+   ```sh
+   .venv/bin/walkietalk -c config.local.yaml listen --capture
+   ```
+
+   Capture should end about 0.4 seconds after you stop. The TX light stays off.
+   The screen shows roughly what you said, for example:
+
+   ```text
+   Receive-only: PTT will not be opened.
+   Waiting for speech (timeout 60s, threshold 0.020)...
+   Speech started (RMS 0.091)
+   Speech ended after 2.4s (silence; peak RMS 0.140)
+   Transcript: the computer writes down what we said
+   ```
+
+   Short cable clicks are ignored; keep talking for at least a quarter second.
+   If it never starts, use the logged RMS: raise gateway volume, speak closer,
+   or lower `vad.energy_threshold`. If it never stops, close squelch a little,
+   lower volume, or shorten `vad.hangover_ms`. If the AIOC name in `devices`
+   changed, update `config.local.yaml` rather than using a default device.
+
+4. **Show that stopping is safe.** Run the live command again, wait until
+   `Waiting for speech`, then press Ctrl+C before talking. Expect `Stopped;
+   capture closed.`, exit status 130, and no TX light.
+
+**Explain to the girls:** “The computer writes down what we said so the AI can
+understand the question.”
+
+Phase 2 is not complete until this live radio transcript is observed, the
+family explanation is done, and the automated checks pass. Mocked tests and a
+file transcript are not a substitute for hearing a walkie and seeing the words.
 
 ## What the cleanup can guarantee
 
@@ -176,8 +259,9 @@ low before opening, but drivers can briefly change them on open;
 .venv/bin/python -m build
 ```
 
-Tests use simulated serial/audio or isolated fake playback workers. They never
-transmit. Keep recordings, credentials, and machine-specific configuration out
-of commits (`config.local.yaml`, `.env`, and `recordings/` are ignored).
+Tests use simulated serial/audio, isolated fake playback workers, or mocked
+speech models. They never transmit and they do not download Whisper weights.
+Keep recordings, credentials, and machine-specific configuration out of
+commits (`config.local.yaml`, `.env`, and `recordings/` are ignored).
 
 MIT licensed. Each phase has a separate pull request and a documented demo.
