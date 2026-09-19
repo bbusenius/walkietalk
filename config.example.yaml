@@ -1,0 +1,12 @@
+# Copy to config.local.yaml. Select exact names from `walkietalk devices`.
+audio:
+  input_device: "REPLACE with exact AIOC capture device name"
+  output_device: "REPLACE with exact AIOC playback device name"
+  gain: 0.25
+ptt:
+  serial_port: "/dev/serial/by-id/REPLACE-with-your-AIOC"
+  # AIOC default: key with DTR high and RTS low; idle with both low.
+  line: "dtr"
+radio:
+  max_tx_seconds: 10
+  settle_seconds: 0.2
