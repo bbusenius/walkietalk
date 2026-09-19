@@ -1,4 +1,4 @@
-"""Phase 1 commands: inspect, check, pulse PTT, and play speech."""
+"""Inspect, check, pulse PTT, play speech, and transcribe radio speech."""
 
 import argparse
 import sys
@@ -6,15 +6,17 @@ import time
 from pathlib import Path
 
 from .audio import Playback, read_wav
+from .capture import capture_from_device, capture_from_wav
 from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
 from .ptt import DryPTT, SerialPTT
 from .session import handle_stop_signals, transmit, uninterrupted_cleanup
+from .stt import ensure_model, load_model, model_ready, model_size_bytes, transcribe_audio
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="walkietalk phase 1: computer-controlled radio PTT"
+        description="walkietalk: computer-controlled radio PTT and local speech-to-text"
     )
     result.add_argument(
         "-c", "--config", type=Path, help="YAML config (required for hardware access)"
@@ -34,7 +36,67 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument(
             "--transmit", action="store_true", help="Use real hardware and transmit"
         )
+    listen = commands.add_parser(
+        "listen",
+        help="Turn one utterance into text; WAV file or --capture, never transmits",
+    )
+    listen.add_argument("wav", nargs="?", type=Path, help="WAV to transcribe (no radio)")
+    listen.add_argument(
+        "--capture",
+        action="store_true",
+        help="Record from the pinned AIOC input; does not open PTT",
+    )
+    listen.add_argument(
+        "--timeout",
+        type=float,
+        default=60,
+        help="Seconds to wait for speech when capturing (default 60)",
+    )
+    commands.add_parser(
+        "models", help="Download or verify the local faster-whisper speech model; no TX"
+    )
     return result
+
+
+def _print(message: str) -> None:
+    print(message, flush=True)
+
+
+def listen_command(args: argparse.Namespace) -> None:
+    if args.capture and args.wav is not None:
+        raise WalkietalkError("Use either a WAV file or --capture, not both")
+    if not args.capture and args.wav is None:
+        raise WalkietalkError("Pass a WAV file to transcribe, or --capture to listen on the AIOC")
+    if args.capture and args.config is None:
+        raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
+    config = load_config(args.config) if args.config else Config()
+    if args.capture:
+        wait = seconds(args.timeout, "--timeout", maximum=300)
+        preflight(config, require_serial=False)
+        _print("Receive-only: PTT will not be opened.")
+        _print(f"Loading speech model {config.stt_model}...")
+        model = load_model(config.stt_model)
+        utterance = capture_from_device(config.input_device, config, wait, log=_print)
+    else:
+        utterance = capture_from_wav(args.wav, config, log=_print)
+        _print(f"Loading speech model {config.stt_model}...")
+        model = load_model(config.stt_model)
+    _print("Transcribing...")
+    text = transcribe_audio(model, utterance.pcm, utterance.rate)
+    if not text:
+        raise WalkietalkError(
+            "Speech was captured but produced no words. Try a clearer sentence, "
+            "or set stt.model to base and rerun walkietalk models."
+        )
+    _print(f"Transcript: {text}")
+
+
+def models_command(args: argparse.Namespace) -> None:
+    config = load_config(args.config) if args.config else Config()
+    _print(f"Speech model: {config.stt_model}")
+    path = ensure_model(config.stt_model, download=True)
+    size = model_size_bytes(config.stt_model)
+    _print(f"Ready at {path} ({size / 1_000_000:.0f} MB).")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -50,12 +112,24 @@ def run(args: argparse.Namespace) -> None:
         if not ports:
             print("No stable serial paths found; connect the AIOC.")
         return
+    if args.command == "models":
+        models_command(args)
+        return
+    if args.command == "listen":
+        listen_command(args)
+        return
     live = args.command == "check" or args.transmit
     if live and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
     if args.command == "check":
         preflight(config)
+        status = (
+            f"ready ({model_size_bytes(config.stt_model) / 1_000_000:.0f} MB)"
+            if model_ready(config.stt_model)
+            else "not downloaded (run walkietalk models)"
+        )
+        print(f"STT: {config.stt_model}; {status}", flush=True)
         print("Device names and serial permissions OK. No port opened; no transmission.")
         return
     if args.command == "ptt":
@@ -105,7 +179,12 @@ def main(argv: list[str] | None = None) -> int:
             run(args)
         return 0
     except KeyboardInterrupt:
-        print("Stopped; PTT cleanup attempted.", file=sys.stderr)
+        if args.command == "listen":
+            print("Stopped; capture closed.", file=sys.stderr)
+        elif args.command == "models":
+            print("Stopped.", file=sys.stderr)
+        else:
+            print("Stopped; PTT cleanup attempted.", file=sys.stderr)
         return 130
     except (WalkietalkError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

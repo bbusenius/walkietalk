@@ -10,3 +10,9 @@ ptt:
 radio:
   max_tx_seconds: 10
   settle_seconds: 0.2
+vad:
+  energy_threshold: 0.02    # tune from logged RMS; 1.0 is full scale
+  hangover_ms: 400
+  max_utterance_seconds: 12
+stt:
+  model: "base"             # tiny or base; download with `walkietalk models`

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+STT_MODELS = ("tiny", "base")
+
 
 class WalkietalkError(Exception):
     """A failure that should be shown without a Python traceback."""
@@ -20,6 +22,14 @@ def seconds(value: object, name: str, minimum: float = 0, maximum: float = 30) -
     return result
 
 
+def milliseconds(value: object, name: str, minimum: int = 0, maximum: int = 5000) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WalkietalkError(f"{name} must be an integer")
+    if not minimum < value <= maximum:
+        raise WalkietalkError(f"{name} must be greater than {minimum} and at most {maximum}")
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     input_device: str = "SIMULATED INPUT"
@@ -29,6 +39,10 @@ class Config:
     line: str = "dtr"
     max_tx_seconds: float = 10
     settle_seconds: float = 0.2
+    energy_threshold: float = 0.02
+    hangover_ms: int = 400
+    max_utterance_seconds: float = 12
+    stt_model: str = "base"
 
 
 def load_config(path: Path) -> Config:
@@ -40,9 +54,13 @@ def load_config(path: Path) -> Config:
         "audio": {"input_device", "output_device", "gain"},
         "ptt": {"serial_port", "line"},
         "radio": {"max_tx_seconds", "settle_seconds"},
+        "vad": {"energy_threshold", "hangover_ms", "max_utterance_seconds"},
+        "stt": {"model"},
     }
     if not isinstance(data, dict) or set(data) != set(expected):
-        raise WalkietalkError("Config must contain exactly audio, ptt, and radio sections")
+        raise WalkietalkError(
+            "Config must contain exactly audio, ptt, radio, stt, and vad sections"
+        )
     for section, fields in expected.items():
         if not isinstance(data[section], dict) or set(data[section]) != fields:
             raise WalkietalkError(f"{section} requires these fields: {', '.join(sorted(fields))}")
@@ -55,6 +73,9 @@ def load_config(path: Path) -> Config:
         raise WalkietalkError("ptt.serial_port must be an absolute /dev/ device path")
     if data["ptt"]["line"] not in ("dtr", "rts"):
         raise WalkietalkError("ptt.line must be dtr or rts (AIOC normally uses dtr)")
+    model = data["stt"]["model"]
+    if model not in STT_MODELS:
+        raise WalkietalkError("stt.model must be tiny or base")
     gain = seconds(data["audio"]["gain"], "audio.gain", maximum=1)
     cap = seconds(data["radio"]["max_tx_seconds"], "radio.max_tx_seconds")
     settle = seconds(data["radio"]["settle_seconds"], "radio.settle_seconds", maximum=2)
@@ -68,4 +89,12 @@ def load_config(path: Path) -> Config:
         line=data["ptt"]["line"],
         max_tx_seconds=cap,
         settle_seconds=settle,
+        energy_threshold=seconds(
+            data["vad"]["energy_threshold"], "vad.energy_threshold", maximum=1
+        ),
+        hangover_ms=milliseconds(data["vad"]["hangover_ms"], "vad.hangover_ms"),
+        max_utterance_seconds=seconds(
+            data["vad"]["max_utterance_seconds"], "vad.max_utterance_seconds"
+        ),
+        stt_model=model,
     )
