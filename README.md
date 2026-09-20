@@ -7,8 +7,23 @@ WAV through its audio interface. **Phase 2:** capture radio speech on the pinned
 AIOC input, detect an utterance by energy, and transcribe it locally with
 faster-whisper. **Phase 3:** wake name, aliases, and an optional conversation
 timeout. **Phase 4:** switch the speech listener in config (faster-whisper
-default, then Grok STT). AI backends and generated voices are later phases.
+default, then Grok STT). **Phase 5 verified:** a text-only agent interface,
+with an offline stub, Charlotte through Hermes, Codex CLI, and Grok Build.
+Brad has confirmed those demonstrations. The new `claude` (official CLI
+saved login) and `claude_api` (separately billed API key) choices are also confirmed
+working by Brad. Generated voices belong to phase 6.
 See [the phase checkpoints](docs/PHASES.md).
+
+**Current checkpoint:** Brad has confirmed the stub, Hermes, Codex, and Grok
+demonstrations, plus continuous listening and both remote shutdown forms.
+Brad also confirms both Claude routes work as expected. The latest automated
+checks passed all 439 tests, lint, and formatting. Brad has authorized the
+phase 5 commit, publication, and merge. See [Claude setup and demos](docs/CLAUDE.md).
+The [Hermes/Codex STT capability review](docs/STT-CAPABILITIES.md) found no ready
+transcription endpoint in the inspected interfaces. Brad chose to keep the
+existing local Whisper option instead of adding a Hermes service. Codex STT is
+not supported; its agent continues to work with the existing listeners.
+See the [complete phase 5 acceptance checklist](docs/PHASE5-DEMO.md).
 
 Phase 1 verification is complete: the family observed the Python PTT pulse,
 heard the spoken WAV on the receiving walkie with PTT released afterward, and
@@ -49,13 +64,17 @@ check out its PR branch before installing.
 .venv/bin/walkietalk ptt --seconds 1
 .venv/bin/walkietalk listen speech.wav
 .venv/bin/walkietalk talk speech.wav
+.venv/bin/walkietalk agent-check "What is rain?"
 ```
 
 `ptt` logs simulated PTT ON/OFF without opening serial or audio hardware.
 `play speech.wav` also defaults to simulation, validating the file but making
 no sound. `listen speech.wav` runs energy detection and local transcription on
 that file; it does not open the AIOC or PTT. `talk speech.wav` does the same
-capture path, then applies the wake gate and prints a simulated reply. Real
+capture path, then applies the wake gate and prints the selected agent's text reply.
+The default `stub` prints a fixed pretend answer. `agent-check` sends typed traffic
+directly to the agent, without a wake gate, STT, audio, or PTT; with the stub it
+works entirely offline. Real
 transmission still requires both a configuration file and `--transmit`. Live
 radio transcription uses `listen --capture` or `talk --capture` and is
 receive-only.
@@ -97,6 +116,197 @@ listeners.
 `conversation` (name once, then follow-ups until
 `listening.conversation_timeout_seconds`, starting at 60). `wake.primary` is
 the name; `wake.aliases` lists extra spellings for speech-to-text mistakes.
+
+Phase 5 adds required `agent` and `shutdown` sections. For an existing config,
+append these sections without replacing any device, wake, or STT settings:
+
+```yaml
+agent:
+  backend: "stub"
+  max_reply_chars: 600
+  history_turns: 8
+  timeout_seconds: 60
+  hermes_url: "http://127.0.0.1:8642"
+  hermes_token_env: "WALKIETALK_HERMES_TOKEN"
+  codex_executable: "codex"
+  codex_model: ""
+  grok_executable: "grok"
+  grok_model: "grok-4.6"
+  codex_reasoning_effort: "low"
+  grok_reasoning_effort: "low"
+  claude_executable: "claude"
+  claude_model: "claude-sonnet-5"
+  claude_reasoning_effort: "low"
+  claude_api_key_env: "ANTHROPIC_API_KEY"
+  claude_api_model: "claude-sonnet-5"
+  claude_api_reasoning_effort: "low"
+
+shutdown:
+  enabled: false
+  phrase: ""
+  phrase_aliases: []
+  code: ""
+  code_aliases: []
+  confirmation_seconds: 30
+```
+
+`stub`, `hermes`, `codex`, `grok`, `claude`, and `claude_api` are implemented.
+`claude` selects the official CLI; `claude_api` selects billed API access. Other backend names fail
+explicitly; there is no fallback. `max_reply_chars` is an integer from 1 to 2000;
+longer answers are discarded with a local error. `history_turns` is an integer
+from 1 to 32, counting completed traffic/reply pairs. Each input is also limited
+to 4000 characters. The bridge supplies a short spoken-style answer instruction
+and retains bounded history in memory for this invocation only. Closing the wake
+window preserves history; restarting starts a fresh conversation. Continuous
+`talk --capture` reports agent or transcription failures locally and resumes
+listening, requiring the wake phrase again. After an agent failure it starts a
+fresh backend session with only the completed traffic/reply pairs. One-shot
+commands still exit with an error on failure.
+
+The stub needs no account or network, but a separately selected remote STT
+backend still does. No voice or transmission is added in phase 5.
+
+Claude has two explicit authentication routes: `claude` invokes the official
+CLI with its saved account login; `claude_api` uses `ANTHROPIC_API_KEY` and separate
+API billing. Walkietalk does not implement Claude OAuth or copy CLI credentials.
+Account terms and usage limits still apply; see [setup, limitations, and demos](docs/CLAUDE.md).
+Both use low reasoning effort by default and preserve only bounded radio context.
+Neither provides STT: no supported standalone transcription interface was found
+in the checked Claude CLI or Messages API. Any existing STT backend can feed them.
+
+### Continuous listening and remote shutdown
+
+Run `.venv/bin/walkietalk -c config.local.yaml talk --capture` to leave the bridge
+listening indefinitely. Quiet periods do not stop it. The conversation timeout
+only decides whether you need to say the wake phrase again; it does not set the
+program's lifetime. Audio device failures still stop the program with an error.
+For a bounded diagnostic, use `talk --capture --once --timeout 5`. `--timeout`
+is accepted only with `--once` for live `talk` (default 60 seconds, maximum 300).
+`listen` retains its separate bounded wait, and each utterance retains its
+`vad.max_utterance_seconds` recording limit.
+
+Remote shutdown is optional. Set `shutdown.enabled: true`, a `phrase`, and a
+different `code` in your local config. Say the phrase followed by the code in
+one utterance, or say the phrase alone, release the walkie's PTT, then send the
+code within `confirmation_seconds` (default 30, maximum 300). This closes
+walkietalk normally; it does not delete
+anything or shut down the computer. The ordinary wake phrase is optional for
+these controls. Case and punctuation are ignored; spelling differences need
+explicit aliases. A wrong or empty next utterance cancels, expiry cancels, and
+the code alone cannot shut down the bridge unless shutdown is already armed.
+
+Controls are handled before the agent and omitted from transcript logs; a
+pending confirmation is never forwarded to the agent. STT still receives the
+audio, so remote STT must be working. Anyone listening on the radio can hear the
+code. Capture currently pauses during transcription and an agent reply: send
+controls while the bridge is listening. There is no on-air acknowledgement in
+phase 5. See the [complete continuous-listening and shutdown demonstration](docs/CONTINUOUS.md).
+
+### Reasoning effort for radio replies
+
+`agent.codex_reasoning_effort` and `agent.grok_reasoning_effort` explicitly select
+how much reasoning to request. Both are required fields, defaulting to `low` for
+radio replies. Brad selected `low` for both in the local config. The startup
+agent label displays the requested effort. Restart walkietalk after changing it.
+
+Codex accepts `default`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or
+`ultra`; Grok accepts `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+or `max`. The selected model must support the requested level; these lists do
+not imply every model supports every value. Walkietalk does not substitute an
+effort if the CLI rejects it. The special `default` value omits the override:
+Codex uses its model default because desktop config is ignored; Grok inherits
+its profile/model setting. `default` does not mean `low`.
+
+Reasoning effort is separate from answer length, the request deadline, and the
+follow-up window. A short answer can still require substantial reasoning.
+
+The installed Hermes Runs API has **no per-request reasoning override**. Its
+agent factory reads Charlotte's `agent.reasoning_effort` from the Hermes profile,
+currently `medium`. Walkietalk leaves this unchanged and does not offer a YAML
+field that the server would ignore. No Charlotte source change or restart was
+needed. Revisit this only when the installed API supports request overrides.
+
+### Charlotte through Hermes
+
+Select `agent.backend: hermes` and set `hermes_url` to the existing Charlotte
+API base URL (not a model-provider endpoint). `hermes_token_env` names the
+environment variable holding the local API bearer token. Never put its value
+in YAML. Walkietalk leaves the provider, model, instructions, tools, and memory
+under Charlotte's configured Hermes environment.
+
+The verified integration uses Hermes **0.19.0**. Enabling its existing API
+required local Charlotte profile settings and a gateway restart, with no
+Charlotte source-code or image changes. The [setup record](docs/PHASE5-DEMO.md#local-setup-already-completed)
+lists the server settings, Docker connection, toolsets, and backup/undo details.
+Use the API base URL without a `/v1` suffix; the adapter appends its endpoint paths.
+
+For the existing local setup, run from this checkout:
+
+```sh
+. ./.env.hermes.local
+.venv/bin/walkietalk -c config.local.yaml agent-check "What is rain? Answer in one short sentence."
+```
+
+Expect a short real `Reply:` on screen. This check uses no STT, audio, or PTT.
+The `.env.hermes.local` file is optional and is **not loaded automatically**.
+It is a private, gitignored convenience file that exports
+`WALKIETALK_HERMES_TOKEN`. A launcher, shell, or service can supply the variable
+instead. Hermes's matching `API_SERVER_KEY` lives in its own profile environment;
+storing it there alone does not give the separate walkietalk process access.
+Keep provider credentials in Hermes, and update both sides when rotating the
+local API token.
+
+`agent.timeout_seconds` is a finite number greater than zero and at most 300
+(default 60), bounding the complete request, including polling and response
+reading. It is independent of STT timeout, wait-for-speech timeout, and the
+conversation window. On timeout/interruption/approval-required work the adapter
+requests a stop, allowing at most two extra seconds for that cleanup. It never
+approves permission requests and never switches providers itself.
+
+For slower questions, change the existing `agent.timeout_seconds` in
+`config.local.yaml` from `60` to, for example, `120`, then restart walkietalk.
+Charlotte does not need a restart for this change. The reply-length cap
+(`agent.max_reply_chars`) and follow-up window
+(`listening.conversation_timeout_seconds`) remain independent.
+
+The adapter verifies Hermes's run/status/stop capabilities, uses `/v1/runs`,
+sends the dedicated session ID and bounded conversation history, and accepts only
+completed final text. HTTP bodies, tool output, and error details are not replies.
+Hermes cancellation is cooperative: the server stops at a safe interruption
+point. If submission is not acknowledged or stop cannot be confirmed, walkietalk
+reports that uncertainty locally and discards the answer.
+
+See [Hermes setup, observed version, and family commands](docs/PHASE5-DEMO.md#charlottehermes-checkpoint).
+
+### Codex CLI
+
+Select `agent.backend: codex`. The adapter uses the official `codex exec` CLI
+with its saved ChatGPT login, final-answer output, and a dedicated conversation.
+It runs in a read-only sandbox with shell tools, connectors, hooks, web search,
+and delegation disabled. API-key login is rejected; there is no billing fallback.
+`codex_executable` is an executable name on PATH or an absolute path without flags.
+`codex_model` selects the model; `""` uses the CLI's built-in default because the
+adapter ignores desktop user configuration. Both fields are required for all agents.
+`agent.timeout_seconds` also applies to Codex; timeout and stop signals terminate
+the CLI process group. No Charlotte restart or Hermes token is needed.
+
+Verified with Codex 0.155.1 and Brad's saved ChatGPT login. See the
+[Codex configuration, context limits, and complete demonstration](docs/CODEX.md).
+
+### Grok Build CLI
+
+Select `agent.backend: grok` for the text-answering helper. This is independent
+of `stt.backend: grok`, which uses Grok Voice Transcribe. The agent uses the
+installed Grok Build CLI and its saved `grok login` session; API-key authentication
+is disabled, with no fallback to developer API billing. Set `grok_executable` to
+an executable name or absolute path and `grok_model` to a first-party model ID
+available to your CLI. Both fields are required for all backends.
+
+Verified with Grok Build 1.0.34 and `grok-4.6`. The adapter isolates its home and
+working directories, checks the profile, denies tools, and retains the original
+Grok home for CLI-owned login and dedicated session history. It enforces the
+common timeout and reply cap. See the [Grok setup and full demo](docs/GROK.md)
+for profile requirements, context limits, expected results, and failure commands.
 
 ### Linux serial permissions
 
@@ -268,7 +478,8 @@ appear without color. Set `NO_COLOR=1` to turn color off.
    Expect `Mode: wake_phrase` and `waiting for wake "charlotte"`. Then:
    1. Speak a sentence **without** the name → `Ignored (say "charlotte" first).`
    2. Say **Charlotte** plus traffic → `Accepted`, `Traffic:` with the name
-      removed, `Simulated reply complete.`, still waiting for the name.
+      removed, `Reply: This is a pretend answer. The radio bridge brought me your words.`,
+      still waiting for the name.
    3. Speak again **without** the name → ignored again.
    4. Ctrl+C. Expect `Stopped; capture closed.`, exit 130, TX light off.
 
@@ -290,7 +501,7 @@ appear without color. Set `NO_COLOR=1` to turn color off.
    1. Name + traffic → accepted, then `State: awake (10s left).` Saying only
       the name is enough to open the window (`Wake heard; listening for traffic.`).
    2. Before those 10 seconds end, more traffic **without** the name →
-      `Accepted (follow-up).` The 10 seconds restart after that simulated reply.
+      `Accepted (follow-up).` The 10 seconds restart after that text reply prints.
    3. Wait; when the window ends you should see `Follow-up window ended` even
       if nobody is talking. Then speak without the name → ignored.
    4. Say the name again → accepted.
@@ -347,8 +558,8 @@ one.”
    error; it must not fall back to faster-whisper or SuperGrok login.
 
 Phase 4 family demonstration passed for faster-whisper and SuperGrok `grok`.
-The billed `grok_api` path was skipped. Commit waits until Brad authorizes
-publishing.
+The billed `grok_api` path was skipped. Phase 4 is merged in
+[PR #4](https://github.com/bbusenius/walkietalk/pull/4).
 
 ## What the cleanup can guarantee
 

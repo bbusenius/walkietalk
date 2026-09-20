@@ -6,12 +6,14 @@ import sys
 import time
 from pathlib import Path
 
+from .agent import AgentSession, open_agent
 from .audio import Playback, read_wav
 from .capture import capture_from_device, capture_from_wav
 from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
 from .ptt import DryPTT, SerialPTT
 from .session import handle_stop_signals, transmit, uninterrupted_cleanup
+from .shutdown import ShutdownSession
 from .stt import ensure_model, model_ready, model_size_bytes, open_stt
 from .term import capture_log, emit
 from .wake import ListeningSession
@@ -19,7 +21,7 @@ from .wake import ListeningSession
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="walkietalk: radio PTT, local speech-to-text, and a wake gate"
+        description="walkietalk: radio PTT, speech-to-text, wake gate, and text replies"
     )
     result.add_argument(
         "-c", "--config", type=Path, help="YAML config (required for hardware access)"
@@ -27,6 +29,12 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="List exact audio names and stable serial paths; no TX")
     commands.add_parser("check", help="Validate device selection and permissions; no TX")
+    agent_check = commands.add_parser(
+        "agent-check", help="Ask the selected agent for text; no STT, audio, or PTT"
+    )
+    agent_check.add_argument(
+        "text", nargs="?", default="Hello.", help="Traffic without a wake name"
+    )
     ptt = commands.add_parser("ptt", help="Brief talk-button test; dry run unless --transmit")
     ptt.add_argument(
         "--seconds", type=float, default=1, help="Pulse length, at most max_tx_seconds"
@@ -60,7 +68,7 @@ def parser() -> argparse.ArgumentParser:
     )
     talk = commands.add_parser(
         "talk",
-        help="Capture speech, apply the wake gate, and print a simulated reply; never transmits",
+        help="Capture speech, apply the wake gate, and print an agent reply; never transmits",
     )
     talk.add_argument("wav", nargs="?", type=Path, help="WAV to gate (no radio)")
     talk.add_argument(
@@ -71,8 +79,8 @@ def parser() -> argparse.ArgumentParser:
     talk.add_argument(
         "--timeout",
         type=float,
-        default=60,
-        help="Seconds to wait for someone to start talking when capturing (default 60)",
+        help="Wait-for-speech limit for --capture --once only (default 60); "
+        "continuous mode has no idle limit",
     )
     talk.add_argument(
         "--once",
@@ -122,19 +130,36 @@ def talk_command(args: argparse.Namespace) -> None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
     session = ListeningSession(config)
+    shutdown = ShutdownSession(config)
+    agent = open_agent(config)
+    conversation = AgentSession(config, agent)
     once = args.once or args.wav is not None
+    if args.timeout is not None and not (args.capture and args.once):
+        raise WalkietalkError(
+            "talk --timeout is only for --capture --once; omit it for continuous listening"
+        )
     listener = open_stt(config)
     emit("status", f"Listener: {listener.label()}")
+    emit("status", f"Agent: {agent.label()}")
     if args.capture:
-        wait = seconds(args.timeout, "--timeout", maximum=300)
+        wait = (
+            seconds(args.timeout if args.timeout is not None else 60, "--timeout", maximum=300)
+            if once
+            else None
+        )
         preflight(config, require_serial=False)
         emit("status", "Receive-only: PTT will not be opened.")
         emit("meter", f"Preparing {listener.label()}...")
         listener.prepare()
+    if config.shutdown_enabled:
+        emit("status", "Remote shutdown enabled; phrase and code together or in two transmissions.")
     while True:
         emit("status", session.status_line())
 
         def on_wait() -> None:
+            shutdown_message = shutdown.expire_if_needed()
+            if shutdown_message:
+                emit("warn", shutdown_message)
             message = session.expire_if_needed()
             if message:
                 emit("warn", message)
@@ -149,14 +174,33 @@ def talk_command(args: argparse.Namespace) -> None:
             emit("meter", f"Preparing {listener.label()}...")
             listener.prepare()
         emit("meter", "Transcribing...")
-        text = listener.transcribe(utterance.pcm, utterance.rate)
+        try:
+            text = listener.transcribe(utterance.pcm, utterance.rate)
+        except (WalkietalkError, OSError) as exc:
+            if once:
+                raise
+            session.close()
+            shutdown.close()
+            emit("error", f"Transcription failed: {exc}", file=sys.stderr)
+            emit(
+                "status", "Still listening; shutdown cancelled. Say the wake phrase and try again."
+            )
+            continue
+        started = utterance.started_at if utterance.started_at is not None else time.monotonic()
+        control = shutdown.decide(text, started)
+        if control.kind != "none":
+            session.close()
+            # Never print the code or send control traffic into agent context.
+            emit("status", control.message)
+            if control.kind == "confirmed" or once:
+                return
+            continue
         if not text:
             emit("ignored", "Ignored (empty transcript). Window unchanged.")
             if once:
                 return
             continue
         emit("transcript", f"Transcript: {text}")
-        started = utterance.started_at if utterance.started_at is not None else time.monotonic()
         decision = session.decide(text, started)
         if decision.kind == "wake_only":
             emit("status", decision.message)
@@ -165,7 +209,22 @@ def talk_command(args: argparse.Namespace) -> None:
         elif decision.accepted:
             emit("accepted", decision.message)
             emit("accepted", f"Traffic: {decision.traffic}")
-            emit("reply", "Simulated reply complete.")
+            # Eligibility is already decided using speech start time. Close the
+            # old window while working; failure/interruption must not reopen it.
+            session.close()
+            try:
+                answer = conversation.reply(decision.traffic)
+            except (WalkietalkError, OSError) as exc:
+                if once:
+                    raise
+                emit("error", f"Agent failed: {exc}", file=sys.stderr)
+                # Keep completed pairs, but never resume a failed remote turn.
+                history = conversation.history
+                conversation = AgentSession(config, open_agent(config))
+                conversation.history = history
+                emit("status", "Still listening; say the wake phrase and try again.")
+                continue
+            emit("reply", f"Reply: {answer}")
             session.complete_turn()
             emit("status", session.status_line())
         else:
@@ -183,6 +242,14 @@ def models_command(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.command == "agent-check":
+        config = load_config(args.config) if args.config else Config()
+        agent = open_agent(config)
+        emit("status", "Text-only agent check: no STT, audio, or PTT.")
+        emit("status", f"Agent: {agent.label()}")
+        answer = AgentSession(config, agent).reply(args.text)
+        emit("reply", f"Reply: {answer}")
+        return
     if args.command == "devices":
         for i, device in enumerate(audio_devices()):
             print(
@@ -227,6 +294,7 @@ def run(args: argparse.Namespace) -> None:
             key = "set" if os.environ.get("XAI_API_KEY") else "missing"
             status = f"XAI_API_KEY {key}; billed API, not SuperGrok Plus"
         print(f"STT: {listener.label()}; {status}", flush=True)
+        print(f"Agent: {open_agent(config).label()}; text replies only", flush=True)
         print(ListeningSession(config).status_line(), flush=True)
         print("Device names and serial permissions OK. No port opened; no transmission.")
         return
@@ -279,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         if args.command in {"listen", "talk"}:
             emit("warn", "Stopped; capture closed.", file=sys.stderr)
-        elif args.command == "models":
+        elif args.command in {"models", "agent-check"}:
             emit("warn", "Stopped.", file=sys.stderr)
         else:
             emit("warn", "Stopped; PTT cleanup attempted.", file=sys.stderr)

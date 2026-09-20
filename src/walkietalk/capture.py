@@ -126,7 +126,7 @@ def capture_from_wav(path: Path, config: Config, log: Callable[[str], None] = _l
 def capture_from_device(
     device_name: str,
     config: Config,
-    wait_seconds: float,
+    wait_seconds: float | None,
     log: Callable[[str], None] = _log,
     on_wait: Callable[[], None] | None = None,
 ) -> Utterance:
@@ -151,10 +151,8 @@ def capture_from_device(
             "Close other recording apps and deselect the AIOC in desktop sound settings."
         ) from exc
     log(f"Listening on capture [{index}]: {device_name} at {rate} Hz")
-    log(
-        f"Waiting for someone to talk (give up after {wait_seconds:g}s; "
-        f"threshold {config.energy_threshold:.3f})..."
-    )
+    waiting = "no idle time limit" if wait_seconds is None else f"give up after {wait_seconds:g}s"
+    log(f"Waiting for someone to talk ({waiting}; threshold {config.energy_threshold:.3f})...")
 
     def frames():
         skipped = 0
@@ -173,7 +171,7 @@ def capture_from_device(
             energy_threshold=config.energy_threshold,
             hangover_ms=config.hangover_ms,
             max_utterance_seconds=config.max_utterance_seconds,
-            wait_deadline=time.monotonic() + wait_seconds,
+            wait_deadline=None if wait_seconds is None else time.monotonic() + wait_seconds,
             log=log,
             on_wait=on_wait,
         )

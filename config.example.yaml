@@ -24,3 +24,30 @@ listening:
 wake:
   primary: "charlotte"
   aliases: ["charlot", "sharlot"]
+agent:
+  backend: "stub"          # stub, hermes, codex, grok, claude, or claude_api
+  max_reply_chars: 600     # reject oversized replies; 1–2000 characters
+  history_turns: 8         # completed traffic/reply pairs to retain; 1–32
+  timeout_seconds: 60      # overall agent deadline; >0 to 300 seconds
+  hermes_url: "http://127.0.0.1:8642" # API base URL without /v1; use reachable Docker IP if needed
+  hermes_token_env: "WALKIETALK_HERMES_TOKEN" # environment variable name, never the token
+  codex_executable: "codex" # executable name on PATH or absolute path; no shell arguments
+  codex_model: ""           # empty = CLI default, or an explicit model ID
+  grok_executable: "grok"   # executable name on PATH or absolute path; no shell arguments
+  grok_model: "grok-4.6"    # first-party model from your Grok CLI catalog
+  codex_reasoning_effort: "low" # default = model default; desktop config is ignored
+  grok_reasoning_effort: "low"  # default = Grok profile/model default
+  claude_executable: "claude" # official CLI; saved login; no API-key fallback
+  claude_model: "claude-sonnet-5"
+  claude_reasoning_effort: "low" # default = model default
+  claude_api_key_env: "ANTHROPIC_API_KEY" # env NAME; separately billed Messages API
+  claude_api_model: "claude-sonnet-5"
+  claude_api_reasoning_effort: "low" # default omits effort; useful for models without it
+shutdown:
+  # Say phrase + code together, or phrase alone then code within the window.
+  enabled: false
+  phrase: ""
+  phrase_aliases: []
+  code: ""
+  code_aliases: []
+  confirmation_seconds: 30
