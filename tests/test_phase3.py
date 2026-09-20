@@ -40,6 +40,20 @@ def fake_utterance():
     return Utterance(b"\x00\x40" * 320, 16000, 0.24, 0.24, 0.5, "silence", started_at=50.0)
 
 
+class FakeListener:
+    def __init__(self, text=""):
+        self.text = text
+
+    def label(self):
+        return "fake"
+
+    def prepare(self):
+        return None
+
+    def transcribe(self, pcm, rate):
+        return self.text
+
+
 def test_valid_wake_and_listening_config(tmp_path, config_data):
     config = load_config(write_config(tmp_path, config_data))
     assert config.listening_mode == "wake_phrase"
@@ -69,7 +83,7 @@ def test_agent_and_stt_backend_fields_still_rejected(tmp_path, config_data):
     extra = dict(config_data, agent={"backend": "stub"})
     with pytest.raises(WalkietalkError, match="exactly"):
         load_config(write_config(tmp_path, extra))
-    config_data["stt"]["backend"] = "faster-whisper"
+    config_data["stt"]["device"] = "cuda"
     with pytest.raises(WalkietalkError):
         load_config(write_config(tmp_path, config_data))
 
@@ -236,9 +250,8 @@ def test_talk_once_does_not_open_ptt(monkeypatch, tmp_path, config_data, capsys)
     monkeypatch.setattr(cli, "preflight", lambda config, **kwargs: 0)
     monkeypatch.setattr(cli, "SerialPTT", forbidden)
     monkeypatch.setattr(cli, "Playback", forbidden)
-    monkeypatch.setattr(cli, "load_model", lambda name: object())
+    monkeypatch.setattr(cli, "open_stt", lambda config: FakeListener("charlotte what is rain"))
     monkeypatch.setattr(cli, "capture_from_device", lambda *args, **kwargs: fake_utterance())
-    monkeypatch.setattr(cli, "transcribe_audio", lambda model, pcm, rate: "charlotte what is rain")
     assert cli.main(["-c", str(config_path), "talk", "--capture", "--once"]) == 0
     output = capsys.readouterr().out
     assert "Receive-only" in output
@@ -251,9 +264,8 @@ def test_talk_conversation_wake_only_opens_window(monkeypatch, tmp_path, config_
     config_data["listening"]["mode"] = "conversation"
     config_path = write_config(tmp_path, config_data)
     monkeypatch.setattr(cli, "preflight", lambda config, **kwargs: 0)
-    monkeypatch.setattr(cli, "load_model", lambda name: object())
+    monkeypatch.setattr(cli, "open_stt", lambda config: FakeListener("charlotte"))
     monkeypatch.setattr(cli, "capture_from_device", lambda *args, **kwargs: fake_utterance())
-    monkeypatch.setattr(cli, "transcribe_audio", lambda model, pcm, rate: "charlotte")
     assert cli.main(["-c", str(config_path), "talk", "--capture", "--once"]) == 0
     output = capsys.readouterr().out
     assert "Wake heard; listening for traffic." in output
@@ -264,9 +276,8 @@ def test_talk_conversation_wake_only_opens_window(monkeypatch, tmp_path, config_
 def test_talk_ignores_speech_without_wake(monkeypatch, tmp_path, config_data, capsys):
     config_path = write_config(tmp_path, config_data)
     monkeypatch.setattr(cli, "preflight", lambda config, **kwargs: 0)
-    monkeypatch.setattr(cli, "load_model", lambda name: object())
+    monkeypatch.setattr(cli, "open_stt", lambda config: FakeListener("hello kids"))
     monkeypatch.setattr(cli, "capture_from_device", lambda *args, **kwargs: fake_utterance())
-    monkeypatch.setattr(cli, "transcribe_audio", lambda model, pcm, rate: "hello kids")
     assert cli.main(["-c", str(config_path), "talk", "--capture", "--once"]) == 0
     assert "Ignored" in capsys.readouterr().out
 

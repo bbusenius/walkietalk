@@ -15,7 +15,9 @@ vad:
   hangover_ms: 400
   max_utterance_seconds: 12
 stt:
-  model: "base"             # tiny or base; download with `walkietalk models`
+  backend: "faster-whisper" # grok (SuperGrok login) or grok_api (XAI_API_KEY)
+  model: "base"             # tiny or base; faster-whisper only
+  timeout_seconds: 30
 listening:
   mode: "wake_phrase"       # or conversation
   conversation_timeout_seconds: 60

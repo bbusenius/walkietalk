@@ -1,6 +1,7 @@
 """Inspect, check, pulse PTT, play speech, and transcribe radio speech."""
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
 from .ptt import DryPTT, SerialPTT
 from .session import handle_stop_signals, transmit, uninterrupted_cleanup
-from .stt import ensure_model, load_model, model_ready, model_size_bytes, transcribe_audio
+from .stt import ensure_model, model_ready, model_size_bytes, open_stt
 from .term import capture_log, emit
 from .wake import ListeningSession
 
@@ -89,19 +90,21 @@ def listen_command(args: argparse.Namespace) -> None:
     if args.capture and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
+    listener = open_stt(config)
+    emit("status", f"Listener: {listener.label()}")
     if args.capture:
         wait = seconds(args.timeout, "--timeout", maximum=300)
         preflight(config, require_serial=False)
         emit("status", "Receive-only: PTT will not be opened.")
-        emit("meter", f"Loading speech model {config.stt_model}...")
-        model = load_model(config.stt_model)
+        emit("meter", f"Preparing {listener.label()}...")
+        listener.prepare()
         utterance = capture_from_device(config.input_device, config, wait, log=capture_log)
     else:
         utterance = capture_from_wav(args.wav, config, log=capture_log)
-        emit("meter", f"Loading speech model {config.stt_model}...")
-        model = load_model(config.stt_model)
+        emit("meter", f"Preparing {listener.label()}...")
+        listener.prepare()
     emit("meter", "Transcribing...")
-    text = transcribe_audio(model, utterance.pcm, utterance.rate)
+    text = listener.transcribe(utterance.pcm, utterance.rate)
     if not text:
         raise WalkietalkError(
             "Speech was captured but produced no words. Try a clearer sentence, "
@@ -120,13 +123,14 @@ def talk_command(args: argparse.Namespace) -> None:
     config = load_config(args.config) if args.config else Config()
     session = ListeningSession(config)
     once = args.once or args.wav is not None
-    model = None
+    listener = open_stt(config)
+    emit("status", f"Listener: {listener.label()}")
     if args.capture:
         wait = seconds(args.timeout, "--timeout", maximum=300)
         preflight(config, require_serial=False)
         emit("status", "Receive-only: PTT will not be opened.")
-        emit("meter", f"Loading speech model {config.stt_model}...")
-        model = load_model(config.stt_model)
+        emit("meter", f"Preparing {listener.label()}...")
+        listener.prepare()
     while True:
         emit("status", session.status_line())
 
@@ -142,10 +146,10 @@ def talk_command(args: argparse.Namespace) -> None:
             )
         else:
             utterance = capture_from_wav(args.wav, config, log=capture_log)
-            emit("meter", f"Loading speech model {config.stt_model}...")
-            model = load_model(config.stt_model)
+            emit("meter", f"Preparing {listener.label()}...")
+            listener.prepare()
         emit("meter", "Transcribing...")
-        text = transcribe_audio(model, utterance.pcm, utterance.rate)
+        text = listener.transcribe(utterance.pcm, utterance.rate)
         if not text:
             emit("ignored", "Ignored (empty transcript). Window unchanged.")
             if once:
@@ -206,12 +210,23 @@ def run(args: argparse.Namespace) -> None:
     config = load_config(args.config) if args.config else Config()
     if args.command == "check":
         preflight(config)
-        status = (
-            f"ready ({model_size_bytes(config.stt_model) / 1_000_000:.0f} MB)"
-            if model_ready(config.stt_model)
-            else "not downloaded (run walkietalk models)"
-        )
-        print(f"STT: {config.stt_model}; {status}", flush=True)
+        listener = open_stt(config)
+        if config.stt_backend == "faster-whisper":
+            status = (
+                f"ready ({model_size_bytes(config.stt_model) / 1_000_000:.0f} MB)"
+                if model_ready(config.stt_model)
+                else "not downloaded (run walkietalk models)"
+            )
+        elif config.stt_backend == "grok":
+            try:
+                listener.prepare()
+                status = "SuperGrok Plus login ready"
+            except WalkietalkError as exc:
+                status = str(exc)
+        else:
+            key = "set" if os.environ.get("XAI_API_KEY") else "missing"
+            status = f"XAI_API_KEY {key}; billed API, not SuperGrok Plus"
+        print(f"STT: {listener.label()}; {status}", flush=True)
         print(ListeningSession(config).status_line(), flush=True)
         print("Device names and serial permissions OK. No port opened; no transmission.")
         return
