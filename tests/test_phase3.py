@@ -79,8 +79,8 @@ def test_invalid_wake_listening_rejected(tmp_path, config_data, section, field, 
         load_config(write_config(tmp_path, config_data))
 
 
-def test_agent_and_stt_backend_fields_still_rejected(tmp_path, config_data):
-    extra = dict(config_data, agent={"backend": "stub"})
+def test_unknown_sections_and_stt_fields_still_rejected(tmp_path, config_data):
+    extra = dict(config_data, unknown={"backend": "stub"})
     with pytest.raises(WalkietalkError, match="exactly"):
         load_config(write_config(tmp_path, extra))
     config_data["stt"]["device"] = "cuda"
@@ -257,7 +257,7 @@ def test_talk_once_does_not_open_ptt(monkeypatch, tmp_path, config_data, capsys)
     assert "Receive-only" in output
     assert "Accepted" in output
     assert "Traffic: what is rain" in output
-    assert "Simulated reply complete." in output
+    assert "Reply: This is a pretend answer." in output
 
 
 def test_talk_conversation_wake_only_opens_window(monkeypatch, tmp_path, config_data, capsys):
@@ -269,7 +269,7 @@ def test_talk_conversation_wake_only_opens_window(monkeypatch, tmp_path, config_
     assert cli.main(["-c", str(config_path), "talk", "--capture", "--once"]) == 0
     output = capsys.readouterr().out
     assert "Wake heard; listening for traffic." in output
-    assert "Simulated reply complete." not in output
+    assert "Reply:" not in output
     assert "State: awake" in output
 
 
