@@ -30,11 +30,10 @@ continuously holding PTT. These settings are not accepted until phase 3.
 
 Phase 4 adds a first-class `SttBackend` plug (`transcribe(audio) -> text`).
 Default remains local faster-whisper (`tiny` or `base`). The first extra
-backend is Grok STT: prefer SuperGrok Plus / `grok login` under the same Linux
-user; `XAI_API_KEY` is an explicit optional API adapter only. Do not silently
-switch from account login to API billing. Capture, energy detection, and wake
-matching stay in walkietalk. These STT backend fields are not accepted until
-phase 4.
+backend is Grok Voice Transcribe (`POST /v1/stt`) using the SuperGrok Plus
+session from `grok login` (`~/.grok/auth.json`). `XAI_API_KEY` is an explicit
+optional `grok_api` adapter only. Do not silently switch from account login to
+API billing. Capture, energy detection, and wake matching stay in walkietalk.
 
 ## Review and return to a checkpoint
 
@@ -64,7 +63,8 @@ as documented; tags do not restore firmware, Linux permissions, or account sessi
 | Baseline | `8ba1ee1` | Empty source baseline before phase 1; hardware receive already proved separately. |
 | Phase 1: PTT checkpoint | `phase-1-ptt-playback`; snapshot `phase-1-ptt` | Brad and the girls ran the Python PTT pulse, observed the TX light turn on/off, and explained its meaning. Brad authorized committing and merging this checkpoint. Brad subsequently confirmed that both live WAV playback and Ctrl+C release passed on this implementation. All phase 1 verification is complete. |
 | Phase 2: STT listen | `phase-2-stt-listen`; [PR #2](https://github.com/bbusenius/walkietalk/pull/2) | Brad and his daughter ran the live radio transcription. It worked as expected; automated checks and CI passed. Merged to `main`. |
-| Phase 3: wake gate | `phase-3-wake-gate` | Brad demoed wake phrase and conversation mode with the girls. Testing looked good. Commit and PR remain unauthorized until Brad says to publish. |
+| Phase 3: wake gate | `phase-3-wake-gate`; [PR #3](https://github.com/bbusenius/walkietalk/pull/3) | Brad demoed wake phrase and conversation mode with the girls. Merged to `main`. |
+| Phase 4: STT plug | `phase-4-stt-plug` | Brad verified faster-whisper and SuperGrok Grok Voice Transcribe on the radio. `grok_api` live key test skipped. Commit remains unauthorized until Brad says to publish. |
 
 ## Phase 1 verification results
 
@@ -103,3 +103,17 @@ The live observations were reported by Brad after the family demonstration.
 - [x] Family explanation: say the name, then your traffic; after a quiet pause,
       say the name again.
 - [x] Automated tests (98 passed), lint, formatting, and package build passed on this branch.
+
+## Phase 4 verification results
+
+The live observations were reported by Brad after the family demonstration.
+
+- [x] faster-whisper still transcribes live radio traffic.
+- [x] `stt.backend: grok` uses SuperGrok Plus login for Grok Voice Transcribe;
+      does not fall back to faster-whisper or `XAI_API_KEY`.
+- [x] Optional `grok_api` live key test skipped; missing-key error is covered
+      by automated tests.
+- [x] Gateway TX light stayed off.
+- [x] Family explanation: if one listener has trouble with a voice, we can plug
+      in a different one.
+- [x] Automated tests (111 passed), lint, and formatting passed on this branch.

@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 STT_MODELS = ("tiny", "base")
+STT_BACKENDS = ("faster-whisper", "grok", "grok_api")
 
 
 class WalkietalkError(Exception):
@@ -43,6 +44,8 @@ class Config:
     hangover_ms: int = 400
     max_utterance_seconds: float = 12
     stt_model: str = "base"
+    stt_backend: str = "faster-whisper"
+    stt_timeout_seconds: float = 30
     listening_mode: str = "wake_phrase"
     conversation_timeout_seconds: float = 60
     wake_primary: str = "charlotte"
@@ -59,7 +62,7 @@ def load_config(path: Path) -> Config:
         "ptt": {"serial_port", "line"},
         "radio": {"max_tx_seconds", "settle_seconds"},
         "vad": {"energy_threshold", "hangover_ms", "max_utterance_seconds"},
-        "stt": {"model"},
+        "stt": {"backend", "model", "timeout_seconds"},
         "listening": {"mode", "conversation_timeout_seconds"},
         "wake": {"primary", "aliases"},
     }
@@ -79,6 +82,9 @@ def load_config(path: Path) -> Config:
         raise WalkietalkError("ptt.serial_port must be an absolute /dev/ device path")
     if data["ptt"]["line"] not in ("dtr", "rts"):
         raise WalkietalkError("ptt.line must be dtr or rts (AIOC normally uses dtr)")
+    backend = data["stt"]["backend"]
+    if backend not in STT_BACKENDS:
+        raise WalkietalkError("stt.backend must be faster-whisper, grok, or grok_api")
     model = data["stt"]["model"]
     if model not in STT_MODELS:
         raise WalkietalkError("stt.model must be tiny or base")
@@ -114,6 +120,10 @@ def load_config(path: Path) -> Config:
             data["vad"]["max_utterance_seconds"], "vad.max_utterance_seconds"
         ),
         stt_model=model,
+        stt_backend=backend,
+        stt_timeout_seconds=seconds(
+            data["stt"]["timeout_seconds"], "stt.timeout_seconds", maximum=120
+        ),
         listening_mode=mode,
         conversation_timeout_seconds=seconds(
             data["listening"]["conversation_timeout_seconds"],

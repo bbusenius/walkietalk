@@ -6,7 +6,8 @@ A Linux radio bridge, built with kids one verified phase at a time.
 WAV through its audio interface. **Phase 2:** capture radio speech on the pinned
 AIOC input, detect an utterance by energy, and transcribe it locally with
 faster-whisper. **Phase 3:** wake name, aliases, and an optional conversation
-timeout. Pluggable STT, AI backends, and generated voices are later phases.
+timeout. **Phase 4:** switch the speech listener in config (faster-whisper
+default, then Grok STT). AI backends and generated voices are later phases.
 See [the phase checkpoints](docs/PHASES.md).
 
 Phase 1 verification is complete: the family observed the Python PTT pulse,
@@ -86,13 +87,16 @@ The WAV plus settle time must fit the transmit limit.
 `vad.energy_threshold` is RMS from 0 to 1; begin with 0.02 and tune from the
 logged values. `vad.hangover_ms` is how long silence may last before an
 utterance ends (400 ms). `vad.max_utterance_seconds` caps a single capture
-(12 seconds, at most 30). `stt.model` is `tiny` or `base`.
+(12 seconds, at most 30). `stt.backend` is `faster-whisper` (default), `grok` (Grok Voice Transcribe using
+the SuperGrok Plus login from `grok login`), or `grok_api` (explicit
+`XAI_API_KEY` billing). `stt.model` is `tiny` or `base` for faster-whisper.
+`stt.timeout_seconds` bounds transcription. Walkietalk never silently switches
+listeners.
 
 `listening.mode` is `wake_phrase` (default: say the name every time) or
 `conversation` (name once, then follow-ups until
 `listening.conversation_timeout_seconds`, starting at 60). `wake.primary` is
 the name; `wake.aliases` lists extra spellings for speech-to-text mistakes.
-The phase 4 `SttBackend` plug is still rejected.
 
 ### Linux serial permissions
 
@@ -298,13 +302,53 @@ appear without color. Set `NO_COLOR=1` to turn color off.
 **Explain to the girls:** “Say the helper’s name, then your traffic — a question,
 a command, or anything you need. After a quiet pause, say the name again.”
 
-Phase 3 family demonstration passed. There is no real AI answer yet; the computer
-only pretends a reply finished so the timer can start. Commit and PR wait until
-Brad authorizes publishing.
+Phase 3 family demonstration passed and is merged in
+[PR #3](https://github.com/bbusenius/walkietalk/pull/3).
 
-Phase 2 is not complete until this live radio transcript is observed, the
-family explanation is done, and the automated checks pass. Mocked tests and a
-file transcript are not a substitute for hearing a walkie and seeing the words.
+## Phase 4 family demonstration
+
+Switch the listener in config. Radio, capture, and wake code stay the same. Do
+not pass `--transmit`. TX light stays off.
+
+**Explain:** “If one listener has trouble with a voice, we can plug in a different
+one.”
+
+1. **Default faster-whisper still works.** Keep `stt.backend: faster-whisper`.
+
+   ```sh
+   .venv/bin/walkietalk -c config.local.yaml check
+   .venv/bin/walkietalk -c config.local.yaml talk --capture --once
+   ```
+
+   Expect `Listener: faster-whisper (base)` and a normal transcript / traffic
+   line.
+
+2. **Grok Voice Transcribe via SuperGrok Plus.** Sign in once with `grok login`
+   if needed, then set:
+
+   ```yaml
+   stt:
+     backend: "grok"
+     model: "base"
+     timeout_seconds: 30
+   ```
+
+   ```sh
+   .venv/bin/walkietalk -c config.local.yaml talk --capture --once
+   ```
+
+   Expect `Listener: grok (grok-voice-transcribe-2.0; SuperGrok Plus login)` and
+   a transcript. Same child sentence as step 1. This is not Grok Build and does
+   not use `XAI_API_KEY`. If login is missing, the error tells you to run
+   `grok login`.
+
+3. **Optional billed API only if you choose it.** `stt.backend: grok_api` needs
+   `XAI_API_KEY`. That is API credits, not SuperGrok Plus. Missing key must
+   error; it must not fall back to faster-whisper or SuperGrok login.
+
+Phase 4 family demonstration passed for faster-whisper and SuperGrok `grok`.
+The billed `grok_api` path was skipped. Commit waits until Brad authorizes
+publishing.
 
 ## What the cleanup can guarantee
 

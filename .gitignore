@@ -8,6 +8,8 @@ build/
 dist/
 .env
 config.local.yaml
+*.swp
+.*.swp
 recordings/
 .agents/
 .codex/

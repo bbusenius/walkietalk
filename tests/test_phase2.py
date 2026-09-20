@@ -55,12 +55,28 @@ def fake_utterance():
     return Utterance(loud_frame(), 16000, 0.24, 0.24, 0.5, "silence")
 
 
+class FakeListener:
+    def __init__(self, text=""):
+        self.text = text
+
+    def label(self):
+        return "fake"
+
+    def prepare(self):
+        return None
+
+    def transcribe(self, pcm, rate):
+        return self.text
+
+
 def test_valid_vad_and_stt_config(tmp_path, config_data):
     config = load_config(write_config(tmp_path, config_data))
     assert config.energy_threshold == 0.02
     assert config.hangover_ms == 400
     assert config.max_utterance_seconds == 12
     assert config.stt_model == "base"
+    assert config.stt_backend == "faster-whisper"
+    assert config.stt_timeout_seconds == 30
 
 
 @pytest.mark.parametrize(
@@ -73,6 +89,8 @@ def test_valid_vad_and_stt_config(tmp_path, config_data):
         ("vad", "max_utterance_seconds", 0),
         ("stt", "model", "large"),
         ("stt", "model", "tiny.en"),
+        ("stt", "backend", "whisper"),
+        ("stt", "timeout_seconds", 0),
     ],
 )
 def test_invalid_vad_stt_rejected(tmp_path, config_data, section, field, value):
@@ -213,8 +231,7 @@ def test_listen_wav_does_not_open_hardware(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "SerialPTT", forbidden)
     monkeypatch.setattr(cli, "Playback", forbidden)
     monkeypatch.setattr(cli, "capture_from_device", forbidden)
-    monkeypatch.setattr(cli, "load_model", lambda name: object())
-    monkeypatch.setattr(cli, "transcribe_audio", lambda model, pcm, rate: "hello kids")
+    monkeypatch.setattr(cli, "open_stt", lambda config: FakeListener("hello kids"))
     assert cli.main(["listen", str(path)]) == 0
     assert "Transcript: hello kids" in capsys.readouterr().out
 
@@ -243,9 +260,8 @@ def test_listen_capture_never_opens_ptt(monkeypatch, tmp_path, config_data, caps
     monkeypatch.setattr(cli, "preflight", lambda config, **kwargs: 0)
     monkeypatch.setattr(cli, "SerialPTT", forbidden)
     monkeypatch.setattr(cli, "Playback", forbidden)
-    monkeypatch.setattr(cli, "load_model", lambda name: object())
+    monkeypatch.setattr(cli, "open_stt", lambda config: FakeListener("the computer writes"))
     monkeypatch.setattr(cli, "capture_from_device", lambda *args, **kwargs: fake_utterance())
-    monkeypatch.setattr(cli, "transcribe_audio", lambda model, pcm, rate: "the computer writes")
     assert cli.main(["-c", str(config_path), "listen", "--capture"]) == 0
     output = capsys.readouterr().out
     assert "Receive-only" in output
@@ -254,8 +270,7 @@ def test_listen_capture_never_opens_ptt(monkeypatch, tmp_path, config_data, caps
 
 def test_listen_empty_transcript_is_an_error(monkeypatch, tmp_path):
     path = speech_wav(tmp_path / "speech.wav")
-    monkeypatch.setattr(cli, "load_model", lambda name: object())
-    monkeypatch.setattr(cli, "transcribe_audio", lambda model, pcm, rate: "")
+    monkeypatch.setattr(cli, "open_stt", lambda config: FakeListener(""))
     assert cli.main(["listen", str(path)]) == 1
 
 
