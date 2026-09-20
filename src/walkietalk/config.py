@@ -43,6 +43,10 @@ class Config:
     hangover_ms: int = 400
     max_utterance_seconds: float = 12
     stt_model: str = "base"
+    listening_mode: str = "wake_phrase"
+    conversation_timeout_seconds: float = 60
+    wake_primary: str = "charlotte"
+    wake_aliases: tuple[str, ...] = ()
 
 
 def load_config(path: Path) -> Config:
@@ -56,10 +60,12 @@ def load_config(path: Path) -> Config:
         "radio": {"max_tx_seconds", "settle_seconds"},
         "vad": {"energy_threshold", "hangover_ms", "max_utterance_seconds"},
         "stt": {"model"},
+        "listening": {"mode", "conversation_timeout_seconds"},
+        "wake": {"primary", "aliases"},
     }
     if not isinstance(data, dict) or set(data) != set(expected):
         raise WalkietalkError(
-            "Config must contain exactly audio, ptt, radio, stt, and vad sections"
+            "Config must contain exactly audio, listening, ptt, radio, stt, vad, and wake sections"
         )
     for section, fields in expected.items():
         if not isinstance(data[section], dict) or set(data[section]) != fields:
@@ -76,6 +82,17 @@ def load_config(path: Path) -> Config:
     model = data["stt"]["model"]
     if model not in STT_MODELS:
         raise WalkietalkError("stt.model must be tiny or base")
+    mode = data["listening"]["mode"]
+    if mode not in ("wake_phrase", "conversation"):
+        raise WalkietalkError("listening.mode must be wake_phrase or conversation")
+    primary = data["wake"]["primary"]
+    if not isinstance(primary, str) or not primary.strip():
+        raise WalkietalkError("wake.primary must be a non-empty name")
+    aliases = data["wake"]["aliases"]
+    if not isinstance(aliases, list) or any(
+        not isinstance(alias, str) or not alias.strip() for alias in aliases
+    ):
+        raise WalkietalkError("wake.aliases must be a list of non-empty names")
     gain = seconds(data["audio"]["gain"], "audio.gain", maximum=1)
     cap = seconds(data["radio"]["max_tx_seconds"], "radio.max_tx_seconds")
     settle = seconds(data["radio"]["settle_seconds"], "radio.settle_seconds", maximum=2)
@@ -97,4 +114,12 @@ def load_config(path: Path) -> Config:
             data["vad"]["max_utterance_seconds"], "vad.max_utterance_seconds"
         ),
         stt_model=model,
+        listening_mode=mode,
+        conversation_timeout_seconds=seconds(
+            data["listening"]["conversation_timeout_seconds"],
+            "listening.conversation_timeout_seconds",
+            maximum=600,
+        ),
+        wake_primary=primary.strip(),
+        wake_aliases=tuple(alias.strip() for alias in aliases),
     )

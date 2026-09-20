@@ -22,6 +22,7 @@ class Utterance:
     first_speech_rms: float
     duration: float
     end_reason: str
+    started_at: float | None = None
 
 
 def frames_from_pcm(pcm: bytes, rate: int) -> Iterable[tuple[bytes, bool]]:
@@ -44,11 +45,13 @@ def collect_utterance(
     max_utterance_seconds: float,
     wait_deadline: float | None,
     log: Callable[[str], None],
+    on_wait: Callable[[], None] | None = None,
 ) -> Utterance:
     vad = EnergyVad(energy_threshold, hangover_ms, max_utterance_seconds, rate)
     warned_overflow = False
     last_state = "waiting"
     n = 0
+    started_at = None
     for frame, overflowed in frames:
         if overflowed and not warned_overflow:
             log("Warning: capture overflow; some audio was lost")
@@ -57,7 +60,10 @@ def collect_utterance(
             break
         state, level = vad.push(frame)
         n += 1
+        if state == "waiting" and on_wait is not None:
+            on_wait()
         if state == "speaking" and last_state == "waiting":
+            started_at = time.monotonic()
             log(f"Speech started (RMS {level:.3f})")
         elif state == "waiting" and last_state == "speaking":
             log(f"Ignored short noise (RMS {level:.3f})")
@@ -95,6 +101,7 @@ def collect_utterance(
         vad.first_speech_rms,
         vad.duration(),
         vad.end_reason,
+        started_at,
     )
 
 
@@ -121,6 +128,7 @@ def capture_from_device(
     config: Config,
     wait_seconds: float,
     log: Callable[[str], None] = _log,
+    on_wait: Callable[[], None] | None = None,
 ) -> Utterance:
     import sounddevice as sd
 
@@ -144,7 +152,7 @@ def capture_from_device(
         ) from exc
     log(f"Listening on capture [{index}]: {device_name} at {rate} Hz")
     log(
-        f"Waiting for speech (timeout {wait_seconds:g}s, "
+        f"Waiting for someone to talk (give up after {wait_seconds:g}s; "
         f"threshold {config.energy_threshold:.3f})..."
     )
 
@@ -167,6 +175,7 @@ def capture_from_device(
             max_utterance_seconds=config.max_utterance_seconds,
             wait_deadline=time.monotonic() + wait_seconds,
             log=log,
+            on_wait=on_wait,
         )
     except sd.PortAudioError as exc:
         raise WalkietalkError(

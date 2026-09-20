@@ -5,15 +5,16 @@ A Linux radio bridge, built with kids one verified phase at a time.
 **Phase 1:** control an AIOC's push-to-talk (PTT) line and play a short speech
 WAV through its audio interface. **Phase 2:** capture radio speech on the pinned
 AIOC input, detect an utterance by energy, and transcribe it locally with
-faster-whisper. Wake names, pluggable STT, AI backends, and generated voices
-are future phases. See [the phase checkpoints](docs/PHASES.md).
+faster-whisper. **Phase 3:** wake name, aliases, and an optional conversation
+timeout. Pluggable STT, AI backends, and generated voices are later phases.
+See [the phase checkpoints](docs/PHASES.md).
 
 Phase 1 verification is complete: the family observed the Python PTT pulse,
 heard the spoken WAV on the receiving walkie with PTT released afterward, and
 confirmed that Ctrl+C releases PTT immediately. The girls understand the talk
 control demonstration. Phase 1's 36 automated tests and the CI checks passed.
-Phase 2 family radio transcription also passed; it is implemented on
-`phase-2-stt-listen` and is not committed until Brad authorizes publishing.
+Phase 2 family radio transcription passed and is merged in
+[PR #2](https://github.com/bbusenius/walkietalk/pull/2).
 
 The browser flasher is not part of this application. Python talks directly to
 the local AIOC through USB serial and PortAudio. No firmware update is required
@@ -46,14 +47,17 @@ check out its PR branch before installing.
 ```sh
 .venv/bin/walkietalk ptt --seconds 1
 .venv/bin/walkietalk listen speech.wav
+.venv/bin/walkietalk talk speech.wav
 ```
 
 `ptt` logs simulated PTT ON/OFF without opening serial or audio hardware.
 `play speech.wav` also defaults to simulation, validating the file but making
 no sound. `listen speech.wav` runs energy detection and local transcription on
-that file; it does not open the AIOC or PTT. Real transmission still requires
-both a configuration file and `--transmit`. Live radio transcription uses
-`listen --capture` and is receive-only.
+that file; it does not open the AIOC or PTT. `talk speech.wav` does the same
+capture path, then applies the wake gate and prints a simulated reply. Real
+transmission still requires both a configuration file and `--transmit`. Live
+radio transcription uses `listen --capture` or `talk --capture` and is
+receive-only.
 
 ## Configure the AIOC
 
@@ -82,8 +86,13 @@ The WAV plus settle time must fit the transmit limit.
 `vad.energy_threshold` is RMS from 0 to 1; begin with 0.02 and tune from the
 logged values. `vad.hangover_ms` is how long silence may last before an
 utterance ends (400 ms). `vad.max_utterance_seconds` caps a single capture
-(12 seconds, at most 30). `stt.model` is `tiny` or `base`. Phase 3 wake fields
-and the `SttBackend` plug are still rejected.
+(12 seconds, at most 30). `stt.model` is `tiny` or `base`.
+
+`listening.mode` is `wake_phrase` (default: say the name every time) or
+`conversation` (name once, then follow-ups until
+`listening.conversation_timeout_seconds`, starting at 60). `wake.primary` is
+the name; `wake.aliases` lists extra spellings for speech-to-text mistakes.
+The phase 4 `SttBackend` plug is still rejected.
 
 ### Linux serial permissions
 
@@ -202,7 +211,7 @@ light: it must stay off. Speak on a handheld walkie on the shared channel.
    Expect RMS / speech-started lines, then `Transcript:` followed by roughly
    those words. Small mistakes are acceptable.
 
-3. **Live radio sentence.** After the program prints `Waiting for speech`, say a
+3. **Live radio sentence.** After the program prints `Waiting for someone to talk`, say a
    clear sentence on a handheld walkie without long pauses, then stop talking:
 
    ```sh
@@ -214,7 +223,7 @@ light: it must stay off. Speak on a handheld walkie on the shared channel.
 
    ```text
    Receive-only: PTT will not be opened.
-   Waiting for speech (timeout 60s, threshold 0.020)...
+   Waiting for someone to talk (give up after 60s; threshold 0.020)...
    Speech started (RMS 0.091)
    Speech ended after 2.4s (silence; peak RMS 0.140)
    Transcript: the computer writes down what we said
@@ -227,11 +236,71 @@ light: it must stay off. Speak on a handheld walkie on the shared channel.
    changed, update `config.local.yaml` rather than using a default device.
 
 4. **Show that stopping is safe.** Run the live command again, wait until
-   `Waiting for speech`, then press Ctrl+C before talking. Expect `Stopped;
+   `Waiting for someone to talk`, then press Ctrl+C before talking. Expect `Stopped;
    capture closed.`, exit status 130, and no TX light.
 
 **Explain to the girls:** “The computer writes down what we said so the AI can
 understand the question.”
+
+Phase 2 is complete.
+
+## Phase 3 family demonstration
+
+The computer stays receive-only. Do not pass `--transmit`. Watch the gateway TX
+light: it must stay off. Use `talk`, not `listen`, so the wake gate runs.
+
+On a color terminal, **Transcript** is cyan, **Accepted** / **Traffic** are
+green, **Ignored** is yellow, and RMS waiting lines are dim. The same words
+appear without color. Set `NO_COLOR=1` to turn color off.
+
+1. **Default mode: the name is required every time.** Keep
+   `listening.mode: wake_phrase` in `config.local.yaml`.
+
+   ```sh
+   .venv/bin/walkietalk -c config.local.yaml check
+   .venv/bin/walkietalk -c config.local.yaml talk --capture
+   ```
+
+   Expect `Mode: wake_phrase` and `waiting for wake "charlotte"`. Then:
+   1. Speak a sentence **without** the name → `Ignored (say "charlotte" first).`
+   2. Say **Charlotte** plus traffic → `Accepted`, `Traffic:` with the name
+      removed, `Simulated reply complete.`, still waiting for the name.
+   3. Speak again **without** the name → ignored again.
+   4. Ctrl+C. Expect `Stopped; capture closed.`, exit 130, TX light off.
+
+2. **Conversation mode: follow-ups until a quiet pause.** Edit
+   `config.local.yaml` to:
+
+   ```yaml
+   listening:
+     mode: "conversation"
+     conversation_timeout_seconds: 10
+   ```
+
+   Restart:
+
+   ```sh
+   .venv/bin/walkietalk -c config.local.yaml talk --capture
+   ```
+
+   1. Name + traffic → accepted, then `State: awake (10s left).` Saying only
+      the name is enough to open the window (`Wake heard; listening for traffic.`).
+   2. Before those 10 seconds end, more traffic **without** the name →
+      `Accepted (follow-up).` The 10 seconds restart after that simulated reply.
+   3. Wait; when the window ends you should see `Follow-up window ended` even
+      if nobody is talking. Then speak without the name → ignored.
+   4. Say the name again → accepted.
+
+3. **The timeout is configurable.** Change `conversation_timeout_seconds` to
+   `5`, restart, and show that the awake window is shorter. Silence does not
+   keep it awake.
+
+**Explain to the girls:** “Say the helper’s name, then your traffic — a question,
+a command, or anything you need. After a quiet pause, say the name again.”
+
+Phase 3 family demonstration passed. There is no real AI answer yet; the computer
+only pretends a reply finished so the timer can start. Commit and PR wait until
+Brad authorizes publishing.
 
 Phase 2 is not complete until this live radio transcript is observed, the
 family explanation is done, and the automated checks pass. Mocked tests and a
