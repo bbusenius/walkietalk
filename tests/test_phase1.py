@@ -67,8 +67,8 @@ def test_invalid_config_rejected(tmp_path, config_data, section, field, value):
 
 
 def test_config_unknown_and_missing_fields_rejected(tmp_path, config_data):
-    for data in [dict(config_data, wake={}), copy.deepcopy(config_data)]:
-        if "wake" not in data:
+    for data in [dict(config_data, agent={}), copy.deepcopy(config_data)]:
+        if "agent" not in data:
             del data["audio"]["gain"]
         with pytest.raises(WalkietalkError):
             load_config(write_config(tmp_path, data))
