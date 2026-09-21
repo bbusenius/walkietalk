@@ -16,6 +16,13 @@ Do not begin the next phase until the current demonstration passes.
 | 7 | Strengthen watchdogs, post-transmit mute, callsign handling | Demonstrate timeout, mute, and identification behavior. |
 | 8 | Complete installation and user documentation | Follow setup from a clean environment; verify supported integrations. |
 
+Phase 7 is merged in [PR #8](https://github.com/bbusenius/walkietalk/pull/8),
+merge commit `416b6e4`. The current `hermes-tts` follow-up adds speech from a
+configured Hermes environment. Brad confirms spoken replies work over the
+walkies and has authorized publication. Automated failure checks and local WAV
+verification are recorded separately in the [Hermes checkpoint](HERMES-TTS.md).
+Phase 8 has not begun.
+
 Phase 5 is demonstrated and merged in [PR #5](https://github.com/bbusenius/walkietalk/pull/5),
 merge commit `ebdb8e7`. Phase 6 family demonstrations of Piper (Amy) and Grok
 speech are complete. Brad showed the girls and authorized publication. Phase 6

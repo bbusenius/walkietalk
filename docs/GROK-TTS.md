@@ -19,7 +19,7 @@ radio, gain, settle delay, agent, wake, or STT settings:
 
 ```yaml
 tts:
-  backend: "grok"          # piper, grok, or grok_api
+  backend: "grok"          # piper, grok, grok_api, or hermes
   piper_executable: "piper"
   piper_model: "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
   timeout_seconds: 30
@@ -28,6 +28,8 @@ tts:
   grok_speed: 1.0
   grok_api_key_env: "XAI_API_KEY"
   normalize: "off"
+  hermes_url: "http://127.0.0.1:8643"
+  hermes_token_env: "WALKIETALK_HERMES_TOKEN"
 ```
 
 - `grok_voice`: built-in voice ID, such as `eve` or `ara`, or an available custom

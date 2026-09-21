@@ -170,4 +170,8 @@ def open_tts(config: Config) -> TtsBackend:
         from .grok_tts import GrokTts
 
         return GrokTts(config)
-    raise WalkietalkError("tts.backend must be piper, grok, or grok_api; no fallback")
+    if config.tts_backend == "hermes":
+        from .hermes_tts import HermesTts
+
+        return HermesTts(config)
+    raise WalkietalkError("tts.backend must be piper, grok, grok_api, or hermes; no fallback")

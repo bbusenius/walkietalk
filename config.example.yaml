@@ -26,7 +26,9 @@ listening:
   mode: "wake_phrase"       # or conversation
   conversation_timeout_seconds: 60
 tts:
-  backend: "piper"         # grok (saved SuperGrok login) or grok_api (billed API key)
+  hermes_url: "http://127.0.0.1:8643" # separate Hermes speech service; see docs/HERMES-TTS.md
+  hermes_token_env: "WALKIETALK_HERMES_TOKEN" # service bearer token env var name
+  backend: "piper"         # piper, grok (saved login), grok_api (billed key), or hermes
   piper_executable: "piper" # CLI from the environment running walkietalk, or an absolute path
   piper_model: "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
   timeout_seconds: 30       # synthesis deadline; independent of the hard transmit limit
