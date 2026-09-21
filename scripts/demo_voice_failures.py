@@ -72,7 +72,17 @@ def main():
                 patch.object(cli, "Playback", side_effect=forbidden),
                 patch.object(cli, "transmit", side_effect=forbidden),
             ):
-                result = cli.main(["-c", "fake.yaml", "talk", "--capture", "--once", "--transmit"])
+                result = cli.main(
+                    [
+                        "--no-env-file",
+                        "-c",
+                        "fake.yaml",
+                        "talk",
+                        "--capture",
+                        "--once",
+                        "--transmit",
+                    ]
+                )
             if result != 1:
                 raise AssertionError(f"{scenario}: expected local failure, got {result}")
             print("PASS: local error; no PTT or playback opened.", flush=True)

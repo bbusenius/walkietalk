@@ -67,9 +67,10 @@ to one extra second for cleanup. Late replies are discarded. This stops local
 processes; it is not a guarantee about provider-side cancellation or usage.
 Both stdout/stderr and the final-answer file have transport size limits.
 
-Charlotte needs no restart or configuration change for this adapter. Codex does
-not use `.env.hermes.local`; that optional file remains useful when switching
-back to Hermes. STT, wake handling, radio settings, and future voice selection
+Charlotte needs no restart or configuration change for this adapter. Codex uses
+its CLI-owned login. Hermes uses a local service token through the private
+[credentials file or environment](CONFIGURATION.md#credentials).
+STT, wake handling, radio settings, and voice selection
 remain independent of the selected agent.
 
 ## Complete Codex family demonstration
@@ -122,7 +123,6 @@ configuration or starting another command.
    Then run:
 
    ```sh
-   . ./.env.hermes.local
    .venv/bin/walkietalk -c config.local.yaml talk --capture
    ```
 

@@ -11,9 +11,9 @@ agent model and speech provider are independent choices.
 
 ## Status
 
-Implemented after phase 7. Brad confirms Hermes spoken replies work over the
-walkies and has authorized committing, publishing, and merging this addition.
-Phase 7 remains merged in PR #8; phase 8 has not begun.
+Implemented after phase 7. Brad confirmed Hermes spoken replies over the walkies
+and authorized publication. Merged in [PR #9](https://github.com/bbusenius/walkietalk/pull/9)
+as `976b592`. Phase 8 installation work is tracked [separately](PHASE8-DEMO.md).
 
 Automated verification: all 625 tests pass (47 focused Hermes speech tests),
 Ruff lint and formatting pass, and the source/wheel build passes. Missing-token
@@ -103,11 +103,12 @@ docker exec --user hermes -e HOME=/opt/data/home YOUR_CONTAINER \
 ```
 
 Create `/opt/data/walkietalk` as the profile owner first if it does not exist.
-The current Charlotte profile already has it. Keep the service running alongside
-the agent. The local demonstration uses the container's private bridge address,
-with no published host port. After recreating a container, rediscover its address
-and restart the companion; the saved helper file persists in the profile, but
-its process does not. This change does not install an automatic startup service.
+This manual command runs in the foreground. Keep it running alongside the agent;
+use the container's reachable private address for the client URL. After recreating
+a container, rediscover its address and restart the companion. Persistence of
+the copied helper depends on the profile volume; its process does not survive
+container recreation. For managed startup, prefer Charlotte's separate speech
+container instructions linked above.
 For a remote host, use HTTPS through a reverse proxy or an SSH tunnel. Do not
 send a bearer token over an untrusted network using plain HTTP.
 
@@ -127,9 +128,10 @@ tts:
 `tts.hermes_url` targets the companion, while `agent.hermes_url` targets the
 Hermes agent API (normally port 8642). Each has its own token-variable setting,
 so the agent and voice can use the same environment or different ones. Tokens
-stay in environment variables, never YAML. If your launch environment already
-supplies the token, no additional sourcing step is needed. An existing ignored
-`.env.hermes.local` can optionally supply it for a terminal session:
+stay outside YAML. Put the named variable in a private `credentials.env` beside
+the selected Walkietalk config; phase 8 loads it automatically. Existing exported
+variables take precedence. See [credentials](CONFIGURATION.md#credentials).
+An existing ignored `.env.hermes.local` can alternatively supply a terminal session:
 
 ```sh
 set -a

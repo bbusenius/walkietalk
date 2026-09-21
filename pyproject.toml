@@ -25,6 +25,14 @@ dev = ["pytest>=8,<10", "ruff>=0.9,<1", "build>=1,<2"]
 [project.scripts]
 walkietalk = "walkietalk.cli:main"
 
+[project.urls]
+Repository = "https://github.com/bbusenius/walkietalk"
+Documentation = "https://github.com/bbusenius/walkietalk#readme"
+Issues = "https://github.com/bbusenius/walkietalk/issues"
+
+[tool.setuptools.package-data]
+walkietalk = ["data/*.yaml", "data/*.example"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

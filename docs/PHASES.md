@@ -17,11 +17,15 @@ Do not begin the next phase until the current demonstration passes.
 | 8 | Complete installation and user documentation | Follow setup from a clean environment; verify supported integrations. |
 
 Phase 7 is merged in [PR #8](https://github.com/bbusenius/walkietalk/pull/8),
-merge commit `416b6e4`. The current `hermes-tts` follow-up adds speech from a
-configured Hermes environment. Brad confirms spoken replies work over the
-walkies and has authorized publication. Automated failure checks and local WAV
-verification are recorded separately in the [Hermes checkpoint](HERMES-TTS.md).
-Phase 8 has not begun.
+merge commit `416b6e4`. The Hermes speech follow-up is demonstrated and merged
+in [PR #9](https://github.com/bbusenius/walkietalk/pull/9), merge commit `976b592`.
+Its automated results and family observations are recorded separately in the
+[Hermes checkpoint](HERMES-TTS.md).
+
+Phase 8 packages private setup files, installation checks, and public
+installation, configuration, and backend guides on `phase-8-installation`.
+Brad reviewed the [installation instructions](PHASE8-DEMO.md) and authorized
+publication. Optional autostart and phase 9 remain deferred.
 
 Phase 5 is demonstrated and merged in [PR #5](https://github.com/bbusenius/walkietalk/pull/5),
 merge commit `ebdb8e7`. Phase 6 family demonstrations of Piper (Amy) and Grok
@@ -107,6 +111,8 @@ as documented; tags do not restore firmware, Linux permissions, or account sessi
 | Phase 5: agent plug | `phase-5-agent-plug`; [PR #5](https://github.com/bbusenius/walkietalk/pull/5) | Stub shown to the girls. Hermes text connection verified and family demonstration confirmed by Brad. Codex demonstration confirmed. Grok Build radio demonstration, backend comparison, failures, continuous listening, and shutdown confirmed by Brad. Claude CLI text check passed; Brad confirms both Claude routes work as expected. Hermes STT service deferred by Brad; standalone Codex STT interface not verified. Brad authorized committing, publishing, and merging phase 5. |
 | Phase 6: TTS plug | `phase-6-piper-voice`; [PR #6](https://github.com/bbusenius/walkietalk/pull/6) | Brad confirmed Piper (Amy) and Grok spoken replies with the girls. Optional `grok_api` live key test skipped. Automated checks passed. Merged to `main` as `ab37520`. |
 | Phase 7: watchdogs | `phase-7-watchdogs` | Brad confirmed mute, overlong cutoff, conversation timeout, wake_phrase, and clean unkey. Optional spoken ID stays off unless the operator sets a callsign. Automated checks passed. Brad authorized committing, publishing, and merging phase 7. |
+| Hermes speech follow-up | `hermes-tts`; [PR #9](https://github.com/bbusenius/walkietalk/pull/9) | Brad confirmed spoken replies through the configured Hermes environment; merged as `976b592`. |
+| Phase 8: installation | `phase-8-installation` | Brad reviewed the installation instructions and authorized publication. Automated installation checks passed. Optional autostart remains deferred. |
 
 ## Phase 1 verification results
 

@@ -41,7 +41,7 @@ def check_serial(port: str) -> None:
         raise WalkietalkError(f"Not a serial character device: {port}")
     if not os.access(path, os.R_OK | os.W_OK):
         raise WalkietalkError(
-            f"No read/write permission for {port}. See README: Linux serial permissions. "
+            f"No read/write permission for {port}. See docs/INSTALL.md: Linux serial permissions. "
             "Run walkietalk as your normal user, not with sudo."
         )
 

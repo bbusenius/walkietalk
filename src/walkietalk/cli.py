@@ -7,6 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import __version__
 from .agent import AgentSession, open_agent
 from .audio import Playback, Wav, read_wav
 from .callsign import CallsignSession, join_identification
@@ -15,6 +16,7 @@ from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
 from .ptt import DryPTT, SerialPTT
 from .session import handle_stop_signals, transmit, uninterrupted_cleanup
+from .setup import credentials_environment, initialize
 from .shutdown import ShutdownSession
 from .stt import ensure_model, model_ready, model_size_bytes, open_stt
 from .term import capture_log, emit
@@ -29,7 +31,27 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "-c", "--config", type=Path, help="YAML config (required for hardware access)"
     )
+    result.add_argument("--version", action="version", version=f"walkietalk {__version__}")
+    env = result.add_mutually_exclusive_group()
+    env.add_argument(
+        "--env-file",
+        type=Path,
+        help="Private credentials file; defaults to credentials.env beside --config",
+    )
+    env.add_argument(
+        "--no-env-file", action="store_true", help="Use only the existing process environment"
+    )
     commands = result.add_subparsers(dest="command", required=True)
+    setup = commands.add_parser(
+        "init", help="Create a new private config and credentials directory; no hardware"
+    )
+    setup.add_argument(
+        "--directory",
+        type=Path,
+        default=Path.home() / ".config" / "walkietalk",
+        help="New directory (default: ~/.config/walkietalk); refuses to overwrite",
+    )
+    commands.add_parser("config-check", help="Validate YAML without devices, logins, or network")
     commands.add_parser("devices", help="List exact audio names and stable serial paths; no TX")
     commands.add_parser("check", help="Validate device selection and permissions; no TX")
     agent_check = commands.add_parser(
@@ -371,6 +393,26 @@ def models_command(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.command == "init":
+        initialize(args.directory)
+        directory = args.directory.expanduser().absolute()
+        print(f"Created config: {directory / 'config.yaml'}")
+        print(f"Created private credentials file: {directory / 'credentials.env'}")
+        print("Edit device names and backend settings before using hardware. No hardware opened.")
+        return
+    if args.command == "config-check":
+        if args.config is None:
+            raise WalkietalkError("config-check requires --config")
+        config = load_config(args.config)
+        print("Config OK. No hardware, network, or login checks performed.")
+        print(
+            f"Agent: {config.agent_backend}; STT: {config.stt_backend}; voice: {config.tts_backend}"
+        )
+        print(
+            f"Listening: {config.listening_mode}; "
+            f"follow-up window {config.conversation_timeout_seconds:g}s"
+        )
+        return
     if args.command == "tts-check":
         config = load_config(args.config) if args.config else Config()
         if args.output.exists():
@@ -507,7 +549,10 @@ def run(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        with handle_stop_signals():
+        with (
+            handle_stop_signals(),
+            credentials_environment(args.config, args.env_file, disabled=args.no_env_file),
+        ):
             run(args)
         return 0
     except KeyboardInterrupt:
