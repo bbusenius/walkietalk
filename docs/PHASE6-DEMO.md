@@ -51,6 +51,8 @@ tts:
   grok_speed: 1.0
   grok_api_key_env: "XAI_API_KEY"
   normalize: "off"
+  hermes_url: "http://127.0.0.1:8643"
+  hermes_token_env: "WALKIETALK_HERMES_TOKEN"
 ```
 
 Keep both the `.onnx` model and its `.onnx.json` sidecar. Relative model paths

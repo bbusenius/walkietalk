@@ -21,7 +21,7 @@ class HermesAgent:
         self.config = config
 
     def label(self) -> str:
-        return "hermes (Charlotte environment; text only)"
+        return "hermes (configured agent environment; text replies)"
 
     def reply(self, user_text: str, session_context: SessionContext) -> str:
         token = os.environ.get(self.config.hermes_token_env, "")

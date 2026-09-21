@@ -117,6 +117,8 @@ class Config:
     grok_tts_speed: float = 1
     grok_tts_api_key_env: str = "XAI_API_KEY"
     tts_normalize: str = "off"
+    hermes_tts_url: str = "http://127.0.0.1:8643"
+    hermes_tts_token_env: str = "WALKIETALK_HERMES_TOKEN"
 
 
 def load_config(path: Path) -> Config:
@@ -146,6 +148,8 @@ def load_config(path: Path) -> Config:
             "grok_language",
             "grok_speed",
             "grok_api_key_env",
+            "hermes_url",
+            "hermes_token_env",
             "normalize",
         },
         "listening": {"mode", "conversation_timeout_seconds"},
@@ -203,8 +207,8 @@ def load_config(path: Path) -> Config:
     model = data["stt"]["model"]
     if model not in STT_MODELS:
         raise WalkietalkError("stt.model must be tiny or base")
-    if data["tts"]["backend"] not in ("piper", "grok", "grok_api"):
-        raise WalkietalkError("tts.backend must be piper, grok, or grok_api; no fallback")
+    if data["tts"]["backend"] not in ("piper", "grok", "grok_api", "hermes"):
+        raise WalkietalkError("tts.backend must be piper, grok, grok_api, or hermes; no fallback")
     normalize = data["tts"]["normalize"]
     if normalize not in TTS_NORMALIZE:
         raise WalkietalkError("tts.normalize must be off or peak")
@@ -285,32 +289,33 @@ def load_config(path: Path) -> Config:
         raise WalkietalkError(
             "agent.claude_api_key_env must name an environment variable, not a key"
         )
-    hermes_url = data["agent"]["hermes_url"]
-    try:
-        url = urlsplit(hermes_url) if isinstance(hermes_url, str) else None
-        valid_url = (
-            url is not None
-            and url.scheme in {"http", "https"}
-            and url.hostname
-            and not url.username
-            and not url.password
-            and not url.query
-            and not url.fragment
-            and not any(char.isspace() or not char.isprintable() for char in hermes_url)
-        )
-        if url is not None:
-            _port = url.port  # Validate the port as well as the host.
-    except ValueError:
-        valid_url = False
-    if not valid_url:
-        raise WalkietalkError(
-            "agent.hermes_url must be an HTTP(S) base URL without credentials or query"
-        )
-    token_env = data["agent"]["hermes_token_env"]
-    if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
-        raise WalkietalkError(
-            "agent.hermes_token_env must name an environment variable, not a token"
-        )
+    for section in ("agent", "tts"):
+        hermes_url = data[section]["hermes_url"]
+        try:
+            url = urlsplit(hermes_url) if isinstance(hermes_url, str) else None
+            valid_url = (
+                url is not None
+                and url.scheme in {"http", "https"}
+                and url.hostname
+                and not url.username
+                and not url.password
+                and not url.query
+                and not url.fragment
+                and not any(char.isspace() or not char.isprintable() for char in hermes_url)
+            )
+            if url is not None:
+                _port = url.port  # Validate the port as well as the host.
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise WalkietalkError(
+                f"{section}.hermes_url must be an HTTP(S) base URL without credentials or query"
+            )
+        token_env = data[section]["hermes_token_env"]
+        if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+            raise WalkietalkError(
+                f"{section}.hermes_token_env must name an environment variable, not a token"
+            )
     mode = data["listening"]["mode"]
     if mode not in ("wake_phrase", "conversation"):
         raise WalkietalkError("listening.mode must be wake_phrase or conversation")
@@ -454,8 +459,8 @@ def load_config(path: Path) -> Config:
         agent_timeout_seconds=seconds(
             data["agent"]["timeout_seconds"], "agent.timeout_seconds", maximum=300
         ),
-        hermes_url=hermes_url.rstrip("/"),
-        hermes_token_env=token_env,
+        hermes_url=data["agent"]["hermes_url"].rstrip("/"),
+        hermes_token_env=data["agent"]["hermes_token_env"],
         codex_executable=data["agent"]["codex_executable"],
         grok_executable=data["agent"]["grok_executable"],
         grok_model=grok_model,
@@ -486,4 +491,6 @@ def load_config(path: Path) -> Config:
         grok_tts_speed=speed,
         grok_tts_api_key_env=key_env,
         tts_normalize=normalize,
+        hermes_tts_url=data["tts"]["hermes_url"].rstrip("/"),
+        hermes_tts_token_env=data["tts"]["hermes_token_env"],
     )

@@ -28,8 +28,11 @@ Phase 6 is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6),
 merge commit `ab37520`.
 Spoken shutdown confirmation and optional `tts.normalize: peak` are in; Brad
 confirms both work. Phase 7 family demonstration passed; Brad authorized
-publication. The latest automated checks passed all 578 tests, lint, and
-formatting.
+publication. The latest automated checks passed all 625 tests, lint, formatting,
+and the package build.
+Brad confirms Hermes spoken replies work over the walkies and has authorized
+publication. Hermes speech uses the chosen environment's voice configuration; see
+[Hermes speech setup and complete demo](docs/HERMES-TTS.md).
 See [Claude setup and demos](docs/CLAUDE.md).
 The [Hermes/Codex STT capability review](docs/STT-CAPABILITIES.md) found no ready
 transcription endpoint in the inspected interfaces. Brad chose to keep the
@@ -91,7 +94,7 @@ transmission still requires both a configuration file and `--transmit`. Live
 radio transcription uses `listen --capture` or `talk --capture` and is
 receive-only unless `talk` also receives `--transmit`.
 
-## Spoken answers with Piper or Grok (phase 6)
+## Spoken answers with Piper, Grok, or Hermes
 
 Add the optional Piper engine, explicitly download Amy, and extend an existing
 config with the required `tts` section below. Keep your radio, STT, wake, and agent
@@ -113,14 +116,19 @@ tts:
   grok_speed: 1.0
   grok_api_key_env: "XAI_API_KEY"
   normalize: "off"
+  hermes_url: "http://127.0.0.1:8643"
+  hermes_token_env: "WALKIETALK_HERMES_TOKEN"
 ```
 
 The matching `.onnx.json` file must stay alongside the model. Relative paths are
 resolved from the config directory. Piper is optional for text-only operation
-and for Grok speech;
+and for Grok or Hermes speech;
 voice selection is independent of the agent and STT. Select `tts.backend: grok`
 for Grok speech with your saved SuperGrok login, or explicitly select `grok_api`
 for billed API-key access. See [Grok voice setup and demonstrations](docs/GROK-TTS.md).
+Select `tts.backend: hermes` for the selected Hermes environment's speech provider
+and voice; [the companion service setup](docs/HERMES-TTS.md) keeps provider
+credentials in Hermes. This is independent of the selected agent and its context.
 There is no automatic fallback between voice backends or billing routes.
 
 ```sh
