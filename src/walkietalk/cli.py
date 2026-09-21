@@ -176,7 +176,15 @@ def talk_command(args: argparse.Namespace) -> None:
         emit("meter", f"Preparing {listener.label()}...")
         listener.prepare()
     if config.shutdown_enabled:
-        emit("status", "Remote shutdown enabled; phrase and code together or in two transmissions.")
+        emit(
+            "status",
+            "Remote shutdown enabled; phrase and code together or in two transmissions."
+            + (
+                " After the code, the confirmation phrase is spoken before exit."
+                if args.transmit and config.shutdown_confirmation_phrase
+                else ""
+            ),
+        )
     while True:
         emit("status", session.status_line())
 
@@ -216,7 +224,10 @@ def talk_command(args: argparse.Namespace) -> None:
             session.close()
             # Never print the code or send control traffic into agent context.
             emit("status", control.message)
-            if control.kind == "confirmed" or once:
+            if control.kind == "confirmed":
+                speak_shutdown_confirmation(config, voice)
+                return
+            if once:
                 return
             continue
         if not text:
@@ -274,7 +285,26 @@ def talk_command(args: argparse.Namespace) -> None:
             return
 
 
-def transmit_speech(speech: Wav, config: Config) -> None:
+def speak_shutdown_confirmation(config: Config, voice) -> None:
+    """Speak the configured confirmation phrase, then always stop. Failures stay local."""
+    text = config.shutdown_confirmation_phrase
+    if voice is None or not text:
+        return
+    try:
+        emit("status", "Speaking shutdown confirmation; PTT off until speech is ready...")
+        transmit_speech(
+            radio_wav(voice.synthesize(text), config.max_tx_seconds - config.settle_seconds),
+            config,
+            finished="Shutdown confirmation finished; PTT released.",
+        )
+    except (WalkietalkError, OSError) as exc:
+        emit("error", f"Shutdown confirmation failed: {exc}", file=sys.stderr)
+        emit("status", "Stopping walkietalk without an on-air confirmation.")
+
+
+def transmit_speech(
+    speech: Wav, config: Config, finished: str = "Spoken reply finished; PTT released."
+) -> None:
     """Prepare the isolated worker first, then key/play/unkey in the parent."""
     speech = radio_wav(speech, config.max_tx_seconds - config.settle_seconds)
     with tempfile.TemporaryDirectory(prefix="walkietalk-reply-") as directory:
@@ -295,7 +325,7 @@ def transmit_speech(speech: Wav, config: Config) -> None:
         finally:
             with uninterrupted_cleanup():
                 playback.close()  # transmit has already attempted release before worker cleanup.
-    emit("status", "Spoken reply finished; PTT released.")
+    emit("status", finished)
 
 
 def models_command(args: argparse.Namespace) -> None:
@@ -381,6 +411,12 @@ def run(args: argparse.Namespace) -> None:
             flush=True,
         )
         print(ListeningSession(config).status_line(), flush=True)
+        if config.shutdown_enabled:
+            print(
+                "Shutdown: enabled; on-air confirmation "
+                f"{config.shutdown_confirmation_phrase!r} after the code with talk --transmit",
+                flush=True,
+            )
         print("Device names and serial permissions OK. No port opened; no transmission.")
         return
     if args.command == "ptt":

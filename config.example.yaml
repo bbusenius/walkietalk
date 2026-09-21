@@ -30,6 +30,7 @@ tts:
   grok_language: "en"
   grok_speed: 1.0           # 0.7 to 1.5; independent of playback gain
   grok_api_key_env: "XAI_API_KEY" # only used by tts.backend: grok_api
+  normalize: "off"          # off keeps engine level; peak fills the WAV (then audio.gain still applies)
 wake:
   primary: "charlotte"
   aliases: ["charlot", "sharlot"]
@@ -60,3 +61,4 @@ shutdown:
   code: ""
   code_aliases: []
   confirmation_seconds: 30
+  confirmation_phrase: ""   # spoken on the radio after the code; requires talk --transmit

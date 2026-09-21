@@ -56,7 +56,7 @@ def test_ignored_and_wake_only_do_not_synthesize(bridge, text):
     backend.reply.assert_not_called()
 
 
-def test_shutdown_does_not_synthesize(bridge, monkeypatch):
+def test_shutdown_does_not_synthesize_without_confirmation_phrase(bridge, monkeypatch):
     config, backend, voice, listener = bridge
     config = replace(
         config, shutdown_enabled=True, shutdown_phrase="stop bridge", shutdown_code="confirm stop"
@@ -66,6 +66,97 @@ def test_shutdown_does_not_synthesize(bridge, monkeypatch):
     assert cli.main([*ARGS, "--once"]) == 0
     backend.reply.assert_not_called()
     voice.synthesize.assert_not_called()
+
+
+def test_confirmed_shutdown_speaks_confirmation_then_exits(bridge, monkeypatch, capsys):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    played = []
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "transmit_speech", lambda speech, cfg, **kwargs: played.append(speech))
+    listener.transcribe.return_value = "stop bridge confirm stop"
+    assert cli.main([*ARGS, "--once"]) == 0
+    backend.reply.assert_not_called()
+    voice.synthesize.assert_called_once_with("Walkietalk shutting down.")
+    assert played == [SPEECH]
+    output = capsys.readouterr()
+    assert "Shutdown confirmed" in output.out
+    assert "Reply:" not in output.out
+
+
+def test_two_step_shutdown_speaks_confirmation_after_code(bridge, monkeypatch):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    played = []
+    listener.transcribe.side_effect = ["stop bridge", "confirm stop"]
+    captures = iter([utterance(100), utterance(101)])
+
+    def capture(*a, **k):
+        try:
+            return next(captures)
+        except StopIteration:
+            pytest.fail("continued listening after confirmed shutdown")
+
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    monkeypatch.setattr(cli, "transmit_speech", lambda speech, cfg, **kwargs: played.append(speech))
+    assert cli.main(["-c", "unused.yaml", "talk", "--capture", "--transmit"]) == 0
+    backend.reply.assert_not_called()
+    voice.synthesize.assert_called_once_with("Walkietalk shutting down.")
+    assert played == [SPEECH]
+
+
+def test_armed_shutdown_does_not_speak_confirmation(bridge, monkeypatch):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(
+        cli, "transmit_speech", lambda *a, **k: pytest.fail("spoke confirmation before code")
+    )
+    listener.transcribe.return_value = "stop bridge"
+    assert cli.main([*ARGS, "--once"]) == 0
+    voice.synthesize.assert_not_called()
+    backend.reply.assert_not_called()
+
+
+def test_failed_shutdown_confirmation_still_exits(bridge, monkeypatch, capsys):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(
+        cli, "transmit_speech", lambda *a, **k: pytest.fail("PTT after failed synth")
+    )
+    listener.transcribe.return_value = "stop bridge confirm stop"
+    voice.synthesize.side_effect = WalkietalkError("Piper timed out")
+    assert cli.main([*ARGS, "--once"]) == 0
+    backend.reply.assert_not_called()
+    output = capsys.readouterr()
+    assert "Shutdown confirmation failed" in output.err
+    assert "without an on-air confirmation" in output.out
 
 
 @pytest.mark.parametrize("failure", ["agent", "prepare", "synthesis", "oversize"])

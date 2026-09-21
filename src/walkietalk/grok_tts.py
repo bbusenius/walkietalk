@@ -18,7 +18,7 @@ from .agent_process import run_cli
 from .audio import Wav, read_wav
 from .config import Config, WalkietalkError
 from .stt import GROK_TOKEN_URL, _session_expired, load_grok_store, save_grok_store
-from .tts import MAX_TTS_BYTES, radio_wav, write_wav
+from .tts import MAX_TTS_BYTES, level_wav, radio_wav, write_wav
 
 GROK_TTS_URL = "https://api.x.ai/v1/tts"
 
@@ -209,8 +209,11 @@ class GrokTts:
         with tempfile.TemporaryDirectory(prefix="walkietalk-grok-voice-") as directory:
             path = Path(directory) / "voice.wav"
             path.write_bytes(complete_wav_header(audio))
-            speech = radio_wav(
-                read_wav(path, 30), self.config.max_tx_seconds - self.config.settle_seconds
+            speech = level_wav(
+                radio_wav(
+                    read_wav(path, 30), self.config.max_tx_seconds - self.config.settle_seconds
+                ),
+                self.config.tts_normalize,
             )
         if time.monotonic() >= deadline:
             raise WalkietalkError("Grok TTS timed out; audio discarded; no transmission")
@@ -229,6 +232,7 @@ class GrokTts:
             "grok_tts_language",
             "grok_tts_speed",
             "grok_tts_api_key_env",
+            "tts_normalize",
             "agent_max_reply_chars",
             "max_tx_seconds",
             "settle_seconds",
@@ -267,8 +271,11 @@ class GrokTts:
                 raise WalkietalkError(error)
             if not path.is_file() or path.stat().st_size > MAX_TTS_BYTES:
                 raise WalkietalkError("Grok TTS returned no bounded WAV; no transmission")
-            speech = radio_wav(
-                read_wav(path, 30), self.config.max_tx_seconds - self.config.settle_seconds
+            speech = level_wav(
+                radio_wav(
+                    read_wav(path, 30), self.config.max_tx_seconds - self.config.settle_seconds
+                ),
+                self.config.tts_normalize,
             )
             if time.monotonic() >= deadline:
                 raise WalkietalkError("Grok TTS timed out; audio discarded; no transmission")

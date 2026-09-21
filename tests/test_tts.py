@@ -69,6 +69,17 @@ def test_real_subprocess_uses_stdin_and_returns_48khz_without_keys(fake_piper):
     assert not Path(call["args"][-1]).exists()  # Temporary speech is removed.
 
 
+def test_peak_normalize_fills_the_wav_and_off_keeps_engine_level(fake_piper):
+    config, _, _ = fake_piper
+    quiet = tts.PiperTts(config).synthesize("Hello.")
+    loud = tts.PiperTts(replace(config, tts_normalize="peak")).synthesize("Hello.")
+    assert np.max(np.abs(np.frombuffer(quiet.frames, dtype="<i2"))) == 8192
+    assert np.max(np.abs(np.frombuffer(loud.frames, dtype="<i2"))) == 32767
+    silence = Wav(b"\x00\x00" * 48000, 48000, 1)
+    assert tts.level_wav(silence, "peak").frames == silence.frames
+    assert tts.level_wav(quiet, "off").frames == quiet.frames
+
+
 @pytest.mark.parametrize(
     "settings",
     [
@@ -169,6 +180,8 @@ def test_duration_and_amplitude_preserved_when_resampling():
         ("piper_model", "amy"),
         ("piper_executable", "piper --bad"),
         ("piper_executable", "./piper"),
+        ("normalize", "rms"),
+        ("normalize", True),
     ],
 )
 def test_invalid_tts_configuration(tmp_path, key, value):

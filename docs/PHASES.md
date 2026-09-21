@@ -20,7 +20,8 @@ Phase 5 is demonstrated and merged in [PR #5](https://github.com/bbusenius/walki
 merge commit `ebdb8e7`. Phase 6 family demonstrations of Piper (Amy) and Grok
 speech are complete. Brad showed the girls and authorized publication. Phase 6
 is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6), merge
-commit `ab37520`. See the
+commit `ab37520`. Spoken shutdown confirmation and optional `tts.normalize: peak`
+are follow-ups on main; Brad confirms both. See the
 [complete Amy setup and demonstration checklist](PHASE6-DEMO.md).
 See the [complete acceptance checklist and current demo](PHASE5-DEMO.md).
 The stub, Hermes, Codex, and Grok Build adapters are implemented. Brad showed the stub to the girls;

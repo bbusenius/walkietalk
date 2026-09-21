@@ -56,6 +56,18 @@ def radio_wav(wav: Wav, maximum: float) -> Wav:
     return Wav(frames, RADIO_RATE, count / RADIO_RATE)
 
 
+def level_wav(wav: Wav, normalize: str) -> Wav:
+    """Optionally scale synthesized PCM. off leaves the engine's level unchanged."""
+    if normalize == "off":
+        return wav
+    samples = np.frombuffer(wav.frames, dtype="<i2").astype(np.int32)
+    peak = int(np.max(np.abs(samples))) if samples.size else 0
+    if peak == 0 or peak == 32767:
+        return wav
+    frames = np.rint(samples * (32767 / peak)).clip(-32768, 32767).astype("<i2").tobytes()
+    return Wav(frames, wav.rate, wav.duration)
+
+
 def write_wav(path: Path, wav: Wav) -> None:
     """Create a new WAV without overwriting an existing recording."""
     with path.open("xb") as output:
@@ -121,6 +133,7 @@ class PiperTts:
             # Parse at the absolute radio ceiling, then apply this config's shorter cap.
             wav = read_wav(path, 30)
             wav = radio_wav(wav, self.config.max_tx_seconds - self.config.settle_seconds)
+            wav = level_wav(wav, self.config.tts_normalize)
             if time.monotonic() >= deadline:
                 raise WalkietalkError("Piper timed out; audio discarded; no transmission")
             return wav
