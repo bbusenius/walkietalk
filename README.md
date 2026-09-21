@@ -11,14 +11,18 @@ default, then Grok STT). **Phase 5 verified:** a text-only agent interface,
 with an offline stub, Charlotte through Hermes, Codex CLI, and Grok Build.
 Brad has confirmed those demonstrations. The new `claude` (official CLI
 saved login) and `claude_api` (separately billed API key) choices are also confirmed
-working by Brad. Generated voices belong to phase 6.
+working by Brad. **Phase 6 verified:** Piper (Amy) and Grok speech, enabled
+only by `talk --transmit`. Brad confirmed those demonstrations with the girls
+and authorized publication. See the [complete phase 6 demo](docs/PHASE6-DEMO.md).
 See [the phase checkpoints](docs/PHASES.md).
 
 **Current checkpoint:** Brad has confirmed the stub, Hermes, Codex, and Grok
 demonstrations, plus continuous listening and both remote shutdown forms.
-Brad also confirms both Claude routes work as expected. The latest automated
-checks passed all 439 tests, lint, and formatting. Brad has authorized the
-phase 5 commit, publication, and merge. See [Claude setup and demos](docs/CLAUDE.md).
+Brad also confirms both Claude routes work as expected. Phase 5 is merged in
+[PR #5](https://github.com/bbusenius/walkietalk/pull/5). Phase 6 family
+demonstrations of Amy and Grok speech passed; Brad authorized publication.
+The latest automated phase 6 checks passed all 549 tests, lint, and formatting.
+See [Claude setup and demos](docs/CLAUDE.md).
 The [Hermes/Codex STT capability review](docs/STT-CAPABILITIES.md) found no ready
 transcription endpoint in the inspected interfaces. Brad chose to keep the
 existing local Whisper option instead of adding a Hermes service. Codex STT is
@@ -77,7 +81,58 @@ directly to the agent, without a wake gate, STT, audio, or PTT; with the stub it
 works entirely offline. Real
 transmission still requires both a configuration file and `--transmit`. Live
 radio transcription uses `listen --capture` or `talk --capture` and is
-receive-only.
+receive-only unless `talk` also receives `--transmit`.
+
+## Spoken answers with Piper or Grok (phase 6)
+
+Add the optional Piper engine, explicitly download Amy, and extend an existing
+config with the required `tts` section below. Keep your radio, STT, wake, and agent
+settings. Brad's local config has already been extended.
+
+```sh
+uv pip install --python .venv/bin/python -e '.[dev,piper]'
+.venv/bin/python -m piper.download_voices --download-dir "$HOME/.cache/walkietalk/piper" en_US-amy-medium
+```
+
+```yaml
+tts:
+  backend: "piper"
+  piper_executable: "piper"
+  piper_model: "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
+  timeout_seconds: 30
+  grok_voice: "eve"
+  grok_language: "en"
+  grok_speed: 1.0
+  grok_api_key_env: "XAI_API_KEY"
+```
+
+The matching `.onnx.json` file must stay alongside the model. Relative paths are
+resolved from the config directory. Piper is optional for text-only operation
+and for Grok speech;
+voice selection is independent of the agent and STT. Select `tts.backend: grok`
+for Grok speech with your saved SuperGrok login, or explicitly select `grok_api`
+for billed API-key access. See [Grok voice setup and demonstrations](docs/GROK-TTS.md).
+There is no automatic fallback between voice backends or billing routes.
+
+```sh
+mkdir -p recordings
+.venv/bin/walkietalk -c config.local.yaml tts-check "Hello. This is Amy." --output recordings/amy.wav
+# Real radio replies, only when ready for the family demonstration:
+.venv/bin/walkietalk -c config.local.yaml talk --capture --transmit
+```
+
+`tts-check` creates a new WAV without opening hardware and refuses to overwrite
+an existing file. For pip-managed environments, install `.[dev,piper]` with pip.
+Piper is a separate GPL-3.0 engine; voice terms are linked in the
+[setup and complete demonstration checklist](docs/PHASE6-DEMO.md).
+
+The bridge generates and validates all speech before keying. With a 10-second
+TX cap and 0.2-second settle, spoken audio must fit in 9.8 seconds. The agent is
+asked for a short sentence; longer audio is rejected before transmission, even
+if it fits the character cap. `tts.timeout_seconds` controls synthesis time,
+separately from agent and radio limits. Capture remains closed during processing
+and playback. The follow-up window opens after playback and PTT release.
+The extra post-transmit mute timer remains phase 7 work.
 
 ## Configure the AIOC
 
@@ -98,7 +153,12 @@ RTS stays low, and both lines are low when idle. `rts` is available only for
 hardware whose documented/tested wiring requires it. No programming bytes are
 sent to the radio. See the [AIOC firmware documentation](https://github.com/skuep/AIOC).
 
-`audio.gain` scales WAV samples from 0 (excluded) to 1; begin with 0.25.
+`audio.gain` controls outgoing WAV playback, including every voice backend.
+Use any positive finite number: `0.5` halves the signal amplitude, `1.0` keeps
+the original level, and `1.5` amplifies it. Values above `1.0` can clip peaks
+and degrade sound quality; samples are clamped to prevent overflow. Choose the
+volume you prefer and restart Walkietalk after editing config. Capture and STT
+are unaffected.
 `radio.max_tx_seconds` defaults to 10 and cannot exceed 30.
 `radio.settle_seconds` defaults to 0.2, allowing PTT to settle before playback.
 The WAV plus settle time must fit the transmit limit.

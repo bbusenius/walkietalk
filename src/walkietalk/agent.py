@@ -78,11 +78,14 @@ class AgentSession:
     fresh session, including when selecting a different backend in config.
     """
 
-    def __init__(self, config: Config, backend: AgentBackend) -> None:
+    def __init__(
+        self, config: Config, backend: AgentBackend, *, spoken_seconds: float | None = None
+    ) -> None:
         self.config = config
         self.backend = backend
         self.session_id = str(uuid4())
         self.history: tuple[Turn, ...] = ()
+        self.spoken_seconds = spoken_seconds
 
     def reply(self, user_text: str) -> str:
         traffic = user_text.strip()
@@ -96,6 +99,13 @@ class AgentSession:
                 "Answer in short, plain, spoken-style sentences suitable for a family. "
                 "Return only the final answer, without Markdown or tool diagnostics. "
                 f"Use at most {self.config.agent_max_reply_chars} characters."
+                + (
+                    f" This answer will be spoken on a radio. Aim for one short sentence, "
+                    f"at most {max(1, int(self.spoken_seconds * 2))} words, to fit within "
+                    f"{self.spoken_seconds:g} seconds."
+                    if self.spoken_seconds is not None
+                    else ""
+                )
             ),
             history=self.history,
         )

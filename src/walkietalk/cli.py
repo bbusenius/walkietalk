@@ -3,11 +3,12 @@
 import argparse
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from .agent import AgentSession, open_agent
-from .audio import Playback, read_wav
+from .audio import Playback, Wav, read_wav
 from .capture import capture_from_device, capture_from_wav
 from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
@@ -16,12 +17,13 @@ from .session import handle_stop_signals, transmit, uninterrupted_cleanup
 from .shutdown import ShutdownSession
 from .stt import ensure_model, model_ready, model_size_bytes, open_stt
 from .term import capture_log, emit
+from .tts import open_tts, radio_wav, write_wav
 from .wake import ListeningSession
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="walkietalk: radio PTT, speech-to-text, wake gate, and text replies"
+        description="walkietalk: radio PTT, speech-to-text, wake gate, and optional spoken replies"
     )
     result.add_argument(
         "-c", "--config", type=Path, help="YAML config (required for hardware access)"
@@ -35,6 +37,11 @@ def parser() -> argparse.ArgumentParser:
     agent_check.add_argument(
         "text", nargs="?", default="Hello.", help="Traffic without a wake name"
     )
+    tts_check = commands.add_parser(
+        "tts-check", help="Create a speech WAV with selected TTS; no hardware"
+    )
+    tts_check.add_argument("text", help="Short text to turn into speech")
+    tts_check.add_argument("--output", required=True, type=Path, help="New WAV file to create")
     ptt = commands.add_parser("ptt", help="Brief talk-button test; dry run unless --transmit")
     ptt.add_argument(
         "--seconds", type=float, default=1, help="Pulse length, at most max_tx_seconds"
@@ -68,13 +75,16 @@ def parser() -> argparse.ArgumentParser:
     )
     talk = commands.add_parser(
         "talk",
-        help="Capture speech, apply the wake gate, and print an agent reply; never transmits",
+        help="Capture speech and print an agent reply; spoken radio reply only with --transmit",
     )
-    talk.add_argument("wav", nargs="?", type=Path, help="WAV to gate (no radio)")
+    talk.add_argument(
+        "--transmit", action="store_true", help="Synthesize and transmit replies; requires --config"
+    )
+    talk.add_argument("wav", nargs="?", type=Path, help="WAV to gate; no radio unless --transmit")
     talk.add_argument(
         "--capture",
         action="store_true",
-        help="Record from the pinned AIOC input; does not open PTT",
+        help="Record from the pinned AIOC input; replies transmit only with --transmit",
     )
     talk.add_argument(
         "--timeout",
@@ -126,13 +136,18 @@ def talk_command(args: argparse.Namespace) -> None:
         raise WalkietalkError("Use either a WAV file or --capture, not both")
     if not args.capture and args.wav is None:
         raise WalkietalkError("Pass a WAV file, or --capture to listen on the AIOC")
-    if args.capture and args.config is None:
+    if (args.capture or args.transmit) and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
     session = ListeningSession(config)
     shutdown = ShutdownSession(config)
     agent = open_agent(config)
-    conversation = AgentSession(config, agent)
+    spoken_seconds = config.max_tx_seconds - config.settle_seconds if args.transmit else None
+
+    def new_conversation(backend):
+        return AgentSession(config, backend, spoken_seconds=spoken_seconds)
+
+    conversation = new_conversation(agent)
     once = args.once or args.wav is not None
     if args.timeout is not None and not (args.capture and args.once):
         raise WalkietalkError(
@@ -141,14 +156,23 @@ def talk_command(args: argparse.Namespace) -> None:
     listener = open_stt(config)
     emit("status", f"Listener: {listener.label()}")
     emit("status", f"Agent: {agent.label()}")
+    voice = None
+    if args.transmit:
+        voice = open_tts(config)
+        voice.prepare()  # Missing engine/model fails before any agent request or serial open.
+        emit("status", f"Voice: {voice.label()}")
+        emit("status", "Radio replies enabled; PTT stays off until speech and playback are ready.")
+    if args.transmit and not args.capture:
+        preflight(config)
     if args.capture:
         wait = (
             seconds(args.timeout if args.timeout is not None else 60, "--timeout", maximum=300)
             if once
             else None
         )
-        preflight(config, require_serial=False)
-        emit("status", "Receive-only: PTT will not be opened.")
+        preflight(config, require_serial=args.transmit)
+        if not args.transmit:
+            emit("status", "Receive-only: PTT will not be opened.")
         emit("meter", f"Preparing {listener.label()}...")
         listener.prepare()
     if config.shutdown_enabled:
@@ -212,6 +236,7 @@ def talk_command(args: argparse.Namespace) -> None:
             # Eligibility is already decided using speech start time. Close the
             # old window while working; failure/interruption must not reopen it.
             session.close()
+            previous_history = conversation.history
             try:
                 answer = conversation.reply(decision.traffic)
             except (WalkietalkError, OSError) as exc:
@@ -220,10 +245,26 @@ def talk_command(args: argparse.Namespace) -> None:
                 emit("error", f"Agent failed: {exc}", file=sys.stderr)
                 # Keep completed pairs, but never resume a failed remote turn.
                 history = conversation.history
-                conversation = AgentSession(config, open_agent(config))
+                conversation = new_conversation(open_agent(config))
                 conversation.history = history
                 emit("status", "Still listening; say the wake phrase and try again.")
                 continue
+            if voice is not None:
+                try:
+                    emit("status", "Generating speech; PTT off...")
+                    speech = radio_wav(voice.synthesize(answer), spoken_seconds)
+                except (WalkietalkError, OSError) as exc:
+                    # A completed model reply that was never spoken is not radio history.
+                    conversation = new_conversation(open_agent(config))
+                    conversation.history = previous_history
+                    if once:
+                        raise
+                    emit("error", f"Speech failed: {exc}", file=sys.stderr)
+                    emit("status", "Still listening; say the wake phrase and try again.")
+                    continue
+                # Capture has closed before STT. It stays closed throughout synthesis/TX.
+                # Hardware errors stop the loop after cleanup instead of retrying hardware.
+                transmit_speech(speech, config)
             emit("reply", f"Reply: {answer}")
             session.complete_turn()
             emit("status", session.status_line())
@@ -231,6 +272,30 @@ def talk_command(args: argparse.Namespace) -> None:
             emit("ignored", decision.message)
         if once:
             return
+
+
+def transmit_speech(speech: Wav, config: Config) -> None:
+    """Prepare the isolated worker first, then key/play/unkey in the parent."""
+    speech = radio_wav(speech, config.max_tx_seconds - config.settle_seconds)
+    with tempfile.TemporaryDirectory(prefix="walkietalk-reply-") as directory:
+        path = Path(directory) / "reply.wav"
+        write_wav(path, speech)
+        playback = Playback(
+            path, config.output_device, config.gain, config.max_tx_seconds - config.settle_seconds
+        )
+        try:
+            playback.prepare()
+            ptt = SerialPTT(config.serial_port, config.line)
+
+            def action(deadline: float) -> None:
+                time.sleep(min(config.settle_seconds, max(0, deadline - time.monotonic())))
+                playback.play(deadline)
+
+            transmit(ptt, action, config.max_tx_seconds)
+        finally:
+            with uninterrupted_cleanup():
+                playback.close()  # transmit has already attempted release before worker cleanup.
+    emit("status", "Spoken reply finished; PTT released.")
 
 
 def models_command(args: argparse.Namespace) -> None:
@@ -242,6 +307,22 @@ def models_command(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.command == "tts-check":
+        config = load_config(args.config) if args.config else Config()
+        if args.output.exists():
+            raise WalkietalkError("Output file already exists; choose a new --output path")
+        voice = open_tts(config)
+        emit("status", f"Voice: {voice.label()}")
+        speech = radio_wav(
+            voice.synthesize(args.text), config.max_tx_seconds - config.settle_seconds
+        )
+        write_wav(args.output, speech)
+        emit(
+            "status",
+            f"Speech WAV: {args.output}; {speech.rate} Hz, mono PCM16, {speech.duration:.3f}s. "
+            "No hardware opened.",
+        )
+        return
     if args.command == "agent-check":
         config = load_config(args.config) if args.config else Config()
         agent = open_agent(config)
@@ -295,6 +376,10 @@ def run(args: argparse.Namespace) -> None:
             status = f"XAI_API_KEY {key}; billed API, not SuperGrok Plus"
         print(f"STT: {listener.label()}; {status}", flush=True)
         print(f"Agent: {open_agent(config).label()}; text replies only", flush=True)
+        print(
+            f"Voice: {open_tts(config).label()}; used only by tts-check or talk --transmit",
+            flush=True,
+        )
         print(ListeningSession(config).status_line(), flush=True)
         print("Device names and serial permissions OK. No port opened; no transmission.")
         return
@@ -347,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         if args.command in {"listen", "talk"}:
             emit("warn", "Stopped; capture closed.", file=sys.stderr)
-        elif args.command in {"models", "agent-check"}:
+        elif args.command in {"models", "agent-check", "tts-check"}:
             emit("warn", "Stopped.", file=sys.stderr)
         else:
             emit("warn", "Stopped; PTT cleanup attempted.", file=sys.stderr)
