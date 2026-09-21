@@ -4,8 +4,8 @@ This is a user-requested addition within phase 5. Automated checks pass.
 Brad confirms he tested everything, including the five-item follow-up checklist
 and the updated shutdown behavior. Both combined and separate transmissions
 are accepted. These are Brad's observations, separate from automated results.
-The bridge remains
-receive-only: watch the gateway TX light stay off throughout.
+Receive-only `talk --capture` keeps the gateway TX light off. Spoken shutdown
+confirmation requires `talk --capture --transmit`.
 
 ## What the timers mean
 
@@ -17,6 +17,7 @@ receive-only: watch the gateway TX light stay off throughout.
 | `stt.timeout_seconds` | Deadline for transcribing captured speech. |
 | `agent.timeout_seconds` | Deadline for producing an answer, independent of answer length and reasoning effort. |
 | `shutdown.confirmation_seconds` | Time to start the separate confirmation utterance after shutdown is armed. Default 30 seconds; configurable above zero through 300. |
+| `shutdown.confirmation_phrase` | Spoken radio line after the code is accepted. Required when shutdown is enabled. Played only with `talk --transmit`. |
 | `talk --capture --once --timeout 5` | One-shot diagnostic: wait up to five seconds for speech. Default 60; maximum 300. |
 
 Continuous mode rejects an explicit `--timeout` with a usage error explaining
@@ -37,6 +38,7 @@ shutdown:
   code: "confirm alpha nine"
   code_aliases: ["confirm alpha 9"]
   confirmation_seconds: 30
+  confirmation_phrase: "Walkietalk shutting down."
 ```
 
 The arming phrase and code must differ from each other and the wake phrase.
@@ -48,6 +50,10 @@ same utterance: “stop listening, confirm alpha nine” shuts down immediately.
 Alternatively, “stop listening” alone arms shutdown, then “confirm alpha nine”
 within the confirmation window completes it. The combined form does not require
 prior arming; a previous expired window does not prevent a new complete command.
+With `talk --capture --transmit`, the configured `confirmation_phrase` is spoken
+on the radio after the code is accepted, then the program exits. Receive-only
+mode prints the confirmation and exits without keying. A failed spoken
+confirmation still stops walkietalk after PTT is released.
 
 ## Exact family demonstration checklist
 
@@ -109,7 +115,12 @@ If using Hermes, first source `. ./.env.hermes.local` in this shell.
 
   Expected: no-speech error after about five seconds, status `1`. This finite
   diagnostic is separate from everyday continuous listening.
-- [x] **Gateway TX light stayed off** during all steps.
+- [x] **Gateway TX light stayed off** during the receive-only steps above.
+- [x] **On-air confirmation:** restart with `talk --capture --transmit`. Say the
+      phrase and code together. Expect the configured `confirmation_phrase` on
+      the walkie, then TX off and a normal exit. A failed spoken confirmation
+      still stops the program after PTT is released. Brad confirms the spoken
+      confirmation works as expected.
 
 Explain: “The bridge stays ready while we're outside. After a pause, we say its
 name again. Our two-part shutdown command tells the program to close safely.”

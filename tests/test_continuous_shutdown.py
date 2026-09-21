@@ -29,6 +29,7 @@ def config():
         shutdown_code="confirm alpha nine",
         shutdown_code_aliases=("confirm alpha 9",),
         shutdown_confirmation_seconds=30,
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
     )
 
 
@@ -181,6 +182,7 @@ def test_continuous_shutdown_exits_successfully_without_agent_or_code_logging(
     assert "Shutdown confirmed" in output.out
     assert "confirm alpha nine" not in output.out + output.err
     assert "Reply:" not in output.out
+    assert "Speaking shutdown confirmation" not in output.out
 
 
 @pytest.mark.parametrize(
@@ -348,11 +350,20 @@ def test_timeout_in_continuous_mode_has_clear_usage_error(config, monkeypatch, c
         ("phrase", "charlotte"),
         ("code", "bridge shutdown"),
         ("code_aliases", ["bridge shutdown"]),
+        ("confirmation_phrase", ""),
+        ("confirmation_phrase", "!!!"),
+        ("confirmation_phrase", "bridge shutdown"),
+        ("confirmation_phrase", "charlotte"),
     ],
 )
 def test_invalid_shutdown_configuration(tmp_path, field, value):
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["shutdown"].update(enabled=True, phrase="bridge shutdown", code="confirm alpha nine")
+    data["shutdown"].update(
+        enabled=True,
+        phrase="bridge shutdown",
+        code="confirm alpha nine",
+        confirmation_phrase="Walkietalk shutting down.",
+    )
     data["shutdown"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -394,9 +405,20 @@ def test_unbounded_device_capture_and_interrupt_close_stream(monkeypatch, interr
     assert any("no idle time limit" in line for line in logs)
 
 
+def test_enabled_shutdown_requires_confirmation_phrase(tmp_path):
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["shutdown"].update(enabled=True, phrase="bridge shutdown", code="confirm alpha nine")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(WalkietalkError, match="confirmation_phrase"):
+        load_config(path)
+
+
 def test_shutdown_section_is_required_and_disabled_blank_example_loads(tmp_path):
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    assert not load_config(Path("config.example.yaml")).shutdown_enabled
+    example = load_config(Path("config.example.yaml"))
+    assert not example.shutdown_enabled
+    assert example.shutdown_confirmation_phrase == ""
     del data["shutdown"]
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

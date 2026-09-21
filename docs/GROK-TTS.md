@@ -27,6 +27,7 @@ tts:
   grok_language: "en"
   grok_speed: 1.0
   grok_api_key_env: "XAI_API_KEY"
+  normalize: "off"
 ```
 
 - `grok_voice`: built-in voice ID, such as `eve` or `ara`, or an available custom
@@ -35,6 +36,9 @@ tts:
 - `grok_language`: a supported language code such as `en`, or `auto`.
 - `grok_speed`: `0.7` through `1.5`. This changes speaking speed, independently
   of `audio.gain`. The finished audio must still fit the radio duration limit.
+- `normalize`: `off` keeps Grok's returned level; `peak` scales each synthesized
+  reply to fill the WAV before `audio.gain`. With `peak`, start `audio.gain` at
+  `1.0`. This does not change `play` of an existing file.
 - `timeout_seconds`: whole synthesis deadline, including authentication refresh,
   connection, response download, and validation. A supervised worker also bounds
   blocked DNS/network shutdown. It has no radio or playback responsibilities.

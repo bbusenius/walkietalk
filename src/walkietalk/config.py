@@ -10,6 +10,7 @@ import yaml
 
 STT_MODELS = ("tiny", "base")
 STT_BACKENDS = ("faster-whisper", "grok", "grok_api")
+TTS_NORMALIZE = ("off", "peak")
 AGENT_BACKENDS = ("stub", "hermes", "codex", "grok", "claude", "claude_api")
 AGENT_BACKEND_ERROR = (
     "agent.backend must be stub, hermes, codex, grok, claude, or claude_api; "
@@ -101,6 +102,7 @@ class Config:
     shutdown_code: str = ""
     shutdown_code_aliases: tuple[str, ...] = ()
     shutdown_confirmation_seconds: float = 30
+    shutdown_confirmation_phrase: str = ""
     tts_backend: str = "piper"
     piper_executable: str = "piper"
     piper_model: str = "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
@@ -109,6 +111,7 @@ class Config:
     grok_tts_language: str = "en"
     grok_tts_speed: float = 1
     grok_tts_api_key_env: str = "XAI_API_KEY"
+    tts_normalize: str = "off"
 
 
 def load_config(path: Path) -> Config:
@@ -131,6 +134,7 @@ def load_config(path: Path) -> Config:
             "grok_language",
             "grok_speed",
             "grok_api_key_env",
+            "normalize",
         },
         "listening": {"mode", "conversation_timeout_seconds"},
         "wake": {"primary", "aliases"},
@@ -141,6 +145,7 @@ def load_config(path: Path) -> Config:
             "code",
             "code_aliases",
             "confirmation_seconds",
+            "confirmation_phrase",
         },
         "agent": {
             "backend",
@@ -188,6 +193,9 @@ def load_config(path: Path) -> Config:
         raise WalkietalkError("stt.model must be tiny or base")
     if data["tts"]["backend"] not in ("piper", "grok", "grok_api"):
         raise WalkietalkError("tts.backend must be piper, grok, or grok_api; no fallback")
+    normalize = data["tts"]["normalize"]
+    if normalize not in TTS_NORMALIZE:
+        raise WalkietalkError("tts.normalize must be off or peak")
     voice = data["tts"]["grok_voice"]
     language = data["tts"]["grok_language"]
     key_env = data["tts"]["grok_api_key_env"]
@@ -308,7 +316,7 @@ def load_config(path: Path) -> Config:
     shutdown = data["shutdown"]
     if not isinstance(shutdown["enabled"], bool):
         raise WalkietalkError("shutdown.enabled must be true or false")
-    for field in ("phrase", "code"):
+    for field in ("phrase", "code", "confirmation_phrase"):
         value = shutdown[field]
         if (
             not isinstance(value, str)
@@ -319,6 +327,8 @@ def load_config(path: Path) -> Config:
             raise WalkietalkError(
                 f"shutdown.{field} must be text with words, at most 200 characters"
             )
+        if field == "confirmation_phrase":
+            continue
         variants = shutdown[f"{field}_aliases"]
         if not isinstance(variants, list) or any(
             not isinstance(item, str)
@@ -329,8 +339,14 @@ def load_config(path: Path) -> Config:
         ):
             raise WalkietalkError(f"shutdown.{field}_aliases must be a list of non-empty phrases")
     if shutdown["enabled"]:
-        if not all(normalize_command(shutdown[field]) for field in ("phrase", "code")):
-            raise WalkietalkError("Set shutdown.phrase and shutdown.code before enabling shutdown")
+        if not all(
+            normalize_command(shutdown[field])
+            for field in ("phrase", "code", "confirmation_phrase")
+        ):
+            raise WalkietalkError(
+                "Set shutdown.phrase, shutdown.code, and shutdown.confirmation_phrase "
+                "before enabling shutdown"
+            )
 
         def control_variants(values):
             return {
@@ -341,9 +357,12 @@ def load_config(path: Path) -> Config:
 
         arm = control_variants((shutdown["phrase"], *shutdown["phrase_aliases"]))
         codes = control_variants((shutdown["code"], *shutdown["code_aliases"]))
+        spoken = control_variants((shutdown["confirmation_phrase"],))
         wakes = {normalize_command(v) for v in (primary, *aliases)}
-        if arm & codes or (arm | codes) & wakes:
-            raise WalkietalkError("Shutdown phrases, codes, and wake names must be distinct")
+        if arm & codes or spoken & (arm | codes) or (arm | codes | spoken) & wakes:
+            raise WalkietalkError(
+                "Shutdown phrases, codes, confirmation phrase, and wake names must be distinct"
+            )
     confirmation = seconds(
         shutdown["confirmation_seconds"], "shutdown.confirmation_seconds", maximum=300
     )
@@ -410,6 +429,7 @@ def load_config(path: Path) -> Config:
         shutdown_code=shutdown["code"].strip(),
         shutdown_code_aliases=tuple(v.strip() for v in shutdown["code_aliases"]),
         shutdown_confirmation_seconds=confirmation,
+        shutdown_confirmation_phrase=shutdown["confirmation_phrase"].strip(),
         tts_backend=data["tts"]["backend"],
         piper_executable=piper_executable,
         piper_model=str(model_path),
@@ -420,4 +440,5 @@ def load_config(path: Path) -> Config:
         grok_tts_language=language,
         grok_tts_speed=speed,
         grok_tts_api_key_env=key_env,
+        tts_normalize=normalize,
     )

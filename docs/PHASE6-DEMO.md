@@ -50,6 +50,7 @@ tts:
   grok_language: "en"
   grok_speed: 1.0
   grok_api_key_env: "XAI_API_KEY"
+  normalize: "off"
 ```
 
 Keep both the `.onnx` model and its `.onnx.json` sidecar. Relative model paths
@@ -70,8 +71,13 @@ Playback volume is controlled by `audio.gain`, for both Piper replies and `play`
 Any positive finite gain is accepted: `1.0` preserves the original amplitude;
 try `1.5` or `2.0` for amplification. Above `1.0`, peaks may clip and sound quality
 may degrade. Samples are clamped to the PCM range instead of overflowing; this
-does not remove clipping distortion. Choose the level you prefer and restart
-the command after changing config. Capture and STT sensitivity are unaffected.
+does not remove clipping distortion.
+
+`tts.normalize` is `off` or `peak`. `off` keeps each engine's own level. `peak`
+scales a synthesized reply so its loudest sample fills the WAV, which can make
+a quieter Grok file as hot as Piper before `audio.gain`. With `peak`, start gain
+at `1.0`. `play` of an existing file is unchanged. Restart after editing config.
+Capture and STT sensitivity are unaffected.
 
 Brad confirms that spoken replies work well. Matching Amy's volume to regular
 radio speech is still being adjusted; amplified audio needs a listening check.
@@ -201,11 +207,13 @@ current settings. If those settings change, use the new phrases.
    Repeat the real WAV transmission from step 2 and press Ctrl+C while Amy is
    speaking. Expect TX off immediately and a stopped/cleanup message. Then start
    continuous spoken mode again, wait until listening, and say “Picard epsilon
-   five, initiate self-destruct” in one transmission. Expect confirmation and
-   program exit with TX off and no agent answer. Restart and verify the two-part
-   form too: “Picard epsilon five”, then “initiate self-destruct” within 30 seconds.
-   Capture is paused while the bridge is answering, so radio shutdown is accepted
-   during listening; Ctrl+C also works during agent work, synthesis, or playback.
+   five, initiate self-destruct” in one transmission. Expect the configured
+   confirmation phrase on the walkie, then TX off, no agent answer, and
+   program exit. Restart and verify the two-part form too: “Picard epsilon
+   five”, then “initiate self-destruct” within 30 seconds; the confirmation
+   phrase plays only after the code. Capture is paused while the bridge is
+   answering, so radio shutdown is accepted during listening; Ctrl+C also works
+   during agent work, synthesis, playback, or the shutdown confirmation.
 
 8. **Explain it together.**
 

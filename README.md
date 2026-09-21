@@ -23,7 +23,9 @@ Brad also confirms both Claude routes work as expected. Phase 5 is merged in
 demonstrations of Amy and Grok speech passed; Brad authorized publication.
 Phase 6 is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6),
 merge commit `ab37520`.
-The latest automated phase 6 checks passed all 549 tests, lint, and formatting.
+Spoken shutdown confirmation and optional `tts.normalize: peak` are in; Brad
+confirms both work. The latest automated checks passed all 561 tests, lint, and
+formatting.
 See [Claude setup and demos](docs/CLAUDE.md).
 The [Hermes/Codex STT capability review](docs/STT-CAPABILITIES.md) found no ready
 transcription endpoint in the inspected interfaces. Brad chose to keep the
@@ -106,6 +108,7 @@ tts:
   grok_language: "en"
   grok_speed: 1.0
   grok_api_key_env: "XAI_API_KEY"
+  normalize: "off"
 ```
 
 The matching `.onnx.json` file must stay alongside the model. Relative paths are
@@ -158,9 +161,14 @@ sent to the radio. See the [AIOC firmware documentation](https://github.com/skue
 `audio.gain` controls outgoing WAV playback, including every voice backend.
 Use any positive finite number: `0.5` halves the signal amplitude, `1.0` keeps
 the original level, and `1.5` amplifies it. Values above `1.0` can clip peaks
-and degrade sound quality; samples are clamped to prevent overflow. Choose the
-volume you prefer and restart Walkietalk after editing config. Capture and STT
-are unaffected.
+and degrade sound quality; samples are clamped to prevent overflow.
+
+`tts.normalize` is `off` (default: keep the engine's own level) or `peak`
+(scale each synthesized reply so its loudest sample fills the WAV). Piper and
+Grok can return different levels; `peak` makes them use the same digital
+headroom. `audio.gain` still applies afterward, so with `peak` start gain at
+`1.0` or you will clip immediately. `play` of an existing file is unchanged.
+Restart after editing config. Capture and STT are unaffected.
 `radio.max_tx_seconds` defaults to 10 and cannot exceed 30.
 `radio.settle_seconds` defaults to 0.2, allowing PTT to settle before playback.
 The WAV plus settle time must fit the transmit limit.
@@ -210,6 +218,7 @@ shutdown:
   code: ""
   code_aliases: []
   confirmation_seconds: 30
+  confirmation_phrase: ""
 ```
 
 `stub`, `hermes`, `codex`, `grok`, `claude`, and `claude_api` are implemented.
@@ -247,22 +256,26 @@ is accepted only with `--once` for live `talk` (default 60 seconds, maximum 300)
 `listen` retains its separate bounded wait, and each utterance retains its
 `vad.max_utterance_seconds` recording limit.
 
-Remote shutdown is optional. Set `shutdown.enabled: true`, a `phrase`, and a
-different `code` in your local config. Say the phrase followed by the code in
-one utterance, or say the phrase alone, release the walkie's PTT, then send the
-code within `confirmation_seconds` (default 30, maximum 300). This closes
-walkietalk normally; it does not delete
-anything or shut down the computer. The ordinary wake phrase is optional for
-these controls. Case and punctuation are ignored; spelling differences need
-explicit aliases. A wrong or empty next utterance cancels, expiry cancels, and
-the code alone cannot shut down the bridge unless shutdown is already armed.
+Remote shutdown is optional. Set `shutdown.enabled: true`, a `phrase`, a
+different `code`, and `confirmation_phrase` in your local config. Say the phrase followed
+by the code in one utterance, or say the phrase alone, release the walkie's PTT,
+then send the code within `confirmation_seconds` (default 30, maximum 300).
+This closes walkietalk normally; it does not delete anything or shut down the
+computer. The ordinary wake phrase is optional for these controls. Case and
+punctuation are ignored; spelling differences need explicit aliases. A wrong or
+empty next utterance cancels, expiry cancels, and the code alone cannot shut
+down the bridge unless shutdown is already armed.
 
-Controls are handled before the agent and omitted from transcript logs; a
-pending confirmation is never forwarded to the agent. STT still receives the
-audio, so remote STT must be working. Anyone listening on the radio can hear the
-code. Capture currently pauses during transcription and an agent reply: send
-controls while the bridge is listening. There is no on-air acknowledgement in
-phase 5. See the [complete continuous-listening and shutdown demonstration](docs/CONTINUOUS.md).
+After the code is accepted, `talk --capture --transmit` speaks `confirmation_phrase` with
+the selected voice, then exits. Receive-only `talk --capture` still prints the
+confirmation and exits without keying. If speech generation or playback fails,
+the error is local, PTT is released, and the program still stops. Controls are
+handled before the agent and omitted from transcript logs; a pending
+confirmation is never forwarded to the agent. STT still receives the audio, so
+remote STT must be working. Anyone listening on the radio can hear the code.
+Capture currently pauses during transcription and an agent reply: send controls
+while the bridge is listening. See the
+[complete continuous-listening and shutdown demonstration](docs/CONTINUOUS.md).
 
 ### Reasoning effort for radio replies
 
