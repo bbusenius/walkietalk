@@ -218,7 +218,7 @@ def test_wake_phrase_wake_only_does_not_open_window(tmp_path, config_data):
     clock = FakeClock(0)
     session = session_for(tmp_path, config_data, mode="wake_phrase", timeout=10, clock=clock)
     check_in = session.decide("charlotte", 0)
-    assert check_in.kind == "empty"
+    assert check_in.kind == "wake_only"
     session.complete_turn()
     assert session.state() == "waiting_for_wake"
     assert not session.decide("turn on the light", 1).accepted

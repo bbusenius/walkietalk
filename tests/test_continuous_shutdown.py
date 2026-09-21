@@ -354,6 +354,11 @@ def test_timeout_in_continuous_mode_has_clear_usage_error(config, monkeypatch, c
         ("confirmation_phrase", "!!!"),
         ("confirmation_phrase", "bridge shutdown"),
         ("confirmation_phrase", "charlotte"),
+        ("arm_confirmation_phrase", ""),
+        ("arm_confirmation_phrase", "!!!"),
+        ("arm_confirmation_phrase", "bridge shutdown"),
+        ("arm_confirmation_phrase", "charlotte"),
+        ("arm_confirmation_phrase", "Walkietalk shutting down."),
     ],
 )
 def test_invalid_shutdown_configuration(tmp_path, field, value):
@@ -362,6 +367,7 @@ def test_invalid_shutdown_configuration(tmp_path, field, value):
         enabled=True,
         phrase="bridge shutdown",
         code="confirm alpha nine",
+        arm_confirmation_phrase="Shutdown armed.",
         confirmation_phrase="Walkietalk shutting down.",
     )
     data["shutdown"][field] = value
@@ -407,10 +413,38 @@ def test_unbounded_device_capture_and_interrupt_close_stream(monkeypatch, interr
 
 def test_enabled_shutdown_requires_confirmation_phrase(tmp_path):
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["shutdown"].update(enabled=True, phrase="bridge shutdown", code="confirm alpha nine")
+    data["shutdown"].update(
+        enabled=True,
+        phrase="bridge shutdown",
+        code="confirm alpha nine",
+        arm_confirmation_phrase="Shutdown armed.",
+    )
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
     with pytest.raises(WalkietalkError, match="confirmation_phrase"):
+        load_config(path)
+
+
+def test_enabled_shutdown_requires_arm_confirmation_phrase(tmp_path):
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["shutdown"].update(
+        enabled=True,
+        phrase="bridge shutdown",
+        code="confirm alpha nine",
+        confirmation_phrase="Walkietalk shutting down.",
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(WalkietalkError, match="arm_confirmation_phrase"):
+        load_config(path)
+
+
+def test_wake_confirmation_must_differ_from_the_wake_name(tmp_path):
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["wake"]["confirmation_phrase"] = "Charlotte"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(WalkietalkError, match="wake.confirmation_phrase"):
         load_config(path)
 
 
@@ -419,6 +453,8 @@ def test_shutdown_section_is_required_and_disabled_blank_example_loads(tmp_path)
     example = load_config(Path("config.example.yaml"))
     assert not example.shutdown_enabled
     assert example.shutdown_confirmation_phrase == ""
+    assert example.shutdown_arm_confirmation_phrase == ""
+    assert example.wake_confirmation_phrase == ""
     del data["shutdown"]
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

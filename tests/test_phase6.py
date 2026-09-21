@@ -76,6 +76,7 @@ def test_confirmed_shutdown_speaks_confirmation_then_exits(bridge, monkeypatch, 
         shutdown_enabled=True,
         shutdown_phrase="stop bridge",
         shutdown_code="confirm stop",
+        shutdown_arm_confirmation_phrase="Shutdown armed.",
         shutdown_confirmation_phrase="Walkietalk shutting down.",
     )
     played = []
@@ -136,6 +137,105 @@ def test_armed_shutdown_does_not_speak_confirmation(bridge, monkeypatch):
     listener.transcribe.return_value = "stop bridge"
     assert cli.main([*ARGS, "--once"]) == 0
     voice.synthesize.assert_not_called()
+    backend.reply.assert_not_called()
+
+
+def test_armed_shutdown_speaks_phrase_confirmation_and_stays_available(bridge, monkeypatch):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_arm_confirmation_phrase="Shutdown armed.",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    listener.transcribe.side_effect = ["stop bridge", "confirm stop"]
+    started = time.monotonic()
+    captures = iter([utterance(started), utterance(started + 1)])
+
+    def capture(*a, **k):
+        try:
+            return next(captures)
+        except StopIteration:
+            pytest.fail("continued listening after confirmed shutdown")
+
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    monkeypatch.setattr(cli, "transmit_speech", lambda *a, **k: None)
+    assert cli.main(["-c", "unused.yaml", "talk", "--capture", "--transmit"]) == 0
+    assert [call.args[0] for call in voice.synthesize.call_args_list] == [
+        "Shutdown armed.",
+        "Walkietalk shutting down.",
+    ]
+    backend.reply.assert_not_called()
+
+
+def test_failed_phrase_confirmation_stays_armed_for_the_code(bridge, monkeypatch, capsys):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_arm_confirmation_phrase="Shutdown armed.",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    listener.transcribe.side_effect = ["stop bridge", "confirm stop"]
+    started = time.monotonic()
+    captures = iter([utterance(started), utterance(started + 1)])
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "capture_from_device", lambda *a, **k: next(captures))
+    monkeypatch.setattr(cli, "transmit_speech", lambda *a, **k: None)
+    voice.synthesize.side_effect = [WalkietalkError("Piper timed out"), SPEECH]
+    assert cli.main(["-c", "unused.yaml", "talk", "--capture", "--transmit"]) == 0
+    output = capsys.readouterr()
+    assert "Shutdown phrase confirmation failed" in output.err
+    assert "Still armed" in output.out
+    assert [call.args[0] for call in voice.synthesize.call_args_list] == [
+        "Shutdown armed.",
+        "Walkietalk shutting down.",
+    ]
+    backend.reply.assert_not_called()
+
+
+def test_wake_only_speaks_confirmation_without_calling_the_agent(bridge, monkeypatch):
+    config, backend, voice, listener = bridge
+    config = replace(config, wake_confirmation_phrase="Go ahead.")
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "transmit_speech", lambda *a, **k: None)
+    listener.transcribe.return_value = "charlotte"
+    assert cli.main([*ARGS, "--once"]) == 0
+    voice.synthesize.assert_called_once_with("Go ahead.")
+    backend.reply.assert_not_called()
+
+
+def test_wake_plus_traffic_does_not_speak_the_wake_confirmation(bridge, monkeypatch):
+    config, backend, voice, listener = bridge
+    config = replace(config, wake_confirmation_phrase="Go ahead.")
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "transmit_speech", lambda *a, **k: None)
+    listener.transcribe.return_value = "charlotte what is rain"
+    assert cli.main([*ARGS, "--once"]) == 0
+    voice.synthesize.assert_called_once_with("Rain falls from clouds.")
+    backend.reply.assert_called_once()
+
+
+def test_acknowledgements_stay_silent_without_transmit(bridge, monkeypatch):
+    config, backend, voice, listener = bridge
+    config = replace(
+        config,
+        wake_confirmation_phrase="Go ahead.",
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_arm_confirmation_phrase="Shutdown armed.",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "open_tts", lambda *a: pytest.fail("opened voice"))
+    listener.transcribe.return_value = "charlotte"
+    assert cli.main(["-c", "unused.yaml", "talk", "--capture", "--once"]) == 0
     backend.reply.assert_not_called()
 
 

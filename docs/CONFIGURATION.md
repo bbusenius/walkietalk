@@ -106,6 +106,9 @@ Choose your own names; no agent identity is hardcoded.
   in the same utterance. A phrase-only utterance does not open a follow-up window.
 - `listening.mode: conversation`: the wake phrase opens a follow-up window.
   Phrase-only also opens it; unaddressed follow-ups within the window are accepted.
+- `wake.confirmation_phrase`: spoken when the wake phrase arrives with no traffic.
+  Empty leaves that step silent. With `talk --transmit`, it is spoken before the
+  follow-up window starts. Receive-only mode prints the wake status and does not key.
 - `listening.conversation_timeout_seconds`: determines when addressing is needed
   again. It does not end the program. After a successful reply, the window is
   refreshed after printing in receive-only mode, or after playback/unkey and the
@@ -182,9 +185,14 @@ phrase then the code within the confirmation window. The ordinary wake phrase
 is optional. The code alone does not stop an unarmed bridge; a wrong next
 utterance or expiry cancels arming. STT mistakes require explicit aliases.
 
-`confirmation_phrase`, if nonempty, is spoken before exit only when running
-with `--transmit`; receive-only mode prints confirmation. A synthesis failure
-still stops the program with a local error. Shutdown closes Walkietalk; it does
+`arm_confirmation_phrase` is spoken when the phrase arrives alone and arms
+shutdown. `confirmation_phrase` is spoken after the code is accepted, including
+when the phrase and code arrive in one transmission. Both are required when
+shutdown is enabled, and they must differ from each other, from the phrase and
+code, and from the wake names. They are spoken only with `--transmit`.
+Receive-only mode prints the status and does not key. A failed phrase
+acknowledgement leaves shutdown armed. A failed code confirmation still stops
+the program with a local error. Shutdown closes Walkietalk; it does
 not delete files or shut down the computer. Anyone monitoring the radio can
 hear the phrase/code, so this is a convenience control rather than a security
 boundary. Send controls while the bridge is listening; capture pauses during

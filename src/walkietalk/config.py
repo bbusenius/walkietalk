@@ -83,6 +83,7 @@ class Config:
     conversation_timeout_seconds: float = 60
     wake_primary: str = "charlotte"
     wake_aliases: tuple[str, ...] = ()
+    wake_confirmation_phrase: str = ""
     agent_backend: str = "stub"
     agent_max_reply_chars: int = 600
     agent_history_turns: int = 8
@@ -107,6 +108,7 @@ class Config:
     shutdown_code: str = ""
     shutdown_code_aliases: tuple[str, ...] = ()
     shutdown_confirmation_seconds: float = 30
+    shutdown_arm_confirmation_phrase: str = ""
     shutdown_confirmation_phrase: str = ""
     tts_backend: str = "piper"
     piper_executable: str = "piper"
@@ -153,7 +155,7 @@ def load_config(path: Path) -> Config:
             "normalize",
         },
         "listening": {"mode", "conversation_timeout_seconds"},
-        "wake": {"primary", "aliases"},
+        "wake": {"primary", "aliases", "confirmation_phrase"},
         "shutdown": {
             "enabled",
             "phrase",
@@ -161,6 +163,7 @@ def load_config(path: Path) -> Config:
             "code",
             "code_aliases",
             "confirmation_seconds",
+            "arm_confirmation_phrase",
             "confirmation_phrase",
         },
         "agent": {
@@ -333,7 +336,17 @@ def load_config(path: Path) -> Config:
     shutdown = data["shutdown"]
     if not isinstance(shutdown["enabled"], bool):
         raise WalkietalkError("shutdown.enabled must be true or false")
-    for field in ("phrase", "code", "confirmation_phrase"):
+    wake_ack = data["wake"]["confirmation_phrase"]
+    if (
+        not isinstance(wake_ack, str)
+        or len(wake_ack) > 200
+        or any(not char.isprintable() for char in wake_ack)
+        or (wake_ack and not normalize_command(wake_ack))
+    ):
+        raise WalkietalkError(
+            "wake.confirmation_phrase must be empty or text with words, at most 200 characters"
+        )
+    for field in ("phrase", "code", "arm_confirmation_phrase", "confirmation_phrase"):
         value = shutdown[field]
         if (
             not isinstance(value, str)
@@ -344,7 +357,7 @@ def load_config(path: Path) -> Config:
             raise WalkietalkError(
                 f"shutdown.{field} must be text with words, at most 200 characters"
             )
-        if field == "confirmation_phrase":
+        if field in ("confirmation_phrase", "arm_confirmation_phrase"):
             continue
         variants = shutdown[f"{field}_aliases"]
         if not isinstance(variants, list) or any(
@@ -355,14 +368,28 @@ def load_config(path: Path) -> Config:
             for item in variants
         ):
             raise WalkietalkError(f"shutdown.{field}_aliases must be a list of non-empty phrases")
+    wakes = {normalize_command(v) for v in (primary, *aliases)}
+    if normalize_command(wake_ack) in wakes:
+        raise WalkietalkError("wake.confirmation_phrase must differ from the wake names")
     if shutdown["enabled"]:
         if not all(
             normalize_command(shutdown[field])
-            for field in ("phrase", "code", "confirmation_phrase")
+            for field in (
+                "phrase",
+                "code",
+                "arm_confirmation_phrase",
+                "confirmation_phrase",
+            )
         ):
             raise WalkietalkError(
-                "Set shutdown.phrase, shutdown.code, and shutdown.confirmation_phrase "
-                "before enabling shutdown"
+                "Set shutdown.phrase, shutdown.code, shutdown.arm_confirmation_phrase, "
+                "and shutdown.confirmation_phrase before enabling shutdown"
+            )
+        if normalize_command(shutdown["arm_confirmation_phrase"]) == normalize_command(
+            shutdown["confirmation_phrase"]
+        ):
+            raise WalkietalkError(
+                "shutdown.arm_confirmation_phrase and shutdown.confirmation_phrase must be distinct"
             )
 
         def control_variants(values):
@@ -374,11 +401,16 @@ def load_config(path: Path) -> Config:
 
         arm = control_variants((shutdown["phrase"], *shutdown["phrase_aliases"]))
         codes = control_variants((shutdown["code"], *shutdown["code_aliases"]))
-        spoken = control_variants((shutdown["confirmation_phrase"],))
-        wakes = {normalize_command(v) for v in (primary, *aliases)}
+        spoken = control_variants(
+            (
+                shutdown["arm_confirmation_phrase"],
+                shutdown["confirmation_phrase"],
+                wake_ack,
+            )
+        )
         if arm & codes or spoken & (arm | codes) or (arm | codes | spoken) & wakes:
             raise WalkietalkError(
-                "Shutdown phrases, codes, confirmation phrase, and wake names must be distinct"
+                "Shutdown phrases, codes, confirmation phrases, and wake names must be distinct"
             )
     confirmation = seconds(
         shutdown["confirmation_seconds"], "shutdown.confirmation_seconds", maximum=300
@@ -449,6 +481,7 @@ def load_config(path: Path) -> Config:
         ),
         wake_primary=primary.strip(),
         wake_aliases=tuple(alias.strip() for alias in aliases),
+        wake_confirmation_phrase=wake_ack.strip(),
         agent_backend=agent_backend,
         agent_max_reply_chars=positive_integer(
             data["agent"]["max_reply_chars"], "agent.max_reply_chars", maximum=2000
@@ -479,6 +512,7 @@ def load_config(path: Path) -> Config:
         shutdown_code=shutdown["code"].strip(),
         shutdown_code_aliases=tuple(v.strip() for v in shutdown["code_aliases"]),
         shutdown_confirmation_seconds=confirmation,
+        shutdown_arm_confirmation_phrase=shutdown["arm_confirmation_phrase"].strip(),
         shutdown_confirmation_phrase=shutdown["confirmation_phrase"].strip(),
         tts_backend=data["tts"]["backend"],
         piper_executable=piper_executable,
