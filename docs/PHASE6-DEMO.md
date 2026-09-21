@@ -2,7 +2,8 @@
 
 Phase 5 is merged in [PR #5](https://github.com/bbusenius/walkietalk/pull/5).
 Phase 6 family demonstrations of Piper (Amy) and Grok speech are accepted.
-Brad showed the girls and authorized publication. Automated checks and local
+Brad showed the girls and authorized publication in
+[PR #6](https://github.com/bbusenius/walkietalk/pull/6). Automated checks and local
 synthesis remain separate from those live radio observations.
 
 The bridge now has a `TtsBackend`: agent text goes to local Piper, which creates
