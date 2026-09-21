@@ -211,15 +211,12 @@ def talk_command(args: argparse.Namespace) -> None:
         emit("meter", f"Preparing {listener.label()}...")
         listener.prepare()
     if config.shutdown_enabled:
-        emit(
-            "status",
-            "Remote shutdown enabled; phrase and code together or in two transmissions."
-            + (
-                " After the code, the confirmation phrase is spoken before exit."
-                if args.transmit and config.shutdown_confirmation_phrase
-                else ""
-            ),
-        )
+        notice = "Remote shutdown enabled; phrase and code together or in two transmissions."
+        if args.transmit and config.shutdown_arm_confirmation_phrase:
+            notice += " The phrase alone is acknowledged on the radio."
+        if args.transmit and config.shutdown_confirmation_phrase:
+            notice += " After the code, the confirmation phrase is spoken before exit."
+        emit("status", notice)
     while True:
         emit("status", session.status_line())
 
@@ -262,6 +259,24 @@ def talk_command(args: argparse.Namespace) -> None:
             if control.kind == "confirmed":
                 speak_shutdown_confirmation(config, voice)
                 return
+            if control.kind == "armed":
+                spoken = acknowledge(
+                    config,
+                    voice,
+                    config.shutdown_arm_confirmation_phrase,
+                    preparing=(
+                        "Speaking shutdown phrase confirmation; PTT off until speech is ready..."
+                    ),
+                    failed="Shutdown phrase confirmation failed",
+                    finished="Shutdown phrase confirmation finished; PTT released.",
+                )
+                if spoken == "spoken":
+                    wait_post_tx_mute(config)
+                elif spoken == "failed":
+                    emit(
+                        "status",
+                        "Still armed; the phrase confirmation was not transmitted.",
+                    )
             if once:
                 return
             continue
@@ -274,6 +289,18 @@ def talk_command(args: argparse.Namespace) -> None:
         decision = session.decide(text, started)
         if decision.kind == "wake_only":
             emit("status", decision.message)
+            spoken = acknowledge(
+                config,
+                voice,
+                config.wake_confirmation_phrase,
+                preparing="Speaking wake confirmation; PTT off until speech is ready...",
+                failed="Wake confirmation failed",
+                finished="Wake confirmation finished; PTT released.",
+            )
+            if spoken == "spoken":
+                wait_post_tx_mute(config)
+            elif spoken == "failed":
+                emit("status", "Wake was received; the confirmation was not transmitted.")
             session.complete_turn()
             emit("status", session.status_line())
         elif decision.accepted:
@@ -341,20 +368,38 @@ def wait_post_tx_mute(config: Config) -> None:
     emit("status", "Mute ended; listening.")
 
 
-def speak_shutdown_confirmation(config: Config, voice) -> None:
-    """Speak the configured confirmation phrase, then always stop. Failures stay local."""
-    text = config.shutdown_confirmation_phrase
+def acknowledge(
+    config: Config, voice, text: str, *, preparing: str, failed: str, finished: str
+) -> str:
+    """Speak one configured line. Return spoken, silent, or failed. Never raises."""
     if voice is None or not text:
-        return
+        return "silent"
     try:
-        emit("status", "Speaking shutdown confirmation; PTT off until speech is ready...")
+        emit("status", preparing)
         transmit_speech(
             radio_wav(voice.synthesize(text), config.max_tx_seconds - config.settle_seconds),
             config,
-            finished="Shutdown confirmation finished; PTT released.",
+            finished=finished,
         )
     except (WalkietalkError, OSError) as exc:
-        emit("error", f"Shutdown confirmation failed: {exc}", file=sys.stderr)
+        emit("error", f"{failed}: {exc}", file=sys.stderr)
+        return "failed"
+    return "spoken"
+
+
+def speak_shutdown_confirmation(config: Config, voice) -> None:
+    """Speak the code confirmation, then the caller stops. Failures stay local."""
+    if (
+        acknowledge(
+            config,
+            voice,
+            config.shutdown_confirmation_phrase,
+            preparing="Speaking shutdown confirmation; PTT off until speech is ready...",
+            failed="Shutdown confirmation failed",
+            finished="Shutdown confirmation finished; PTT released.",
+        )
+        == "failed"
+    ):
         emit("status", "Stopping walkietalk without an on-air confirmation.")
 
 
@@ -489,8 +534,16 @@ def run(args: argparse.Namespace) -> None:
         print(ListeningSession(config).status_line(), flush=True)
         if config.shutdown_enabled:
             print(
-                "Shutdown: enabled; on-air confirmation "
-                f"{config.shutdown_confirmation_phrase!r} after the code with talk --transmit",
+                "Shutdown: enabled; phrase confirmation "
+                f"{config.shutdown_arm_confirmation_phrase!r}; code confirmation "
+                f"{config.shutdown_confirmation_phrase!r} with talk --transmit",
+                flush=True,
+            )
+        if config.wake_confirmation_phrase:
+            print(
+                "Wake confirmation: "
+                f"{config.wake_confirmation_phrase!r} when the wake phrase arrives alone; "
+                "spoken with talk --transmit",
                 flush=True,
             )
         print(f"Post-TX mute: {config.post_tx_mute_seconds:g}s after unkey", flush=True)

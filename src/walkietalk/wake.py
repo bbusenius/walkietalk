@@ -102,20 +102,10 @@ class ListeningSession:
             )
         if matched and not traffic:
             if self.config.listening_mode == "conversation":
-                return GateDecision(
-                    False,
-                    "wake_only",
-                    "",
-                    state,
-                    "Wake heard; listening for traffic.",
-                )
-            return GateDecision(
-                False,
-                "empty",
-                "",
-                state,
-                "Wake heard, but no traffic. Window unchanged.",
-            )
+                note = "Wake heard; listening for traffic."
+            else:
+                note = "Wake heard, but no traffic. Window unchanged."
+            return GateDecision(False, "wake_only", "", state, note)
         if matched:
             kind = "wake"
             note = "Accepted (wake name)."

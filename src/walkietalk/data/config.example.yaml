@@ -40,6 +40,7 @@ tts:
 wake:
   primary: "charlotte"
   aliases: ["charlot", "sharlot"]
+  confirmation_phrase: ""  # spoken when this phrase arrives with no traffic; empty stays silent
 agent:
   backend: "stub"          # stub, hermes, codex, grok, claude, or claude_api
   max_reply_chars: 600     # reject oversized replies; 1–2000 characters
@@ -67,4 +68,5 @@ shutdown:
   code: ""
   code_aliases: []
   confirmation_seconds: 30
+  arm_confirmation_phrase: ""  # spoken when the phrase alone arms shutdown; requires talk --transmit
   confirmation_phrase: ""   # spoken on the radio after the code; requires talk --transmit

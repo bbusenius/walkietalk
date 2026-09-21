@@ -17,7 +17,9 @@ confirmation requires `talk --capture --transmit`.
 | `stt.timeout_seconds` | Deadline for transcribing captured speech. |
 | `agent.timeout_seconds` | Deadline for producing an answer, independent of answer length and reasoning effort. |
 | `shutdown.confirmation_seconds` | Time to start the separate confirmation utterance after shutdown is armed. Default 30 seconds; configurable above zero through 300. |
-| `shutdown.confirmation_phrase` | Spoken radio line after the code is accepted. Required when shutdown is enabled. Played only with `talk --transmit`. |
+| `shutdown.arm_confirmation_phrase` | Spoken radio line when the phrase alone arms shutdown. Required when shutdown is enabled. Played only with `talk --transmit`. |
+| `shutdown.confirmation_phrase` | Spoken radio line after the code is accepted, including a phrase and code in one transmission. Required when shutdown is enabled. Played only with `talk --transmit`. |
+| `wake.confirmation_phrase` | Spoken radio line when the wake phrase arrives with no traffic. Empty stays silent. Played only with `talk --transmit`. |
 | `talk --capture --once --timeout 5` | One-shot diagnostic: wait up to five seconds for speech. Default 60; maximum 300. |
 
 Continuous mode rejects an explicit `--timeout` with a usage error explaining
@@ -38,22 +40,25 @@ shutdown:
   code: "confirm alpha nine"
   code_aliases: ["confirm alpha 9"]
   confirmation_seconds: 30
+  arm_confirmation_phrase: "Shutdown armed."
   confirmation_phrase: "Walkietalk shutting down."
 ```
 
-The arming phrase and code must differ from each other and the wake phrase.
+The arming phrase, code, both confirmation lines, and the wake phrase must differ.
+`wake.confirmation_phrase` is the separate line for a wake phrase with no traffic.
 Matching uses complete words, ignoring case, whitespace, and punctuation.
 Use explicit aliases for alternate STT spellings; there is no fuzzy matching.
 Controls work with or without the ordinary wake phrase. Restart after editing.
 Like the wake phrase, the shutdown phrase can be followed by its traffic in the
 same utterance: “stop listening, confirm alpha nine” shuts down immediately.
-Alternatively, “stop listening” alone arms shutdown, then “confirm alpha nine”
-within the confirmation window completes it. The combined form does not require
-prior arming; a previous expired window does not prevent a new complete command.
-With `talk --capture --transmit`, the configured `confirmation_phrase` is spoken
-on the radio after the code is accepted, then the program exits. Receive-only
-mode prints the confirmation and exits without keying. A failed spoken
-confirmation still stops walkietalk after PTT is released.
+Alternatively, “stop listening” alone arms shutdown and speaks
+`arm_confirmation_phrase`, then “confirm alpha nine” within the confirmation
+window completes it and speaks `confirmation_phrase`. The combined form does not
+require prior arming and speaks only `confirmation_phrase`; a previous expired
+window does not prevent a new complete command. Both lines require
+`talk --capture --transmit`. Receive-only mode prints the status and exits or
+keeps listening without keying. A failed phrase acknowledgement leaves shutdown
+armed. A failed code confirmation still stops walkietalk after PTT is released.
 
 ## Exact family demonstration checklist
 
@@ -122,6 +127,11 @@ If using Hermes, supply the local service token through the private
       the walkie, then TX off and a normal exit. A failed spoken confirmation
       still stops the program after PTT is released. Brad confirms the spoken
       confirmation works as expected.
+- [x] **Separate acknowledgements:** with `talk --capture --transmit`, a wake
+      phrase alone speaks `wake.confirmation_phrase`. The shutdown phrase alone
+      speaks `arm_confirmation_phrase` and stays armed. The code then speaks
+      `confirmation_phrase` and exits. Phrase and code in one transmission speak
+      only `confirmation_phrase`. Brad confirms this works as expected.
 
 Explain: “The bridge stays ready while we're outside. After a pause, we say its
 name again. Our two-part shutdown command tells the program to close safely.”
