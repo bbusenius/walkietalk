@@ -44,7 +44,7 @@ def write_config(tmp_path, data):
     return path
 
 
-@pytest.mark.parametrize("value", [0, -1, 31, True, "10", float("nan"), float("inf")])
+@pytest.mark.parametrize("value", [0, -1, True, "10", float("nan"), float("inf")])
 def test_invalid_tx_limit_rejected(tmp_path, config_data, value):
     config_data["radio"]["max_tx_seconds"] = value
     with pytest.raises(WalkietalkError):
@@ -59,6 +59,11 @@ def test_invalid_tx_limit_rejected(tmp_path, config_data, value):
         ("ptt", "serial_port", "ttyACM0"),
         ("ptt", "line", "both"),
         ("radio", "settle_seconds", 0),
+        ("radio", "post_tx_mute_seconds", -1),
+        ("radio", "post_tx_mute_seconds", 31),
+        ("radio", "callsign_mode", "always"),
+        ("radio", "callsign", "!!!"),
+        ("radio", "callsign_interval_seconds", 0),
     ],
 )
 def test_invalid_config_rejected(tmp_path, config_data, section, field, value):
@@ -79,6 +84,12 @@ def test_valid_config(tmp_path, config_data):
     config = load_config(write_config(tmp_path, config_data))
     assert config.line == "dtr"
     assert config.max_tx_seconds == 10
+
+
+@pytest.mark.parametrize("value", [10, 30, 60, 120])
+def test_tx_limit_is_the_configured_value(tmp_path, config_data, value):
+    config_data["radio"]["max_tx_seconds"] = value
+    assert load_config(write_config(tmp_path, config_data)).max_tx_seconds == value
 
 
 def test_exact_device_selection_never_falls_back():

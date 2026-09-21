@@ -161,19 +161,27 @@ def test_failed_shutdown_confirmation_still_exits(bridge, monkeypatch, capsys):
     assert "without an on-air confirmation" in output.out
 
 
-@pytest.mark.parametrize("failure", ["agent", "prepare", "synthesis", "oversize"])
+@pytest.mark.parametrize("failure", ["agent", "prepare", "synthesis"])
 def test_failures_never_open_ptt_or_print_answer(bridge, failure, capsys):
     _, backend, voice, _ = bridge
     if failure == "agent":
         backend.reply.side_effect = WalkietalkError("Login expired")
     elif failure == "prepare":
         voice.prepare.side_effect = WalkietalkError("Missing model")
-    elif failure == "synthesis":
-        voice.synthesize.side_effect = WalkietalkError("Piper timed out")
     else:
-        voice.synthesize.return_value = Wav(b"\x00\x20" * 48000 * 11, 48000, 0.1)
+        voice.synthesize.side_effect = WalkietalkError("Piper timed out")
     assert cli.main([*ARGS, "--once"]) == 1
     assert "Reply:" not in capsys.readouterr().out
+
+
+def test_overlong_speech_is_cropped_then_transmitted(bridge, monkeypatch):
+    _, backend, voice, _ = bridge
+    voice.synthesize.return_value = Wav(b"\x00\x20" * 48000 * 11, 48000, 11)
+    played = []
+    monkeypatch.setattr(cli, "transmit_speech", lambda speech, cfg, **k: played.append(speech))
+    assert cli.main([*ARGS, "--once"]) == 0
+    backend.reply.assert_called_once()
+    assert played[0].duration == pytest.approx(10)
 
 
 def test_failed_speech_is_not_retained_and_continuous_listening_recovers(bridge, monkeypatch):

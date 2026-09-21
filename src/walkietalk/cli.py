@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .agent import AgentSession, open_agent
 from .audio import Playback, Wav, read_wav
+from .callsign import CallsignSession, join_identification
 from .capture import capture_from_device, capture_from_wav
 from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
@@ -141,6 +142,7 @@ def talk_command(args: argparse.Namespace) -> None:
     config = load_config(args.config) if args.config else Config()
     session = ListeningSession(config)
     shutdown = ShutdownSession(config)
+    callsigns = CallsignSession(config, time.monotonic)
     agent = open_agent(config)
     spoken_seconds = config.max_tx_seconds - config.settle_seconds if args.transmit else None
 
@@ -162,6 +164,17 @@ def talk_command(args: argparse.Namespace) -> None:
         voice.prepare()  # Missing engine/model fails before any agent request or serial open.
         emit("status", f"Voice: {voice.label()}")
         emit("status", "Radio replies enabled; PTT stays off until speech and playback are ready.")
+        if callsigns.enabled():
+            emit(
+                "status",
+                f"Station ID {config.callsign!r} mode {config.callsign_mode}; "
+                "supplied in config, not invented.",
+            )
+        if config.post_tx_mute_seconds:
+            emit(
+                "status",
+                f"Post-transmit mute {config.post_tx_mute_seconds:g}s after unkey.",
+            )
     if args.transmit and not args.capture:
         preflight(config)
     if args.capture:
@@ -263,7 +276,7 @@ def talk_command(args: argparse.Namespace) -> None:
             if voice is not None:
                 try:
                     emit("status", "Generating speech; PTT off...")
-                    speech = radio_wav(voice.synthesize(answer), spoken_seconds)
+                    speech = radio_wav(voice.synthesize(answer), spoken_seconds, truncate=True)
                 except (WalkietalkError, OSError) as exc:
                     # A completed model reply that was never spoken is not radio history.
                     conversation = new_conversation(open_agent(config))
@@ -273,9 +286,21 @@ def talk_command(args: argparse.Namespace) -> None:
                     emit("error", f"Speech failed: {exc}", file=sys.stderr)
                     emit("status", "Still listening; say the wake phrase and try again.")
                     continue
+                if callsigns.due():
+                    try:
+                        emit("status", "Generating station ID; PTT off...")
+                        ident = radio_wav(
+                            voice.synthesize(config.callsign), spoken_seconds, truncate=True
+                        )
+                        speech = join_identification(speech, ident, spoken_seconds)
+                        callsigns.mark()
+                    except (WalkietalkError, OSError) as exc:
+                        emit("error", f"Station ID failed: {exc}", file=sys.stderr)
+                        emit("status", "Sending the answer without a station ID.")
                 # Capture has closed before STT. It stays closed throughout synthesis/TX.
                 # Hardware errors stop the loop after cleanup instead of retrying hardware.
                 transmit_speech(speech, config)
+                wait_post_tx_mute(config)
             emit("reply", f"Reply: {answer}")
             session.complete_turn()
             emit("status", session.status_line())
@@ -283,6 +308,15 @@ def talk_command(args: argparse.Namespace) -> None:
             emit("ignored", decision.message)
         if once:
             return
+
+
+def wait_post_tx_mute(config: Config) -> None:
+    mute = config.post_tx_mute_seconds
+    if mute <= 0:
+        return
+    emit("status", f"Post-transmit mute {mute:g}s; PTT released, capture closed.")
+    time.sleep(mute)
+    emit("status", "Mute ended; listening.")
 
 
 def speak_shutdown_confirmation(config: Config, voice) -> None:
@@ -415,6 +449,17 @@ def run(args: argparse.Namespace) -> None:
             print(
                 "Shutdown: enabled; on-air confirmation "
                 f"{config.shutdown_confirmation_phrase!r} after the code with talk --transmit",
+                flush=True,
+            )
+        print(f"Post-TX mute: {config.post_tx_mute_seconds:g}s after unkey", flush=True)
+        if config.callsign and config.callsign_mode != "off":
+            print(
+                f"Station ID: {config.callsign!r}; mode {config.callsign_mode}",
+                flush=True,
+            )
+        else:
+            print(
+                "Station ID: off; set radio.callsign to your granted ID to speak it",
                 flush=True,
             )
         print("Device names and serial permissions OK. No port opened; no transmission.")

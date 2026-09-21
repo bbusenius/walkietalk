@@ -18,7 +18,7 @@ from .agent_process import run_cli
 from .audio import Wav, read_wav
 from .config import Config, WalkietalkError
 from .stt import GROK_TOKEN_URL, _session_expired, load_grok_store, save_grok_store
-from .tts import MAX_TTS_BYTES, level_wav, radio_wav, write_wav
+from .tts import level_wav, radio_wav, speech_byte_budget, write_wav
 
 GROK_TTS_URL = "https://api.x.ai/v1/tts"
 
@@ -178,7 +178,9 @@ class GrokTts:
                                     raise WalkietalkError(
                                         "Grok TTS returned no WAV audio; discarded"
                                     )
-                                return await self._body(response, MAX_TTS_BYTES)
+                                return await self._body(
+                                    response, speech_byte_budget(self.config.max_tx_seconds) * 2
+                                )
                             if not retry_login:
                                 if status in {401, 403}:
                                     auth = (
@@ -211,7 +213,9 @@ class GrokTts:
             path.write_bytes(complete_wav_header(audio))
             speech = level_wav(
                 radio_wav(
-                    read_wav(path, 30), self.config.max_tx_seconds - self.config.settle_seconds
+                    read_wav(path, self.config.max_tx_seconds * 2),
+                    self.config.max_tx_seconds - self.config.settle_seconds,
+                    truncate=True,
                 ),
                 self.config.tts_normalize,
             )
@@ -258,7 +262,7 @@ class GrokTts:
                 env=env,
                 deadline=deadline,
                 final_path=path,
-                max_final_bytes=MAX_TTS_BYTES,
+                max_final_bytes=speech_byte_budget(self.config.max_tx_seconds) * 2,
                 name="Grok TTS",
             )
             if code:
@@ -269,11 +273,16 @@ class GrokTts:
                 except (ValueError, KeyError, TypeError):
                     error = "Grok TTS worker failed; diagnostics withheld; no transmission"
                 raise WalkietalkError(error)
-            if not path.is_file() or path.stat().st_size > MAX_TTS_BYTES:
+            if (
+                not path.is_file()
+                or path.stat().st_size > speech_byte_budget(self.config.max_tx_seconds) * 2
+            ):
                 raise WalkietalkError("Grok TTS returned no bounded WAV; no transmission")
             speech = level_wav(
                 radio_wav(
-                    read_wav(path, 30), self.config.max_tx_seconds - self.config.settle_seconds
+                    read_wav(path, self.config.max_tx_seconds * 2),
+                    self.config.max_tx_seconds - self.config.settle_seconds,
+                    truncate=True,
                 ),
                 self.config.tts_normalize,
             )

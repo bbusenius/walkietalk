@@ -90,7 +90,6 @@ def test_peak_normalize_fills_the_wav_and_off_keeps_engine_level(fake_piper):
         {"channels": 2},
         {"rate": 44100},
         {"samples": 0},
-        {"samples": 22050 * 11},
         {"truncated": True},
     ],
 )
@@ -116,8 +115,8 @@ def test_late_audio_discarded_after_processing(fake_piper, monkeypatch):
     config, _, _ = fake_piper
     original = tts.radio_wav
 
-    def delayed(wav, maximum):
-        result = original(wav, maximum)
+    def delayed(wav, maximum, **kwargs):
+        result = original(wav, maximum, **kwargs)
         monkeypatch.setattr(tts.time, "monotonic", lambda: float("inf"))
         return result
 
@@ -160,6 +159,14 @@ def test_invalid_text_never_starts_piper(fake_piper, monkeypatch, text):
 def test_bridge_revalidates_audio_including_actual_duration(wav):
     with pytest.raises(WalkietalkError):
         tts.radio_wav(wav, 9.8)
+
+
+def test_overlong_speech_is_truncated_when_requested():
+    wav = tts.radio_wav(Wav(b"\x00\x20" * 48000 * 12, 48000, 12), 1.5, truncate=True)
+    assert wav.rate == 48000
+    assert wav.duration == pytest.approx(1.5)
+    with pytest.raises(WalkietalkError, match="maximum"):
+        tts.radio_wav(Wav(b"\x00\x20" * 48000 * 12, 48000, 12), 1.5)
 
 
 def test_duration_and_amplitude_preserved_when_resampling():

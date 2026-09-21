@@ -93,12 +93,9 @@ These are independent settings:
 | `radio.settle_seconds` | Delay after keying before audio starts. |
 | `listening.conversation_timeout_seconds` | Follow-up window after the spoken answer finishes and PTT is released. |
 
-For example, with a 10-second TX limit and 0.2-second settle, speech must fit in 9.8 seconds.
-The agent is asked for one short sentence, at most 19 words. The actual WAV duration
-is checked too: an overlong answer produces a local error before PTT is opened;
-it is not truncated or silently retried. The existing character cap is unchanged.
-Agent speed and speech speed vary. A long character allowance does not override
-the radio duration limit.
+For example, with a 10-second TX limit and 0.2-second settle, playback is cropped
+to 9.8 seconds so the transmitter unkeys on time. The existing character cap is
+unchanged. See [phase 7](PHASE7-DEMO.md) for mute and optional station ID.
 
 Capture closes before transcription and stays closed through agent work,
 synthesis, and playback. After successful playback/unkey, the reply is printed,
@@ -106,7 +103,7 @@ the conversation window opens, and capture resumes. There is no idle program
 limit in continuous mode. Speech synthesis failures return to listening with a
 fresh wake required; the unheard answer is removed from conversation history.
 Audio/PTT hardware failures stop the program after cleanup, so inspect the setup
-before restarting. The additional post-transmit mute timer belongs to phase 7.
+before restarting. Post-transmit mute and optional station ID are phase 7.
 
 ## Complete family demonstration checklist
 

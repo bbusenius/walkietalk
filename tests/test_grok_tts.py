@@ -234,7 +234,7 @@ def test_invalid_refresh_data_is_not_saved(config, monkeypatch, tmp_path, payloa
         wav_bytes()[:-2],
         wav_bytes(channels=2),
         wav_bytes(rate=44100),
-        wav_bytes(samples=48000 * 11),
+        wav_bytes(samples=48000 * 40),
         b"x" * (tts.MAX_TTS_BYTES + 1),
     ],
 )
@@ -301,8 +301,8 @@ def test_late_audio_after_decode_is_discarded(config, monkeypatch):
     transport(monkeypatch, lambda request: audio_response())
     original = grok_tts.radio_wav
 
-    def late(wav, maximum):
-        result = original(wav, maximum)
+    def late(wav, maximum, **kwargs):
+        result = original(wav, maximum, **kwargs)
         monkeypatch.setattr(grok_tts.time, "monotonic", lambda: float("inf"))
         return result
 

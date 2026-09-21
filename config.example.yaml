@@ -10,6 +10,10 @@ ptt:
 radio:
   max_tx_seconds: 10
   settle_seconds: 0.2
+  post_tx_mute_seconds: 2     # wait after unkey before listening; 0 disables
+  callsign: ""                # your granted station ID; leave empty for no spoken ID
+  callsign_mode: "end_of_reply"  # off, end_of_reply, or interval
+  callsign_interval_seconds: 900
 vad:
   energy_threshold: 0.02    # tune from logged RMS; 1.0 is full scale
   hangover_ms: 400

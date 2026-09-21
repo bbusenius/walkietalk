@@ -49,8 +49,11 @@ raise SystemExit(grok_tts.main())
     if scenario == "success":
         speech = grok_tts.GrokTts(config).synthesize("Hello.")
         assert speech.duration == 1 and speech.rate == 48000
+    elif scenario == "oversized":
+        speech = grok_tts.GrokTts(config).synthesize("Hello.")
+        assert speech.duration == pytest.approx(config.max_tx_seconds - config.settle_seconds)
     else:
-        message = {"blocked": "timed out", "error": "HTTP 403", "oversized": "maximum"}[scenario]
+        message = {"blocked": "timed out", "error": "HTTP 403"}[scenario]
         with pytest.raises(WalkietalkError, match=message):
             grok_tts.GrokTts(config).synthesize("Hello.")
     assert time.monotonic() - started < 2.5
