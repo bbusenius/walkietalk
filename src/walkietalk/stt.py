@@ -320,8 +320,9 @@ class GrokAccountStt:
         return f"grok ({GROK_STT_MODEL}; SuperGrok Plus login)"
 
     def _load(self) -> dict:
-        if self._session is None:
-            self._store, _account, self._session = load_grok_store()
+        # TTS or the official CLI may have refreshed this shared saved login.
+        # Reload before each use so we never reuse a rotated refresh token.
+        self._store, _account, self._session = load_grok_store()
         return self._session
 
     def _token(self) -> str:

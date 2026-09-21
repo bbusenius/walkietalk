@@ -28,6 +28,19 @@ class WalkietalkError(Exception):
     """A failure that should be shown without a Python traceback."""
 
 
+def validate_gain(value: object) -> float:
+    """Allow attenuation or amplification, but never invalid numeric values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WalkietalkError("audio.gain must be a positive finite number")
+    try:
+        gain = float(value)
+    except OverflowError:
+        raise WalkietalkError("audio.gain must be a positive finite number") from None
+    if not math.isfinite(gain) or gain <= 0:
+        raise WalkietalkError("audio.gain must be a positive finite number")
+    return gain
+
+
 def seconds(value: object, name: str, minimum: float = 0, maximum: float = 30) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise WalkietalkError(f"{name} must be a number")
@@ -88,6 +101,14 @@ class Config:
     shutdown_code: str = ""
     shutdown_code_aliases: tuple[str, ...] = ()
     shutdown_confirmation_seconds: float = 30
+    tts_backend: str = "piper"
+    piper_executable: str = "piper"
+    piper_model: str = "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
+    tts_timeout_seconds: float = 30
+    grok_tts_voice: str = "eve"
+    grok_tts_language: str = "en"
+    grok_tts_speed: float = 1
+    grok_tts_api_key_env: str = "XAI_API_KEY"
 
 
 def load_config(path: Path) -> Config:
@@ -101,6 +122,16 @@ def load_config(path: Path) -> Config:
         "radio": {"max_tx_seconds", "settle_seconds"},
         "vad": {"energy_threshold", "hangover_ms", "max_utterance_seconds"},
         "stt": {"backend", "model", "timeout_seconds"},
+        "tts": {
+            "backend",
+            "piper_executable",
+            "piper_model",
+            "timeout_seconds",
+            "grok_voice",
+            "grok_language",
+            "grok_speed",
+            "grok_api_key_env",
+        },
         "listening": {"mode", "conversation_timeout_seconds"},
         "wake": {"primary", "aliases"},
         "shutdown": {
@@ -134,8 +165,8 @@ def load_config(path: Path) -> Config:
     }
     if not isinstance(data, dict) or set(data) != set(expected):
         raise WalkietalkError(
-            "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, vad, "
-            "and wake sections. See config.example.yaml for required fields."
+            "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, tts, "
+            "vad, and wake sections. See config.example.yaml for required fields."
         )
     for section, fields in expected.items():
         if not isinstance(data[section], dict) or set(data[section]) != fields:
@@ -155,6 +186,45 @@ def load_config(path: Path) -> Config:
     model = data["stt"]["model"]
     if model not in STT_MODELS:
         raise WalkietalkError("stt.model must be tiny or base")
+    if data["tts"]["backend"] not in ("piper", "grok", "grok_api"):
+        raise WalkietalkError("tts.backend must be piper, grok, or grok_api; no fallback")
+    voice = data["tts"]["grok_voice"]
+    language = data["tts"]["grok_language"]
+    key_env = data["tts"]["grok_api_key_env"]
+    if not isinstance(voice, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", voice):
+        raise WalkietalkError("tts.grok_voice must be a built-in or custom voice ID")
+    if not isinstance(language, str) or not re.fullmatch(
+        r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*", language
+    ):
+        raise WalkietalkError("tts.grok_language must be a language code such as en, or auto")
+    if not isinstance(key_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
+        raise WalkietalkError("tts.grok_api_key_env must be an environment variable name")
+    speed = seconds(data["tts"]["grok_speed"], "tts.grok_speed", maximum=1.5)
+    if speed < 0.7:
+        raise WalkietalkError("tts.grok_speed must be between 0.7 and 1.5")
+    piper_executable = data["tts"]["piper_executable"]
+    if (
+        not isinstance(piper_executable, str)
+        or not piper_executable.strip()
+        or piper_executable != piper_executable.strip()
+        or any(not char.isprintable() for char in piper_executable)
+        or (
+            not Path(piper_executable).is_absolute()
+            and ("/" in piper_executable or any(char.isspace() for char in piper_executable))
+        )
+    ):
+        raise WalkietalkError("tts.piper_executable must be an executable name or absolute path")
+    piper_model = data["tts"]["piper_model"]
+    if (
+        not isinstance(piper_model, str)
+        or not piper_model.endswith(".onnx")
+        or any(not char.isprintable() for char in piper_model)
+    ):
+        raise WalkietalkError("tts.piper_model must be a local .onnx file path")
+    # Relative voice paths are relative to this config file, never a CLI temp directory.
+    model_path = Path(piper_model).expanduser()
+    if not model_path.is_absolute():
+        model_path = path.resolve().parent / model_path
     agent_backend = data["agent"]["backend"]
     if agent_backend not in AGENT_BACKENDS:
         raise WalkietalkError(AGENT_BACKEND_ERROR)
@@ -277,7 +347,7 @@ def load_config(path: Path) -> Config:
     confirmation = seconds(
         shutdown["confirmation_seconds"], "shutdown.confirmation_seconds", maximum=300
     )
-    gain = seconds(data["audio"]["gain"], "audio.gain", maximum=1)
+    gain = validate_gain(data["audio"]["gain"])
     cap = seconds(data["radio"]["max_tx_seconds"], "radio.max_tx_seconds")
     settle = seconds(data["radio"]["settle_seconds"], "radio.settle_seconds", maximum=2)
     if settle >= cap:
@@ -340,4 +410,14 @@ def load_config(path: Path) -> Config:
         shutdown_code=shutdown["code"].strip(),
         shutdown_code_aliases=tuple(v.strip() for v in shutdown["code_aliases"]),
         shutdown_confirmation_seconds=confirmation,
+        tts_backend=data["tts"]["backend"],
+        piper_executable=piper_executable,
+        piper_model=str(model_path),
+        tts_timeout_seconds=seconds(
+            data["tts"]["timeout_seconds"], "tts.timeout_seconds", maximum=120
+        ),
+        grok_tts_voice=voice,
+        grok_tts_language=language,
+        grok_tts_speed=speed,
+        grok_tts_api_key_env=key_env,
     )

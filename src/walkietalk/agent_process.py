@@ -29,6 +29,7 @@ def run_cli(
     env: dict[str, str],
     deadline: float,
     final_path: Path | None = None,
+    max_final_bytes: int = MAX_FINAL_BYTES,
     name: str = "Codex",
     executable_setting: str = "agent.codex_executable",
 ) -> tuple[int, bytes, bytes]:
@@ -76,7 +77,7 @@ def run_cli(
                 if remaining <= 0:
                     raise WalkietalkError(f"{name} timed out; reply discarded")
                 if final_path is not None and final_path.exists():
-                    if final_path.stat().st_size > MAX_FINAL_BYTES:
+                    if final_path.stat().st_size > max_final_bytes:
                         raise WalkietalkError(
                             f"{name} final output exceeded the transport limit; discarded"
                         )

@@ -3,6 +3,7 @@ import copy
 import os
 import selectors
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -53,7 +54,7 @@ def test_invalid_tx_limit_rejected(tmp_path, config_data, value):
 @pytest.mark.parametrize(
     ("section", "field", "value"),
     [
-        ("audio", "gain", 2),
+        ("audio", "gain", 0),
         ("audio", "input_device", "default"),
         ("ptt", "serial_port", "ttyACM0"),
         ("ptt", "line", "both"),
@@ -103,6 +104,40 @@ def test_wav_duration_and_gain(wav_path):
     assert set(samples) == {4096}
     with pytest.raises(WalkietalkError, match="no longer"):
         read_wav(wav_path, 0.05)
+
+
+@pytest.mark.parametrize("gain", [0, -1, True, "2", None, float("nan"), float("inf"), 10**400])
+def test_invalid_gain_rejected_in_config_and_playback(tmp_path, config_data, wav_path, gain):
+    config_data["audio"]["gain"] = gain
+    with pytest.raises(WalkietalkError, match="audio.gain"):
+        load_config(write_config(tmp_path, config_data))
+    with pytest.raises(WalkietalkError, match="audio.gain"):
+        read_wav(wav_path, 1, gain=gain)
+
+
+@pytest.mark.parametrize(
+    ("gain", "expected"),
+    [
+        (0.5, [-16384, -10000, -500, 0, 500, 10000, 16384]),
+        (1, [-32768, -20000, -1000, 0, 1000, 20000, 32767]),
+        (1.5, [-32768, -30000, -1500, 0, 1500, 30000, 32767]),
+        (2, [-32768, -32768, -2000, 0, 2000, 32767, 32767]),
+        (1e308, [-32768, -32768, -32768, 0, 32767, 32767, 32767]),
+    ],
+)
+def test_gain_amplifies_and_clamps_without_wraparound(tmp_path, config_data, gain, expected):
+    config_data["audio"]["gain"] = gain
+    config = load_config(write_config(tmp_path, config_data))
+    path = tmp_path / "peaks.wav"
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(48000)
+        writer.writeframes(struct.pack("<7h", -32768, -20000, -1000, 0, 1000, 20000, 32767))
+    result = read_wav(path, 1, gain=config.gain)
+    assert list(struct.unpack("<7h", result.frames)) == expected
+    assert result.rate == 48000
+    assert result.duration == 7 / 48000
 
 
 def test_truncated_wav_rejected(wav_path):

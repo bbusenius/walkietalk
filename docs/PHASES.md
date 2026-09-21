@@ -16,8 +16,11 @@ Do not begin the next phase until the current demonstration passes.
 | 7 | Strengthen watchdogs, post-transmit mute, callsign handling | Demonstrate timeout, mute, and identification behavior. |
 | 8 | Complete installation and user documentation | Follow setup from a clean environment; verify supported integrations. |
 
-Phase 5 implementation and demonstrations are accepted on `phase-5-agent-plug`;
-Brad has authorized committing, publishing, and merging the phase.
+Phase 5 is demonstrated and merged in [PR #5](https://github.com/bbusenius/walkietalk/pull/5),
+merge commit `ebdb8e7`. Phase 6 family demonstrations of Piper (Amy) and Grok
+speech are complete. Brad showed the girls and authorized publication. See
+[PR #6](https://github.com/bbusenius/walkietalk/pull/6) and the
+[complete Amy setup and demonstration checklist](PHASE6-DEMO.md).
 See the [complete acceptance checklist and current demo](PHASE5-DEMO.md).
 The stub, Hermes, Codex, and Grok Build adapters are implemented. Brad showed the stub to the girls;
 the coding assistant verified real Hermes text replies and follow-up context.
@@ -91,6 +94,7 @@ as documented; tags do not restore firmware, Linux permissions, or account sessi
 | Phase 3: wake gate | `phase-3-wake-gate`; [PR #3](https://github.com/bbusenius/walkietalk/pull/3) | Brad demoed wake phrase and conversation mode with the girls. Merged to `main`. |
 | Phase 4: STT plug | `phase-4-stt-plug`; [PR #4](https://github.com/bbusenius/walkietalk/pull/4) | Brad verified faster-whisper and SuperGrok Grok Voice Transcribe on the radio. `grok_api` live key test skipped. Merged to `main`. |
 | Phase 5: agent plug | `phase-5-agent-plug`; [PR #5](https://github.com/bbusenius/walkietalk/pull/5) | Stub shown to the girls. Hermes text connection verified and family demonstration confirmed by Brad. Codex demonstration confirmed. Grok Build radio demonstration, backend comparison, failures, continuous listening, and shutdown confirmed by Brad. Claude CLI text check passed; Brad confirms both Claude routes work as expected. Hermes STT service deferred by Brad; standalone Codex STT interface not verified. Brad authorized committing, publishing, and merging phase 5. |
+| Phase 6: TTS plug | `phase-6-piper-voice`; [PR #6](https://github.com/bbusenius/walkietalk/pull/6) | Brad confirmed Piper (Amy) and Grok spoken replies with the girls. Optional `grok_api` live key test skipped. Automated checks passed. Brad authorized committing, publishing, and merging phase 6. |
 
 ## Phase 1 verification results
 
@@ -186,3 +190,30 @@ The live observations were reported by Brad after the family demonstration.
 - [x] Brad explicitly authorized committing, pushing, and merging phase 5.
 
 See [the complete phase checklist and demonstration commands](PHASE5-DEMO.md).
+
+
+## Phase 6 verification — accepted and authorized for publication
+
+- [x] Thin local Piper `TtsBackend`; Amy chosen by Brad and downloaded explicitly.
+- [x] Grok TTS adapter with saved subscription login and separate explicit API-key mode.
+      [Grok setup and demonstration checkpoint](GROK-TTS.md): real saved-login
+      synthesis produced a 3.430-second WAV; API live check pending.
+- [x] Real local synthesis: Amy produced a 3.599-second, 48 kHz mono PCM16 WAV.
+- [x] `tts-check` exports without hardware; `talk` stays text-only by default.
+- [x] Spoken replies require explicit config and `--transmit`; finished audio is
+      bounded before PTT opens, using the existing supervised playback worker.
+- [x] All 549 automated tests, Ruff lint, formatting, and source/wheel build pass.
+- [x] Automated coverage for speech failures, history recovery, follow-up timing,
+      and PTT release on playback errors and interruption.
+- [x] Five controlled voice failure demonstrations pass without hardware access.
+- [x] Brad reports that Amy replies work well on the radio.
+- [x] Brad confirms Piper and Grok speech work; he showed the girls. Individual
+      gain/settle, follow-up-window, second-helper, controlled-failure, Ctrl+C,
+      and shutdown radio observations were not separately itemized.
+- [x] Optional `grok_api` live key test skipped; missing-key error is covered
+      by automated tests.
+- [x] Family explanation complete; Brad authorized phase 6 publication.
+
+The [phase 6 checklist](PHASE6-DEMO.md) gives every command and expected result.
+No live TTS inference or RF transmission runs in CI. Phase 7's additional mute timer,
+watchdogs, and callsign handling remain deferred.

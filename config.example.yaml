@@ -2,7 +2,7 @@
 audio:
   input_device: "REPLACE with exact AIOC capture device name"
   output_device: "REPLACE with exact AIOC playback device name"
-  gain: 0.25
+  gain: 1                  # >1 amplifies; peaks may clip and degrade sound quality
 ptt:
   serial_port: "/dev/serial/by-id/REPLACE-with-your-AIOC"
   # AIOC default: key with DTR high and RTS low; idle with both low.
@@ -21,6 +21,15 @@ stt:
 listening:
   mode: "wake_phrase"       # or conversation
   conversation_timeout_seconds: 60
+tts:
+  backend: "piper"         # grok (saved SuperGrok login) or grok_api (billed API key)
+  piper_executable: "piper" # CLI from the environment running walkietalk, or an absolute path
+  piper_model: "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
+  timeout_seconds: 30       # synthesis deadline; independent of the hard transmit limit
+  grok_voice: "eve"        # built-in or custom xAI voice ID
+  grok_language: "en"
+  grok_speed: 1.0           # 0.7 to 1.5; independent of playback gain
+  grok_api_key_env: "XAI_API_KEY" # only used by tts.backend: grok_api
 wake:
   primary: "charlotte"
   aliases: ["charlot", "sharlot"]

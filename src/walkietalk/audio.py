@@ -11,7 +11,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import WalkietalkError
+from .config import WalkietalkError, validate_gain
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class Wav:
 
 
 def read_wav(path: Path, maximum: float, gain: float = 1) -> Wav:
+    gain = validate_gain(gain)
     try:
         with wave.open(str(path), "rb") as wav:
             if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getcomptype() != "NONE":
@@ -42,7 +43,11 @@ def read_wav(path: Path, maximum: float, gain: float = 1) -> Wav:
     samples = array.array("h", frames)
     if sys.byteorder != "little":
         samples.byteswap()
-    samples = array.array("h", (round(sample * gain) for sample in samples))
+    # Saturate before rounding: amplification may exceed PCM16 (or float) range.
+    # Clipping can distort the sound, but must never wrap polarity or crash playback.
+    samples = array.array(
+        "h", (round(max(-32768, min(32767, sample * gain))) for sample in samples)
+    )
     if sys.byteorder != "little":
         samples.byteswap()
     return Wav(samples.tobytes(), rate, duration)
