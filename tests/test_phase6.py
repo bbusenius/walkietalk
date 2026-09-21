@@ -1,3 +1,4 @@
+import time
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -101,7 +102,8 @@ def test_two_step_shutdown_speaks_confirmation_after_code(bridge, monkeypatch):
     )
     played = []
     listener.transcribe.side_effect = ["stop bridge", "confirm stop"]
-    captures = iter([utterance(100), utterance(101)])
+    started = time.monotonic()
+    captures = iter([utterance(started), utterance(started + 1)])
 
     def capture(*a, **k):
         try:
