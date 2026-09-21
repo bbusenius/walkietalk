@@ -14,3 +14,5 @@ config.local.yaml
 recordings/
 .agents/
 .codex/
+
+credentials.env

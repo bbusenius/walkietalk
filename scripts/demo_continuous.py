@@ -83,7 +83,7 @@ def main() -> None:
         patch.object(cli, "Playback", forbidden),
         patch.object(cli, "transmit", forbidden),
     ):
-        result = cli.main(["-c", "simulated-config", "talk", "--capture"])
+        result = cli.main(["--no-env-file", "-c", "simulated-config", "talk", "--capture"])
     assert result == 0 and len(captures) == len(traffic)
     assert [call.args[0] for call in agent.reply.call_args_list] == [
         "what is rain",

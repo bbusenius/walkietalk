@@ -215,10 +215,9 @@ reported locally. Late replies are discarded. Raw server errors are withheld.
 Run from the project root as Brad. Keep the gateway TX light visible for every
 radio step. No spoken answers are expected yet.
 
-1. **Load the private local token and ask Charlotte a typed question.**
+1. **Supply the local token through the private [credentials file or environment](CONFIGURATION.md#credentials), then ask Charlotte a typed question.**
 
    ```sh
-   . ./.env.hermes.local
    .venv/bin/walkietalk -c config.local.yaml agent-check "What is rain? Answer in one short sentence."
    ```
 
@@ -283,16 +282,13 @@ If the API becomes unreachable after recreating the container, rediscover its
 private address with `docker inspect <Charlotte-container> --format
 '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'` and update only
 `agent.hermes_url`. Do not switch providers or use another account as a fallback.
-Opening a new terminal requires sourcing `.env.hermes.local` again.
-
-The `.env.hermes.local` filename is a convenience, not an application
-requirement, and walkietalk does not load the file automatically. It reads the
-variable named by `agent.hermes_token_env`
-from its own process environment. Hermes already holds the matching server
-token as `API_SERVER_KEY` in its profile `.env`; storing it there alone does not
-export it to the separate walkietalk process. A launcher or service can supply
-the bridge variable instead. Keep token values out of YAML, and do not load
-Hermes's whole provider-credential environment into walkietalk.
+The original checkpoint sourced an optional `.env.hermes.local` in each terminal.
+Phase 8 also supports a private `credentials.env` beside the selected config, or
+an explicit `--env-file`; see [credentials](CONFIGURATION.md#credentials).
+The variable name comes from `agent.hermes_token_env`. Hermes holds the matching
+server token as `API_SERVER_KEY` in its own environment; storing it there alone
+does not export it to the separate Walkietalk process. Keep token values out of
+YAML, and do not load Hermes's whole provider-credential environment into Walkietalk.
 
 The agent deadline is already configurable: change the existing
 `agent.timeout_seconds` in `config.local.yaml` from 60 to, for example, 120,

@@ -18,3 +18,8 @@ jobs:
       - run: ruff format --check .
       - run: pytest
       - run: python -m build
+      - name: Check installed wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/walkietalk-installed"
+          "$RUNNER_TEMP/walkietalk-installed/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/walkietalk-installed/bin/python" scripts/check_installation.py

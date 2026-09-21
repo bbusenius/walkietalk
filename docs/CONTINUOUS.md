@@ -67,7 +67,8 @@ From the project directory, as the normal user:
 
 If the AIOC card number changed, update only the device fields to the exact
 listed names. The application never substitutes the default microphone.
-If using Hermes, first source `. ./.env.hermes.local` in this shell.
+If using Hermes, supply the local service token through the private
+[credentials file or environment](CONFIGURATION.md#credentials).
 
 - [x] **Long silence:** wait at least two minutes without speaking. The process
   keeps waiting. Say your wake phrase and ask “Why does it rain?” Expect a short

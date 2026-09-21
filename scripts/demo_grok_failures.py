@@ -71,7 +71,9 @@ def main() -> None:
                 patch.object(cli, "preflight", forbidden),
                 patch.object(cli, "open_stt", forbidden),
             ):
-                result = cli.main(["-c", "simulated-config", "agent-check", "What is rain?"])
+                result = cli.main(
+                    ["--no-env-file", "-c", "simulated-config", "agent-check", "What is rain?"]
+                )
             if result != 1:
                 raise AssertionError("Expected a local error")
             print("Expected error received; no answer printed and no PTT opened.", flush=True)
