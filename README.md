@@ -14,7 +14,10 @@ saved login) and `claude_api` (separately billed API key) choices are also confi
 working by Brad. **Phase 6 verified:** Piper (Amy) and Grok speech, enabled
 only by `talk --transmit`. Brad confirmed those demonstrations with the girls
 and authorized publication. See the [complete phase 6 demo](docs/PHASE6-DEMO.md).
-See [the phase checkpoints](docs/PHASES.md).
+**Phase 7 verified:** post-transmit mute, crop overlong speech, stuck-key
+refusal, and optional station ID that you supply. Brad confirmed the
+demonstration, including wake_phrase. See
+[the phase 7 demo](docs/PHASE7-DEMO.md). See [the phase checkpoints](docs/PHASES.md).
 
 **Current checkpoint:** Brad has confirmed the stub, Hermes, Codex, and Grok
 demonstrations, plus continuous listening and both remote shutdown forms.
@@ -24,7 +27,8 @@ demonstrations of Amy and Grok speech passed; Brad authorized publication.
 Phase 6 is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6),
 merge commit `ab37520`.
 Spoken shutdown confirmation and optional `tts.normalize: peak` are in; Brad
-confirms both work. The latest automated checks passed all 561 tests, lint, and
+confirms both work. Phase 7 family demonstration passed; Brad authorized
+publication. The latest automated checks passed all 578 tests, lint, and
 formatting.
 See [Claude setup and demos](docs/CLAUDE.md).
 The [Hermes/Codex STT capability review](docs/STT-CAPABILITIES.md) found no ready
@@ -131,13 +135,20 @@ an existing file. For pip-managed environments, install `.[dev,piper]` with pip.
 Piper is a separate GPL-3.0 engine; voice terms are linked in the
 [setup and complete demonstration checklist](docs/PHASE6-DEMO.md).
 
-The bridge generates and validates all speech before keying. With a 10-second
-TX cap and 0.2-second settle, spoken audio must fit in 9.8 seconds. The agent is
-asked for a short sentence; longer audio is rejected before transmission, even
-if it fits the character cap. `tts.timeout_seconds` controls synthesis time,
-separately from agent and radio limits. Capture remains closed during processing
-and playback. The follow-up window opens after playback and PTT release.
-The extra post-transmit mute timer remains phase 7 work.
+The bridge generates speech before keying. With a 10-second TX cap and
+0.2-second settle, playback is cropped to 9.8 seconds so an overlong answer is
+cut off instead of holding the transmitter. `tts.timeout_seconds` controls
+synthesis time, separately from agent and radio limits. Capture remains closed
+during processing and playback. After unkey, `radio.post_tx_mute_seconds`
+(default 2 in the example) waits before the next listen; 0 disables the mute.
+The follow-up window opens after playback and PTT release.
+
+`radio.callsign` is your granted station ID, or empty for no spoken ID.
+Walkietalk never invents a callsign. `radio.callsign_mode` is `off`,
+`end_of_reply` (after each spoken answer), or `interval` (first answer, then
+every `radio.callsign_interval_seconds`). The ID is synthesized with the
+selected voice and sent in the same transmission as the answer. No music or
+sound effects.
 
 ## Configure the AIOC
 
@@ -169,8 +180,11 @@ Grok can return different levels; `peak` makes them use the same digital
 headroom. `audio.gain` still applies afterward, so with `peak` start gain at
 `1.0` or you will clip immediately. `play` of an existing file is unchanged.
 Restart after editing config. Capture and STT are unaffected.
-`radio.max_tx_seconds` defaults to 10 and cannot exceed 30.
+`radio.max_tx_seconds` defaults to 10. It must be a finite number greater than
+0; there is no extra software ceiling. The program enforces the value you set.
 `radio.settle_seconds` defaults to 0.2, allowing PTT to settle before playback.
+`radio.post_tx_mute_seconds` is 0 through 30 (example 2). `radio.callsign` stays
+empty until you put your real ID there.
 The WAV plus settle time must fit the transmit limit.
 
 `vad.energy_threshold` is RMS from 0 to 1; begin with 0.02 and tune from the

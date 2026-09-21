@@ -21,7 +21,9 @@ merge commit `ebdb8e7`. Phase 6 family demonstrations of Piper (Amy) and Grok
 speech are complete. Brad showed the girls and authorized publication. Phase 6
 is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6), merge
 commit `ab37520`. Spoken shutdown confirmation and optional `tts.normalize: peak`
-are follow-ups on main; Brad confirms both. See the
+are follow-ups on main; Brad confirms both. Phase 7 family demonstration is
+accepted: mute, cutoff, timeout, wake_phrase, conversation mode, and clean
+unkey. Brad authorized publication. See the
 [complete Amy setup and demonstration checklist](PHASE6-DEMO.md).
 See the [complete acceptance checklist and current demo](PHASE5-DEMO.md).
 The stub, Hermes, Codex, and Grok Build adapters are implemented. Brad showed the stub to the girls;
@@ -97,6 +99,7 @@ as documented; tags do not restore firmware, Linux permissions, or account sessi
 | Phase 4: STT plug | `phase-4-stt-plug`; [PR #4](https://github.com/bbusenius/walkietalk/pull/4) | Brad verified faster-whisper and SuperGrok Grok Voice Transcribe on the radio. `grok_api` live key test skipped. Merged to `main`. |
 | Phase 5: agent plug | `phase-5-agent-plug`; [PR #5](https://github.com/bbusenius/walkietalk/pull/5) | Stub shown to the girls. Hermes text connection verified and family demonstration confirmed by Brad. Codex demonstration confirmed. Grok Build radio demonstration, backend comparison, failures, continuous listening, and shutdown confirmed by Brad. Claude CLI text check passed; Brad confirms both Claude routes work as expected. Hermes STT service deferred by Brad; standalone Codex STT interface not verified. Brad authorized committing, publishing, and merging phase 5. |
 | Phase 6: TTS plug | `phase-6-piper-voice`; [PR #6](https://github.com/bbusenius/walkietalk/pull/6) | Brad confirmed Piper (Amy) and Grok spoken replies with the girls. Optional `grok_api` live key test skipped. Automated checks passed. Merged to `main` as `ab37520`. |
+| Phase 7: watchdogs | `phase-7-watchdogs` | Brad confirmed mute, overlong cutoff, conversation timeout, wake_phrase, and clean unkey. Optional spoken ID stays off unless the operator sets a callsign. Automated checks passed. Brad authorized committing, publishing, and merging phase 7. |
 
 ## Phase 1 verification results
 
@@ -217,5 +220,5 @@ See [the complete phase checklist and demonstration commands](PHASE5-DEMO.md).
 - [x] Family explanation complete; Brad authorized phase 6 publication.
 
 The [phase 6 checklist](PHASE6-DEMO.md) gives every command and expected result.
-No live TTS inference or RF transmission runs in CI. Phase 7's additional mute timer,
-watchdogs, and callsign handling remain deferred.
+No live TTS inference or RF transmission runs in CI. Phase 7 family demonstration
+is accepted. Brad authorized publication. Walkietalk does not invent a station ID.

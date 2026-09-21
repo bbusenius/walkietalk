@@ -11,6 +11,7 @@ import yaml
 STT_MODELS = ("tiny", "base")
 STT_BACKENDS = ("faster-whisper", "grok", "grok_api")
 TTS_NORMALIZE = ("off", "peak")
+CALLSIGN_MODES = ("off", "end_of_reply", "interval")
 AGENT_BACKENDS = ("stub", "hermes", "codex", "grok", "claude", "claude_api")
 AGENT_BACKEND_ERROR = (
     "agent.backend must be stub, hermes, codex, grok, claude, or claude_api; "
@@ -68,6 +69,10 @@ class Config:
     line: str = "dtr"
     max_tx_seconds: float = 10
     settle_seconds: float = 0.2
+    post_tx_mute_seconds: float = 0
+    callsign: str = ""
+    callsign_mode: str = "off"
+    callsign_interval_seconds: float = 900
     energy_threshold: float = 0.02
     hangover_ms: int = 400
     max_utterance_seconds: float = 12
@@ -122,7 +127,14 @@ def load_config(path: Path) -> Config:
     expected = {
         "audio": {"input_device", "output_device", "gain"},
         "ptt": {"serial_port", "line"},
-        "radio": {"max_tx_seconds", "settle_seconds"},
+        "radio": {
+            "max_tx_seconds",
+            "settle_seconds",
+            "post_tx_mute_seconds",
+            "callsign",
+            "callsign_mode",
+            "callsign_interval_seconds",
+        },
         "vad": {"energy_threshold", "hangover_ms", "max_utterance_seconds"},
         "stt": {"backend", "model", "timeout_seconds"},
         "tts": {
@@ -367,10 +379,39 @@ def load_config(path: Path) -> Config:
         shutdown["confirmation_seconds"], "shutdown.confirmation_seconds", maximum=300
     )
     gain = validate_gain(data["audio"]["gain"])
-    cap = seconds(data["radio"]["max_tx_seconds"], "radio.max_tx_seconds")
+    cap = data["radio"]["max_tx_seconds"]
+    if isinstance(cap, bool) or not isinstance(cap, (int, float)):
+        raise WalkietalkError("radio.max_tx_seconds must be a number")
+    cap = float(cap)
+    if not math.isfinite(cap) or cap <= 0:
+        raise WalkietalkError("radio.max_tx_seconds must be a finite number greater than 0")
     settle = seconds(data["radio"]["settle_seconds"], "radio.settle_seconds", maximum=2)
     if settle >= cap:
         raise WalkietalkError("radio.settle_seconds must be less than max_tx_seconds")
+    mute = data["radio"]["post_tx_mute_seconds"]
+    if isinstance(mute, bool) or not isinstance(mute, (int, float)):
+        raise WalkietalkError("radio.post_tx_mute_seconds must be a number")
+    mute = float(mute)
+    if not math.isfinite(mute) or mute < 0 or mute > 30:
+        raise WalkietalkError("radio.post_tx_mute_seconds must be from 0 through 30")
+    callsign = data["radio"]["callsign"]
+    if (
+        not isinstance(callsign, str)
+        or len(callsign) > 64
+        or any(not char.isprintable() for char in callsign)
+        or (callsign.strip() and not re.search(r"[A-Za-z0-9]", callsign))
+    ):
+        raise WalkietalkError(
+            "radio.callsign must be empty or your station ID, at most 64 characters"
+        )
+    ident_mode = data["radio"]["callsign_mode"]
+    if ident_mode not in CALLSIGN_MODES:
+        raise WalkietalkError("radio.callsign_mode must be off, end_of_reply, or interval")
+    interval = seconds(
+        data["radio"]["callsign_interval_seconds"],
+        "radio.callsign_interval_seconds",
+        maximum=1800,
+    )
     return Config(
         input_device=data["audio"]["input_device"],
         output_device=data["audio"]["output_device"],
@@ -379,6 +420,10 @@ def load_config(path: Path) -> Config:
         line=data["ptt"]["line"],
         max_tx_seconds=cap,
         settle_seconds=settle,
+        post_tx_mute_seconds=mute,
+        callsign=callsign.strip(),
+        callsign_mode=ident_mode,
+        callsign_interval_seconds=interval,
         energy_threshold=seconds(
             data["vad"]["energy_threshold"], "vad.energy_threshold", maximum=1
         ),

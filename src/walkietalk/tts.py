@@ -16,8 +16,15 @@ from .agent_process import run_cli
 from .audio import Wav, read_wav
 from .config import Config, WalkietalkError
 
-MAX_TTS_BYTES = 3_000_000
 RADIO_RATE = 48000
+
+
+def speech_byte_budget(max_seconds: float, rate: int = RADIO_RATE) -> int:
+    """PCM bytes for the configured TX window, plus WAV header slack."""
+    return int(max(max_seconds, 0) * rate * 2) + 4096
+
+
+MAX_TTS_BYTES = speech_byte_budget(10)
 
 
 class TtsBackend(Protocol):
@@ -26,7 +33,15 @@ class TtsBackend(Protocol):
     def synthesize(self, text: str) -> Wav: ...
 
 
-def radio_wav(wav: Wav, maximum: float) -> Wav:
+def _crop(wav: Wav, maximum: float) -> Wav:
+    count = min(len(wav.frames) // 2, max(0, int(maximum * wav.rate)))
+    if count < 1:
+        raise WalkietalkError("Spoken reply exceeds the transmit limit; no transmission")
+    frames = wav.frames[: count * 2]
+    return Wav(frames, wav.rate, count / wav.rate)
+
+
+def radio_wav(wav: Wav, maximum: float, *, truncate: bool = False) -> Wav:
     """Validate actual PCM duration and convert speech to the AIOC's 48 kHz."""
     if (
         not isinstance(wav, Wav)
@@ -35,15 +50,17 @@ def radio_wav(wav: Wav, maximum: float) -> Wav:
         or wav.rate not in {8000, 11025, 12000, 16000, 22050, 24000, 32000, 48000}
         or not wav.frames
         or len(wav.frames) % 2
-        or len(wav.frames) > MAX_TTS_BYTES
     ):
         raise WalkietalkError("Voice returned invalid PCM audio; no transmission")
     duration = len(wav.frames) / (2 * wav.rate)
     if duration > maximum:
-        raise WalkietalkError(
-            f"Spoken reply is {duration:.2f}s; maximum is {maximum:g}s after PTT settle. "
-            "Ask for a shorter answer; no transmission"
-        )
+        if not truncate:
+            raise WalkietalkError(
+                f"Spoken reply is {duration:.2f}s; maximum is {maximum:g}s after PTT settle. "
+                "Ask for a shorter answer; no transmission"
+            )
+        wav = _crop(wav, maximum)
+        duration = wav.duration
     if wav.rate == RADIO_RATE:
         return Wav(wav.frames, RADIO_RATE, duration)
     samples = np.frombuffer(wav.frames, dtype="<i2")
@@ -51,9 +68,12 @@ def radio_wav(wav: Wav, maximum: float) -> Wav:
     # All accepted source rates are <= 48 kHz: only speech upsampling is needed.
     values = np.interp(np.arange(count) * wav.rate / RADIO_RATE, np.arange(len(samples)), samples)
     frames = np.rint(values).clip(-32768, 32767).astype("<i2").tobytes()
-    if count / RADIO_RATE > maximum:
-        raise WalkietalkError("Spoken reply exceeds the transmit limit; no transmission")
-    return Wav(frames, RADIO_RATE, count / RADIO_RATE)
+    cropped = Wav(frames, RADIO_RATE, count / RADIO_RATE)
+    if cropped.duration > maximum:
+        if not truncate:
+            raise WalkietalkError("Spoken reply exceeds the transmit limit; no transmission")
+        return _crop(cropped, maximum)
+    return cropped
 
 
 def level_wav(wav: Wav, normalize: str) -> Wav:
@@ -120,7 +140,7 @@ class PiperTts:
                 },
                 deadline=deadline,
                 final_path=path,
-                max_final_bytes=MAX_TTS_BYTES,
+                max_final_bytes=speech_byte_budget(self.config.max_tx_seconds) * 2,
                 name="Piper",
                 executable_setting="tts.piper_executable",
             )
@@ -128,11 +148,15 @@ class PiperTts:
                 raise WalkietalkError(
                     "Piper synthesis failed; diagnostics withheld; no transmission"
                 )
-            if not path.is_file() or path.stat().st_size > MAX_TTS_BYTES:
+            if (
+                not path.is_file()
+                or path.stat().st_size > speech_byte_budget(self.config.max_tx_seconds) * 2
+            ):
                 raise WalkietalkError("Piper returned no bounded WAV file; no transmission")
-            # Parse at the absolute radio ceiling, then apply this config's shorter cap.
-            wav = read_wav(path, 30)
-            wav = radio_wav(wav, self.config.max_tx_seconds - self.config.settle_seconds)
+            wav = read_wav(path, self.config.max_tx_seconds * 2)
+            wav = radio_wav(
+                wav, self.config.max_tx_seconds - self.config.settle_seconds, truncate=True
+            )
             wav = level_wav(wav, self.config.tts_normalize)
             if time.monotonic() >= deadline:
                 raise WalkietalkError("Piper timed out; audio discarded; no transmission")

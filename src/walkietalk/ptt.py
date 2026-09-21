@@ -45,6 +45,8 @@ class SerialPTT:
                 "PTT release could not be confirmed; turn the radio off. " + "; ".join(errors)
             )
         print("PTT OFF", flush=True)
+        if getattr(self.serial, self.line, False):
+            raise WalkietalkError("PTT still asserted after release; turn the radio off")
 
     def close(self) -> None:
         if self.serial is not None:
