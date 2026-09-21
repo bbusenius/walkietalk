@@ -20,8 +20,9 @@ See [the phase checkpoints](docs/PHASES.md).
 demonstrations, plus continuous listening and both remote shutdown forms.
 Brad also confirms both Claude routes work as expected. Phase 5 is merged in
 [PR #5](https://github.com/bbusenius/walkietalk/pull/5). Phase 6 family
-demonstrations of Amy and Grok speech passed; Brad authorized publication
-in [PR #6](https://github.com/bbusenius/walkietalk/pull/6).
+demonstrations of Amy and Grok speech passed; Brad authorized publication.
+Phase 6 is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6),
+merge commit `ab37520`.
 The latest automated phase 6 checks passed all 549 tests, lint, and formatting.
 See [Claude setup and demos](docs/CLAUDE.md).
 The [Hermes/Codex STT capability review](docs/STT-CAPABILITIES.md) found no ready

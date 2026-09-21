@@ -18,8 +18,9 @@ Do not begin the next phase until the current demonstration passes.
 
 Phase 5 is demonstrated and merged in [PR #5](https://github.com/bbusenius/walkietalk/pull/5),
 merge commit `ebdb8e7`. Phase 6 family demonstrations of Piper (Amy) and Grok
-speech are complete. Brad showed the girls and authorized publication. See
-[PR #6](https://github.com/bbusenius/walkietalk/pull/6) and the
+speech are complete. Brad showed the girls and authorized publication. Phase 6
+is merged in [PR #6](https://github.com/bbusenius/walkietalk/pull/6), merge
+commit `ab37520`. See the
 [complete Amy setup and demonstration checklist](PHASE6-DEMO.md).
 See the [complete acceptance checklist and current demo](PHASE5-DEMO.md).
 The stub, Hermes, Codex, and Grok Build adapters are implemented. Brad showed the stub to the girls;
@@ -94,7 +95,7 @@ as documented; tags do not restore firmware, Linux permissions, or account sessi
 | Phase 3: wake gate | `phase-3-wake-gate`; [PR #3](https://github.com/bbusenius/walkietalk/pull/3) | Brad demoed wake phrase and conversation mode with the girls. Merged to `main`. |
 | Phase 4: STT plug | `phase-4-stt-plug`; [PR #4](https://github.com/bbusenius/walkietalk/pull/4) | Brad verified faster-whisper and SuperGrok Grok Voice Transcribe on the radio. `grok_api` live key test skipped. Merged to `main`. |
 | Phase 5: agent plug | `phase-5-agent-plug`; [PR #5](https://github.com/bbusenius/walkietalk/pull/5) | Stub shown to the girls. Hermes text connection verified and family demonstration confirmed by Brad. Codex demonstration confirmed. Grok Build radio demonstration, backend comparison, failures, continuous listening, and shutdown confirmed by Brad. Claude CLI text check passed; Brad confirms both Claude routes work as expected. Hermes STT service deferred by Brad; standalone Codex STT interface not verified. Brad authorized committing, publishing, and merging phase 5. |
-| Phase 6: TTS plug | `phase-6-piper-voice`; [PR #6](https://github.com/bbusenius/walkietalk/pull/6) | Brad confirmed Piper (Amy) and Grok spoken replies with the girls. Optional `grok_api` live key test skipped. Automated checks passed. Brad authorized committing, publishing, and merging phase 6. |
+| Phase 6: TTS plug | `phase-6-piper-voice`; [PR #6](https://github.com/bbusenius/walkietalk/pull/6) | Brad confirmed Piper (Amy) and Grok spoken replies with the girls. Optional `grok_api` live key test skipped. Automated checks passed. Merged to `main` as `ab37520`. |
 
 ## Phase 1 verification results
 
