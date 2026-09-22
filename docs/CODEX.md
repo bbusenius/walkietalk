@@ -42,10 +42,12 @@ inherit the model from `~/.codex/config.toml`. See
 [config.example.yaml](../config.example.yaml) for the complete schema.
 
 The subprocess runs in a fresh empty temporary directory, using `codex exec`
-with a read-only sandbox. Shell tools, connectors/apps, hooks, web search, and
-delegation are disabled; desktop MCP configuration is not loaded. Permission
-requests are never approved. Strict config validation makes incompatible CLI
-versions fail locally. No changes are made to the desktop Codex configuration.
+with a read-only sandbox. Shell tools, connectors/apps, hooks, and delegation
+are disabled; desktop MCP configuration is not loaded. Web search is `disabled`
+unless `agent.web_search` is `true`, which selects live web search and still
+leaves the shell disabled. Permission requests are never approved. Strict config
+validation makes incompatible CLI versions fail locally. No changes are made to
+the desktop Codex configuration.
 
 Traffic and instructions go through stdin, never shell interpolation. Only a
 successful completed turn and its final-answer file can become a reply. Event

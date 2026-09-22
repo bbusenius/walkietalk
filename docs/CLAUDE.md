@@ -87,9 +87,10 @@ tokens. It asks the CLI for authentication status and requires saved first-party
 Claude account login. API-key-only authentication must use `claude_api` instead.
 
 Each request runs in an empty temporary directory. The adapter uses
-`--safe-mode`, `--restricted`, no user/project settings, disabled hooks, empty
-built-in tools, denied MCP tools, an empty strict MCP configuration, disabled
-slash commands/browser integration, and no permission prompts. It sends traffic
+`--safe-mode`, `--restricted`, no user/project settings, disabled hooks, denied
+MCP tools, an empty strict MCP configuration, disabled slash commands/browser
+integration, and no permission prompts. Built-in tools stay empty unless
+`agent.web_search` is `true`, which offers only `WebSearch`. It sends traffic
 on stdin and replaces the system prompt with the bridge's instructions.
 `--no-session-persistence` avoids saving/resuming desktop chats; each request
 replays only this invocation's bounded completed radio history. The radio
@@ -104,8 +105,8 @@ See [headless operation](https://code.claude.com/docs/en/headless) and the
 managed policy still applies; this adapter does not bypass that policy.
 
 Only a successful final result from the expected model/session becomes answer
-text. Tool activity, malformed output, permission failures, and unsuccessful
-results are discarded. Rate-limit metadata is ignored. The overall timeout
+text. Tool activity other than an allowed web lookup, malformed output,
+permission failures, and unsuccessful results are discarded. Rate-limit metadata is ignored. The overall timeout
 includes preflight and generation; the subprocess supervisor terminates the
 process group on exit, timeout, or interruption. Cleanup can add about one second.
 
@@ -131,7 +132,9 @@ Requests go to `POST https://api.anthropic.com/v1/messages`, with `x-api-key`,
 `anthropic-version: 2023-06-01`, and JSON content headers. The existing HTTPX
 dependency supplies transport under one overall asynchronous deadline covering
 connect and the entire response body. There are no redirects, ambient proxies,
-automatic retries, tools, SDK, or MCP. The bridge supplies the system instructions
+automatic retries, SDK, or MCP. Tools stay absent unless `agent.web_search` is
+`true`, which adds the server-side web search tool with a limit of three
+lookups in that request. The bridge supplies the system instructions
 and bounded user/assistant history. Only completed final text blocks are kept;
 thinking blocks never become answers. Error bodies and credentials are withheld.
 Timeout closes the connection and discards late output; it cannot guarantee

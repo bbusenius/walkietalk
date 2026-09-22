@@ -7,7 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .agent import SessionContext, validate_reply
+from .agent import WEB_SEARCH_TURNS, SessionContext, validate_reply
 from .agent_process import run_cli
 from .config import Config, WalkietalkError
 
@@ -35,7 +35,16 @@ def cli_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key in CLI_ENV}
 
 
-def parse_result(output: bytes, session_id: str, model: str) -> str:
+def _claude_block_allowed(block: object, *, web_search: bool) -> bool:
+    if not isinstance(block, dict):
+        return False
+    kind = block.get("type")
+    if kind in ("text", "thinking", "redacted_thinking"):
+        return True
+    return web_search and kind == "tool_use" and block.get("name") == "WebSearch"
+
+
+def parse_result(output: bytes, session_id: str, model: str, *, web_search: bool = False) -> str:
     initialized = False
     final = None
     try:
@@ -54,7 +63,7 @@ def parse_result(output: bytes, session_id: str, model: str) -> str:
                 initialized
                 or event.get("session_id") != session_id
                 or event.get("model") != model
-                or event.get("tools") != []
+                or event.get("tools") != (["WebSearch"] if web_search else [])
                 or event.get("mcp_servers") != []
                 or event.get("plugins", []) != []
             ):
@@ -71,13 +80,21 @@ def parse_result(output: bytes, session_id: str, model: str) -> str:
                 event.get("error")
                 or message.get("model") != model
                 or not isinstance(content, list)
+                or any(not _claude_block_allowed(block, web_search=web_search) for block in content)
+            ):
+                raise WalkietalkError("Claude Code reported an error or unexpected tools/model")
+        elif kind == "user" and web_search:
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if (
+                not isinstance(content, list)
+                or not content
                 or any(
-                    not isinstance(block, dict)
-                    or block.get("type") not in ("text", "thinking", "redacted_thinking")
+                    not isinstance(block, dict) or block.get("type") != "tool_result"
                     for block in content
                 )
             ):
-                raise WalkietalkError("Claude Code reported an error or unexpected tools/model")
+                raise WalkietalkError("Claude Code returned an unexpected event; reply discarded")
         elif kind == "result":
             if (
                 not initialized
@@ -173,7 +190,7 @@ class ClaudeCodeAgent:
                 "stream-json",
                 "--verbose",
                 "--tools",
-                "",
+                "WebSearch" if self.config.agent_web_search else "",
                 "--disallowedTools",
                 "mcp__*",
                 "--strict-mcp-config",
@@ -191,7 +208,7 @@ class ClaudeCodeAgent:
                 "--system-prompt-file",
                 str(system_path),
                 "--max-turns",
-                "1",
+                str(WEB_SEARCH_TURNS) if self.config.agent_web_search else "1",
                 "--model",
                 self.config.claude_model,
             ]
@@ -214,5 +231,10 @@ class ClaudeCodeAgent:
                     "Claude Code failed; check CLI login, usage limits, model access, and "
                     "installed CLI options. Diagnostics withheld; no fallback attempted"
                 )
-            answer = parse_result(output, session_context.session_id, self.config.claude_model)
+            answer = parse_result(
+                output,
+                session_context.session_id,
+                self.config.claude_model,
+                web_search=self.config.agent_web_search,
+            )
             return validate_reply(answer, self.config.agent_max_reply_chars)

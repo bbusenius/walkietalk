@@ -127,6 +127,33 @@ capture failures stop with a local error.
 completed context pairs (1–32); `agent.timeout_seconds` caps the overall request.
 Traffic is also bounded to 4000 characters.
 
+`agent.web_search` defaults to `false`. Set it to `true` to let the selected
+agent look up public web information before answering. Commands, local file
+changes, and messages to other people stay unavailable. The lookup uses the
+same `agent.timeout_seconds` deadline, so raise that (up to 300 seconds) when a
+search needs longer than the default minute. The radio stays quiet until the
+answer is ready, and that answer still has to fit `max_reply_chars` and the
+transmit window. Hermes receives this as an instruction; the Hermes profile
+still decides which tools exist. Pages found on the web are untrusted text.
+
+`agent.instructions` replaces the guidance paragraph sent to every agent.
+Leave it empty for the built-in default: short, plain, spoken-style sentences
+suitable for a family, including the character cap. When the answer will be
+spoken, that default also names the radio and the word budget. These
+placeholders are filled from the other settings, including on a receive-only
+session:
+
+- `{max_reply_chars}`
+- `{spoken_seconds}` from `radio.max_tx_seconds` minus `radio.settle_seconds`
+- `{max_words}`, twice that window
+
+Write `{{` and `}}` for a literal brace. Any other placeholder is a config
+error. The text must be printable and at most 2000 characters. After the
+guidance, the bridge still adds the web-search rule and tells the agent to
+return only the final answer. A custom paragraph that never mentions
+`{max_reply_chars}` is allowed; a longer reply is still discarded. Spoken
+audio is still cut at the transmit window.
+
 The `hermes_url` and `hermes_token_env` fields point to the selected environment.
 The Codex/Grok/Claude `*_executable`, `*_model`, and `*_reasoning_effort` fields
 configure those adapters. Executables are names on PATH or absolute paths, not

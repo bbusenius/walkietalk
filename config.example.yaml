@@ -46,6 +46,8 @@ agent:
   max_reply_chars: 600     # reject oversized replies; 1–2000 characters
   history_turns: 8         # completed traffic/reply pairs to retain; 1–32
   timeout_seconds: 60      # overall agent deadline; >0 to 300 seconds
+  web_search: false        # true allows a public web lookup; shell and files stay off
+  instructions: ""         # empty keeps the default guidance; {max_reply_chars}, {spoken_seconds}, {max_words}
   hermes_url: "http://127.0.0.1:8642" # API base URL without /v1; use reachable Docker IP if needed
   hermes_token_env: "WALKIETALK_HERMES_TOKEN" # environment variable name, never the token
   codex_executable: "codex" # executable name on PATH or absolute path; no shell arguments

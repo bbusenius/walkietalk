@@ -102,10 +102,24 @@ def test_actual_process_final_only_stdin_safe_environment_and_explicit_resume(
         'web_search="disabled"',
     ):
         assert setting in first["args"]
+    assert "Do not search the web." in first["prompt"]
     assert "--ignore-user-config" in first["args"] and "--strict-config" in first["args"]
     assert SECRET not in json.dumps(first["env"])
     assert not Path(first["cwd"]).exists()
     assert len(session.history) == 2
+
+
+def test_web_search_uses_live_lookup_and_keeps_shell_disabled(fake_cli):
+    config, _, calls = fake_cli
+    config = replace(config, agent_web_search=True)
+    assert AgentSession(config, open_agent(config)).reply("weather") == "Rain falls from clouds."
+    record = calls()[-1]
+    assert 'web_search="live"' in record["args"]
+    assert 'web_search="disabled"' not in record["args"]
+    assert "features.shell_tool=false" in record["args"]
+    assert record["args"][record["args"].index("--sandbox") + 1] == "read-only"
+    assert "You may search the public web." in record["prompt"]
+    assert "Do not use tools" not in record["prompt"]
 
 
 def test_context_rotates_at_budget_and_new_radio_session_never_resumes(fake_cli):

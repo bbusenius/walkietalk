@@ -11,6 +11,11 @@ from .config import Config, WalkietalkError
 
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 MAX_RESPONSE_BYTES = 65536
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20250305",
+    "name": "web_search",
+    "max_uses": 3,
+}
 
 
 class ClaudeApiAgent:
@@ -50,6 +55,8 @@ class ClaudeApiAgent:
             # Includes any reasoning tokens. The separate character cap still applies.
             "max_tokens": max(2048, self.config.agent_max_reply_chars * 2),
         }
+        if self.config.agent_web_search:
+            payload["tools"] = [WEB_SEARCH_TOOL]
         if self.config.claude_api_reasoning_effort != "default":
             payload["output_config"] = {"effort": self.config.claude_api_reasoning_effort}
         try:
@@ -109,6 +116,13 @@ class ClaudeApiAgent:
             kind = block.get("type")
             if kind == "text" and isinstance(block.get("text"), str):
                 parts.append(block["text"])
-            elif kind not in ("thinking", "redacted_thinking"):
+            elif kind in ("thinking", "redacted_thinking"):
+                continue
+            elif self.config.agent_web_search and (
+                (kind == "server_tool_use" and block.get("name") == "web_search")
+                or kind == "web_search_tool_result"
+            ):
+                continue
+            else:
                 raise WalkietalkError("Claude API returned unexpected content; reply discarded")
         return validate_reply("\n".join(parts), self.config.agent_max_reply_chars)

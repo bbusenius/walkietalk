@@ -72,16 +72,21 @@ is outside that temporary home; the saved Grok login remains in its original
 location. The existing desktop configuration is never edited. Native Grok profile
 settings still exist, which is why the preflight is required.
 
-The CLI runs in an empty temporary working directory, with a read-only sandbox,
-`dontAsk` permission mode, an explicit deny-all tool rule, no subagents, no web
-search, and a tool filter that removes the selected built-in tool. These controls
-apply even when desktop Grok normally auto-approves tools. The tool filter removes built-in tools, and the adapter rejects tool calls or
-active connector status in the result. Headless mode runs the agent
-in process; the adapter does not attach to a shared desktop leader.
+The CLI runs in an empty temporary working directory, with `dontAsk` permission
+mode and no subagents. With `agent.web_search: false` (the default) it uses a
+read-only sandbox, a deny-all tool rule, web search disabled, and a tool filter
+that removes the selected built-in tool. With `agent.web_search: true` the only
+offered tool is web search, shell and file tools stay denied, and the sandbox is
+`workspace` so the lookup can use the network. These controls apply even when
+desktop Grok normally auto-approves tools. The adapter rejects any tool call
+other than that lookup, and it rejects active connector status in the result.
+Headless mode runs the agent in process; the adapter does not attach to a shared
+desktop leader.
 
 Only the successful terminal result from `streaming-messages-json` becomes an
 answer. Walkietalk checks the dedicated session ID, OAuth login marker,
-permission mode, successful end-of-turn status, and absence of tool calls.
+permission mode, successful end-of-turn status, and absence of unexpected tool
+calls.
 Reasoning, intermediate text, stderr, error objects, and incomplete answers are
 never used as replies. The common reply cap still applies.
 

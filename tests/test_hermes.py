@@ -82,7 +82,19 @@ def test_final_text_only_and_bounded_history_shared_radio_session(monkeypatch, c
     assert posts[0]["session_id"] == posts[1]["session_id"]
     assert posts[0]["session_id"].startswith("walkietalk-")
     assert "spoken-style" in posts[0]["instructions"]
+    assert "Do not search the web." in posts[0]["instructions"]
     assert "provider" not in posts[0] and "model" not in posts[0]
+
+
+def test_web_search_instruction_allows_a_lookup_only(monkeypatch, config):
+    requests = mock_service(monkeypatch)
+    config = replace(config, agent_web_search=True)
+    assert AgentSession(config, open_agent(config)).reply("weather") == "Rain falls from clouds."
+    posts = [json.loads(request.content) for request in requests if request.method == "POST"]
+    instructions = posts[0]["instructions"]
+    assert "public web" in instructions
+    assert "Do not run commands" in instructions
+    assert "Do not search the web." not in instructions
 
 
 def test_missing_token_never_contacts_service(monkeypatch, config):

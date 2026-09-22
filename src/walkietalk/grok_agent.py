@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from .agent import SessionContext, validate_reply
+from .agent import WEB_SEARCH_TURNS, SessionContext, validate_reply
 from .agent_process import run_cli
 from .config import Config, WalkietalkError
 
@@ -157,6 +157,51 @@ class GrokAgent:
             if code:
                 raise WalkietalkError("Grok Build profile check failed; diagnostics withheld")
             inspect_profile(out)
+            if self.config.agent_web_search:
+                # read-only blocks child-process network on Linux, which blocks
+                # the lookup. Workspace allows that network. Write tools stay denied.
+                tool_flags = [
+                    "--sandbox",
+                    "workspace",
+                    "--tools",
+                    "web_search",
+                    "--deny",
+                    "Bash",
+                    "--deny",
+                    "Read",
+                    "--deny",
+                    "Edit",
+                    "--deny",
+                    "Grep",
+                    "--deny",
+                    "MCPTool",
+                    "--deny",
+                    "WebFetch",
+                    "--max-turns",
+                    str(WEB_SEARCH_TURNS),
+                ]
+                tool_policy = (
+                    "You may search the public web. "
+                    "Do not execute commands, change files, read local files, "
+                    "or contact other people. "
+                )
+            else:
+                tool_flags = [
+                    "--sandbox",
+                    "read-only",
+                    "--tools",
+                    "read_file",
+                    "--disallowed-tools",
+                    "read_file",
+                    "--deny",
+                    "*",
+                    "--disable-web-search",
+                    "--max-turns",
+                    "1",
+                ]
+                tool_policy = (
+                    "Do not use tools, execute commands, change files, or contact other people. "
+                )
             command = [
                 executable,
                 "--prompt-file",
@@ -166,19 +211,9 @@ class GrokAgent:
                 "streaming-messages-json",
                 "--permission-mode",
                 "dontAsk",
-                "--sandbox",
-                "read-only",
-                "--tools",
-                "read_file",
-                "--disallowed-tools",
-                "read_file",
-                "--deny",
-                "*",
+                *tool_flags,
                 "--no-subagents",
-                "--disable-web-search",
                 "--no-plan",
-                "--max-turns",
-                "1",
                 "--model",
                 self.config.grok_model,
                 "--resume" if resume else "--session-id",
@@ -195,9 +230,10 @@ class GrokAgent:
                 ]
             )
             prompt = (
-                context.instructions + "\nThis radio adapter answers with text only. "
-                "Do not use tools, execute commands, change files, or contact other people. "
-                "If the request needs unavailable permissions, explain that briefly.\n"
+                context.instructions
+                + "\nThis radio adapter answers with text only. "
+                + tool_policy
+                + "If the request needs unavailable permissions, explain that briefly.\n"
                 + json.dumps(
                     {"radio_session": context.session_id, "history": history, "traffic": user_text},
                     ensure_ascii=False,
@@ -209,14 +245,29 @@ class GrokAgent:
                     "Grok Build failed; check `grok login`, account access, and CLI version. "
                     "No API-key fallback; diagnostics withheld"
                 )
-            answer = parse_completion(out, thread_id)
+            answer = parse_completion(out, thread_id, web_search=self.config.agent_web_search)
             answer = validate_reply(answer, self.config.agent_max_reply_chars)
             self._thread_id = thread_id
             self._turns = self._turns + 1 if resume else len(context.history) + 1
             return answer
 
 
-def parse_completion(output: bytes, expected_id: str) -> str:
+def _grok_block_allowed(block: object, *, web_search: bool) -> bool:
+    if not isinstance(block, dict):
+        return False
+    kind = block.get("type")
+    if kind in ("text", "thinking", "redacted_thinking"):
+        return True
+    if not web_search:
+        return False
+    if kind == "web_search_tool_result":
+        return True
+    if kind in ("server_tool_use", "tool_use"):
+        return block.get("name") == "web_search"
+    return False
+
+
+def parse_completion(output: bytes, expected_id: str, *, web_search: bool = False) -> str:
     """Only the successful terminal result is an answer, never reasoning or logs."""
     initialized = False
     result = None
@@ -242,9 +293,22 @@ def parse_completion(output: bytes, expected_id: str) -> str:
             elif not initialized:
                 raise ValueError
             elif kind == "assistant":
-                for block in event["message"]["content"]:
-                    if block.get("type") not in ("text", "thinking", "redacted_thinking"):
-                        raise ValueError
+                content = event["message"]["content"]
+                if not isinstance(content, list) or any(
+                    not _grok_block_allowed(block, web_search=web_search) for block in content
+                ):
+                    raise ValueError
+            elif kind == "user" and web_search:
+                content = event["message"]["content"]
+                if (
+                    not isinstance(content, list)
+                    or not content
+                    or any(
+                        not isinstance(block, dict) or block.get("type") != "tool_result"
+                        for block in content
+                    )
+                ):
+                    raise ValueError
             elif kind == "result":
                 if (
                     event.get("subtype") != "success"

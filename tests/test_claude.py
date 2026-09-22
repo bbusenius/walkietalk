@@ -51,6 +51,7 @@ def fake_cli(monkeypatch, *, auth=AUTH, answer="Rain falls from clouds.", mutate
             return 0, json.dumps(auth).encode(), b""
         session_id = command[command.index("--session-id") + 1]
         model = command[command.index("--model") + 1]
+        requested = command[command.index("--tools") + 1]
         kwargs["system"] = Path(command[command.index("--system-prompt-file") + 1]).read_text()
         events = [
             {
@@ -58,7 +59,7 @@ def fake_cli(monkeypatch, *, auth=AUTH, answer="Rain falls from clouds.", mutate
                 "subtype": "init",
                 "session_id": session_id,
                 "model": model,
-                "tools": [],
+                "tools": [] if requested == "" else requested.split(","),
                 "mcp_servers": [],
                 "plugins": [],
             },
@@ -147,6 +148,53 @@ def test_official_login_isolated_flags_stdin_history_and_no_secrets(monkeypatch,
     assert cli.main(["-c", "unused", "agent-check", "Hello"]) == 0
     out = capsys.readouterr()
     assert "Reply: Rain falls from clouds." in out.out and SECRET not in out.out + out.err
+
+
+def test_web_search_offers_only_websearch_and_hides_page_text(monkeypatch, config):
+    def mutate(events):
+        model = events[0]["model"]
+        session_id = events[0]["session_id"]
+        events.insert(
+            1,
+            {
+                "type": "assistant",
+                "session_id": session_id,
+                "message": {
+                    "model": model,
+                    "content": [
+                        {"type": "tool_use", "name": "WebSearch", "input": {"query": "rain"}}
+                    ],
+                },
+            },
+        )
+        events.insert(
+            2,
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "content": "https://secret.example"}]
+                },
+            },
+        )
+
+    calls = fake_cli(monkeypatch, mutate=mutate)
+    config = replace(config, agent_web_search=True)
+    assert AgentSession(config, open_agent(config)).reply("weather") == "Rain falls from clouds."
+    cmd, kwargs = next((command, kw) for command, kw in calls if "-p" in command)
+    assert cmd[cmd.index("--tools") + 1] == "WebSearch"
+    assert cmd[cmd.index("--max-turns") + 1] == "4"
+    assert "public web" in kwargs["system"]
+    assert "https://secret.example" not in kwargs["system"]
+
+
+def test_web_search_rejects_other_claude_tools(monkeypatch, config):
+    def mutate(events):
+        events[1]["message"]["content"].append({"type": "tool_use", "name": "Bash"})
+
+    fake_cli(monkeypatch, mutate=mutate)
+    config = replace(config, agent_web_search=True)
+    with pytest.raises(WalkietalkError, match="unexpected tools"):
+        AgentSession(config, open_agent(config)).reply("weather")
 
 
 @pytest.mark.parametrize(
