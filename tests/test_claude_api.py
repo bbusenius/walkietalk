@@ -8,7 +8,7 @@ import pytest
 
 from walkietalk import cli
 from walkietalk.agent import AgentSession, open_agent
-from walkietalk.claude_api import MAX_RESPONSE_BYTES, MESSAGES_URL, ClaudeApiAgent
+from walkietalk.claude_api import MAX_RESPONSE_BYTES, MESSAGES_URL, WEB_SEARCH_TOOL, ClaudeApiAgent
 from walkietalk.config import Config, WalkietalkError
 
 SECRET = "fake-test-key-never-log"
@@ -104,6 +104,46 @@ def test_messages_system_final_only_bounded_history_and_cli(monkeypatch, config,
     monkeypatch.setattr(cli, "load_config", lambda path: config)
     assert cli.main(["-c", "unused", "agent-check", "Hello"]) == 0
     assert "Reply: Rain falls from clouds." in capsys.readouterr().out
+
+
+def test_web_search_tool_is_sent_only_when_enabled(monkeypatch, config):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=answer(
+                content=[
+                    {"type": "server_tool_use", "name": "web_search", "input": {"query": "rain"}},
+                    {
+                        "type": "web_search_tool_result",
+                        "content": [{"type": "web_search_result", "url": "https://secret.example"}],
+                    },
+                    {"type": "text", "text": "Rain falls from clouds."},
+                ]
+            ),
+        )
+
+    install_transport(monkeypatch, handler)
+    config = replace(config, agent_web_search=True)
+    assert AgentSession(config, open_agent(config)).reply("weather") == "Rain falls from clouds."
+    payload = json.loads(requests[0].content)
+    assert payload["tools"] == [WEB_SEARCH_TOOL]
+    assert "https://secret.example" not in payload["system"]
+
+
+def test_web_search_rejects_other_api_tools(monkeypatch, config):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=answer(content=[{"type": "tool_use", "name": "bash", "input": {}}]),
+        )
+
+    install_transport(monkeypatch, handler)
+    config = replace(config, agent_web_search=True)
+    with pytest.raises(WalkietalkError, match="unexpected content"):
+        AgentSession(config, open_agent(config)).reply("weather")
 
 
 @pytest.mark.parametrize("key", [None, "", " ", "secret\nheader", "sëcret"])

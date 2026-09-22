@@ -82,6 +82,9 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" agent-check \
 Expect a short answer from that environment. Agent reasoning stays controlled
 by its Hermes profile. Increase `agent.timeout_seconds` if its normal work needs
 longer; reply length remains independently capped by `agent.max_reply_chars`.
+`agent.web_search: false` tells Hermes not to search. `true` allows a public
+web lookup in that instruction. Hermes still uses the tools configured on its
+profile; this bridge cannot remove them.
 
 For voice, deploy the separate [Hermes speech companion](HERMES-TTS.md) using
 Hermes's Python, profile, engines, and provider credentials. Set `tts.backend:
@@ -114,8 +117,9 @@ Select `agent.backend: codex`. `codex_executable: codex` uses PATH; an absolute
 path is also accepted. Leave `codex_model` empty for the CLI default or choose a
 model available to your account. `codex_reasoning_effort: low` favors quick
 answers; `default` leaves the model default. Walkietalk uses `codex exec` in a
-dedicated radio session with tools constrained by the adapter. It does not resume
-your desktop conversation. API-key-only authentication is rejected by this route.
+dedicated radio session with tools constrained by the adapter. Web search stays
+off unless `agent.web_search` is true. The adapter does not resume your desktop
+conversation. API-key-only authentication is rejected by this route.
 
 ```bash
 walkietalk -c "$HOME/.config/walkietalk/config.yaml" agent-check \

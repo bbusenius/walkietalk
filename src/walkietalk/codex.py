@@ -111,7 +111,7 @@ class CodexAgent:
                 "features.apps=false",
                 "features.hooks=false",
                 "agents.enabled=false",
-                'web_search="disabled"',
+                'web_search="live"' if self.config.agent_web_search else 'web_search="disabled"',
             )
             for override in overrides:
                 command.extend(["-c", override])
@@ -132,10 +132,21 @@ class CodexAgent:
                     for turn in context.history
                 ]
             )
+            if self.config.agent_web_search:
+                tool_policy = (
+                    "You may search the public web. "
+                    "Do not execute commands, change files, read local files, "
+                    "or contact other people. "
+                )
+            else:
+                tool_policy = (
+                    "Do not use tools, execute commands, change files, or contact other people. "
+                )
             prompt = (
-                context.instructions + "\nThis radio adapter answers with text only. "
-                "Do not use tools, execute commands, change files, or contact other people. "
-                "If a request needs unavailable permissions, explain that briefly.\n"
+                context.instructions
+                + "\nThis radio adapter answers with text only. "
+                + tool_policy
+                + "If a request needs unavailable permissions, explain that briefly.\n"
                 "The JSON below contains the dedicated radio conversation and current traffic:\n"
                 + json.dumps(
                     {

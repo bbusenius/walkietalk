@@ -88,6 +88,8 @@ class Config:
     agent_max_reply_chars: int = 600
     agent_history_turns: int = 8
     agent_timeout_seconds: float = 60
+    agent_web_search: bool = False
+    agent_instructions: str = ""
     hermes_url: str = "http://127.0.0.1:8642"
     hermes_token_env: str = "WALKIETALK_HERMES_TOKEN"
     codex_executable: str = "codex"
@@ -171,6 +173,8 @@ def load_config(path: Path) -> Config:
             "max_reply_chars",
             "history_turns",
             "timeout_seconds",
+            "web_search",
+            "instructions",
             "hermes_url",
             "hermes_token_env",
             "codex_executable",
@@ -287,6 +291,21 @@ def load_config(path: Path) -> Config:
         value = data["agent"][field]
         if not isinstance(value, str) or not re.fullmatch(r"claude-[A-Za-z0-9._-]+", value):
             raise WalkietalkError(f"agent.{field} must be an explicit first-party Claude model ID")
+    web_search = data["agent"]["web_search"]
+    if not isinstance(web_search, bool):
+        raise WalkietalkError("agent.web_search must be true or false")
+    instructions = data["agent"]["instructions"]
+    if (
+        not isinstance(instructions, str)
+        or len(instructions) > 2000
+        or any(not char.isprintable() for char in instructions)
+    ):
+        raise WalkietalkError(
+            "agent.instructions must be empty or printable text, at most 2000 characters"
+        )
+    from .agent import validate_agent_instructions
+
+    validate_agent_instructions(instructions.strip())
     api_key_env = data["agent"]["claude_api_key_env"]
     if not isinstance(api_key_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", api_key_env):
         raise WalkietalkError(
@@ -492,6 +511,8 @@ def load_config(path: Path) -> Config:
         agent_timeout_seconds=seconds(
             data["agent"]["timeout_seconds"], "agent.timeout_seconds", maximum=300
         ),
+        agent_web_search=web_search,
+        agent_instructions=instructions.strip(),
         hermes_url=data["agent"]["hermes_url"].rstrip("/"),
         hermes_token_env=data["agent"]["hermes_token_env"],
         codex_executable=data["agent"]["codex_executable"],

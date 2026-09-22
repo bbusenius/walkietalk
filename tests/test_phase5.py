@@ -61,6 +61,13 @@ def test_unimplemented_agents_never_fall_back(backend):
         ("history_turns", 33),
         ("history_turns", "8"),
         ("history_turns", False),
+        ("web_search", "enabled"),
+        ("web_search", 1),
+        ("instructions", 1),
+        ("instructions", "x" * 2001),
+        ("instructions", "line\nbreak"),
+        ("instructions", "Hello {name}"),
+        ("instructions", "Use {max_reply_chars!s}"),
     ],
 )
 def test_invalid_agent_config_rejected(tmp_path, field, value):
@@ -92,6 +99,8 @@ def test_example_agent_config_and_offline_stub():
     assert config.agent_backend == "stub"
     assert config.agent_max_reply_chars == 600
     assert config.agent_history_turns == 8
+    assert config.agent_web_search is False
+    assert config.agent_instructions == ""
     assert AgentSession(config, open_agent(config)).reply("Hello") == STUB_REPLY
 
 
@@ -104,13 +113,85 @@ def test_history_is_bounded_in_complete_pairs_and_sessions_are_distinct():
         session.reply(text)
     context = backend.reply.call_args.args[1]
     assert context.history == (Turn("second", "A short answer."), Turn("third", "A short answer."))
+    assert "suitable for a family" in context.instructions
     assert "spoken-style" in context.instructions
+    assert "Do not search the web." in context.instructions
     assert "600 characters" in context.instructions
     assert context.session_id == session.session_id
     other = AgentSession(config, backend)
     other.reply("new conversation")
     assert backend.reply.call_args.args[1].history == ()
     assert other.session_id != session.session_id
+
+
+def test_known_instruction_placeholders_load(tmp_path):
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["agent"]["instructions"] = "Use {max_reply_chars}, {spoken_seconds}, and {max_words}."
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    loaded = load_config(path)
+    assert loaded.agent_instructions == "Use {max_reply_chars}, {spoken_seconds}, and {max_words}."
+
+
+def test_default_instructions_name_the_family_default_and_the_radio_window():
+    backend = Mock()
+    backend.reply.return_value = "A short answer."
+    config = replace(Config(), max_tx_seconds=20, settle_seconds=0.4)
+    spoken = AgentSession(config, backend, spoken_seconds=19.6)
+    spoken.reply("weather")
+    text = backend.reply.call_args.args[1].instructions
+    assert "suitable for a family" in text
+    assert "at most 600 characters" in text
+    assert "at most 39 words" in text
+    assert "19.6 seconds" in text
+    assert "Do not search the web." in text
+    assert "Return only the final answer" in text
+    quiet = AgentSession(config, backend)
+    quiet.reply("weather")
+    quiet_text = backend.reply.call_args.args[1].instructions
+    assert "suitable for a family" in quiet_text
+    assert "spoken on a radio" not in quiet_text
+
+
+def test_custom_instructions_replace_guidance_and_fill_placeholders():
+    backend = Mock()
+    backend.reply.return_value = "A short answer."
+    session = AgentSession(
+        replace(
+            Config(),
+            max_tx_seconds=20,
+            settle_seconds=0.4,
+            agent_instructions=(
+                "Answer fully. Stay within {max_reply_chars} characters. "
+                "The radio window is {spoken_seconds} seconds and {max_words} words. "
+                "A brace looks like {{max_reply_chars}}."
+            ),
+        ),
+        backend,
+        spoken_seconds=19.6,
+    )
+    session.reply("weather")
+    text = backend.reply.call_args.args[1].instructions
+    assert text.startswith(
+        "Answer fully. Stay within 600 characters. "
+        "The radio window is 19.6 seconds and 39 words. "
+        "A brace looks like {max_reply_chars}."
+    )
+    assert "suitable for a family" not in text
+    assert "spoken on a radio" not in text
+    assert "Do not search the web." in text
+    assert "Return only the final answer" in text
+
+
+def test_web_search_instruction_replaces_the_ban():
+    backend = Mock()
+    backend.reply.return_value = "A short answer."
+    session = AgentSession(replace(Config(), agent_web_search=True), backend)
+    session.reply("weather")
+    instructions = backend.reply.call_args.args[1].instructions
+    assert "public web" in instructions
+    assert "Do not run commands" in instructions
+    assert "Do not search the web." not in instructions
 
 
 @pytest.mark.parametrize("answer", [None, {}, "", "   ", "x" * 601, "\x1b[31mred"])

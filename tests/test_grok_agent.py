@@ -136,6 +136,9 @@ def test_final_only_stdin_environment_and_explicit_followup(fake_cli, monkeypatc
     assert first["args"][first["args"].index("--permission-mode") + 1] == "dontAsk"
     assert first["args"][first["args"].index("--deny") + 1] == "*"
     assert first["args"][first["args"].index("--sandbox") + 1] == "read-only"
+    assert "--disable-web-search" in first["args"]
+    assert first["args"][first["args"].index("--max-turns") + 1] == "1"
+    assert "Do not search the web." in first["prompt"]
     assert first["env"]["GROK_DISABLE_API_KEY_AUTH"] == "1"
     assert first["env"]["GROK_CLAUDE_MCPS_ENABLED"] == "0"
     assert first["env"]["GROK_HOME"] == str(home)
@@ -145,6 +148,50 @@ def test_final_only_stdin_environment_and_explicit_followup(fake_cli, monkeypatc
     assert SECRET not in json.dumps(first["env"])
     assert not Path(first["cwd"]).exists()
     assert len(session.history) == 2
+
+
+def test_web_search_allows_lookup_and_keeps_shell_closed(fake_cli):
+    config, _, calls, _ = fake_cli
+    config = replace(config, agent_web_search=True)
+    assert AgentSession(config, open_agent(config)).reply("weather") == "Rain falls from clouds."
+    record = calls()[-1]
+    args = record["args"]
+    assert args[args.index("--sandbox") + 1] == "workspace"
+    assert args[args.index("--tools") + 1] == "web_search"
+    assert "--disable-web-search" not in args
+    assert "*" not in args
+    assert args[args.index("--max-turns") + 1] == "4"
+    for rule in ("Bash", "Read", "Edit", "Grep", "MCPTool", "WebFetch"):
+        assert rule in args
+    assert "You may search the public web." in record["prompt"]
+    assert "Do not use tools" not in record["prompt"]
+    assert record["env"]["GROK_WEB_FETCH"] == "0"
+
+
+def test_lookup_blocks_are_accepted_only_when_search_is_enabled():
+    frame = events()
+    frame[1]["message"]["content"] = [
+        {"type": "server_tool_use", "name": "web_search", "input": {"query": "rain"}},
+        {"type": "web_search_tool_result", "content": [{"url": "https://secret.example"}]},
+        {"type": "tool_use", "name": "web_search", "input": {"query": "rain"}},
+        {"type": "text", "text": "ignored"},
+    ]
+    frame.insert(
+        2,
+        {
+            "type": "user",
+            "session_id": THREAD,
+            "message": {"content": [{"type": "tool_result", "content": "https://secret.example"}]},
+        },
+    )
+    raw = b"\n".join(json.dumps(item).encode() for item in frame)
+    with pytest.raises(WalkietalkError):
+        parse_completion(raw, THREAD)
+    assert parse_completion(raw, THREAD, web_search=True) == "Rain falls from clouds."
+    frame[1]["message"]["content"].append({"type": "tool_use", "name": "bash"})
+    raw = b"\n".join(json.dumps(item).encode() for item in frame)
+    with pytest.raises(WalkietalkError):
+        parse_completion(raw, THREAD, web_search=True)
 
 
 def test_bounded_history_rotation_and_new_radio_session(fake_cli):
