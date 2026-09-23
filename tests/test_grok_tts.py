@@ -244,6 +244,14 @@ def test_bad_or_overlong_audio_rejected(config, monkeypatch, data):
         tts.open_tts(config).synthesize("Hello.")
 
 
+def test_grok_can_reject_overlong_station_id_instead_of_cropping(config, monkeypatch):
+    transport(monkeypatch, lambda request: audio_response(wav_bytes(samples=48000)))
+    voice = tts.open_tts(replace(config, max_tx_seconds=1, settle_seconds=0.2))
+    assert voice.synthesize("Answer.").duration == 0.8
+    with pytest.raises(WalkietalkError, match="maximum"):
+        voice.synthesize("TEST1ID", truncate=False)
+
+
 def test_json_content_type_rejected(config, monkeypatch):
     transport(monkeypatch, lambda request: httpx.Response(200, json={"diagnostic": TOKEN}))
     with pytest.raises(WalkietalkError, match="no WAV"):

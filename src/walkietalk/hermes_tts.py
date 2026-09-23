@@ -36,7 +36,7 @@ class HermesTts:
     def prepare(self) -> None:
         self._token()
 
-    async def _fetch(self, text: str) -> bytes:
+    async def _fetch(self, text: str, *, truncate: bool = True) -> bytes:
         try:
             async with asyncio.timeout(self.config.tts_timeout_seconds):
                 async with httpx.AsyncClient(
@@ -51,6 +51,7 @@ class HermesTts:
                             "timeout_seconds": self.config.tts_timeout_seconds,
                             "max_audio_seconds": self.config.max_tx_seconds
                             - self.config.settle_seconds,
+                            **({"truncate": False} if not truncate else {}),
                         },
                     ) as response:
                         status = response.status_code
@@ -82,24 +83,24 @@ class HermesTts:
                 "Hermes TTS connection failed; check tts.hermes_url and start the speech service"
             ) from None
 
-    def _read(self, path: Path) -> Wav:
+    def _read(self, path: Path, *, truncate: bool = True) -> Wav:
         return level_wav(
             radio_wav(
                 read_wav(path, self.config.max_tx_seconds),
                 self.config.max_tx_seconds - self.config.settle_seconds,
-                truncate=True,
+                truncate=truncate,
             ),
             self.config.tts_normalize,
         )
 
-    def _synthesize_direct(self, text: str) -> Wav:
+    def _synthesize_direct(self, text: str, *, truncate: bool = True) -> Wav:
         text = validate_reply(text, self.config.agent_max_reply_chars)
         with tempfile.TemporaryDirectory(prefix="walkietalk-hermes-audio-") as directory:
             path = Path(directory) / "speech.wav"
-            path.write_bytes(asyncio.run(self._fetch(text)))
-            return self._read(path)
+            path.write_bytes(asyncio.run(self._fetch(text, truncate=truncate)))
+            return self._read(path, truncate=truncate)
 
-    def synthesize(self, text: str) -> Wav:
+    def synthesize(self, text: str, *, truncate: bool = True) -> Wav:
         # Parent deadline also bounds DNS and HTTP-library shutdown. No worker owns PTT.
         deadline = time.monotonic() + self.config.tts_timeout_seconds
         text = validate_reply(text, self.config.agent_max_reply_chars)
@@ -122,6 +123,7 @@ class HermesTts:
                 prompt=json.dumps(
                     {
                         "text": text,
+                        "truncate": truncate,
                         "config": {field: getattr(self.config, field) for field in fields},
                     }
                 ).encode(),
@@ -144,7 +146,7 @@ class HermesTts:
                 self.config.max_tx_seconds
             ):
                 raise WalkietalkError("Hermes TTS returned no bounded WAV; no transmission")
-            speech = self._read(path)
+            speech = self._read(path, truncate=truncate)
             if time.monotonic() >= deadline:
                 raise WalkietalkError("Hermes TTS timed out; no transmission")
             return speech
@@ -154,7 +156,10 @@ def main() -> int:
     try:
         request = json.loads(sys.stdin.buffer.read(65536))
         voice = HermesTts(Config(**request["config"]))
-        write_wav(Path(sys.argv[1]), voice._synthesize_direct(request["text"]))
+        write_wav(
+            Path(sys.argv[1]),
+            voice._synthesize_direct(request["text"], truncate=request.get("truncate", True)),
+        )
         return 0
     except (WalkietalkError, OSError):
         # Only our own sanitized errors can leave the worker.

@@ -196,8 +196,17 @@ increase `audio.gain` if outgoing audio is quiet, accepting possible clipping.
 `radio.callsign` is your station ID, or empty for no spoken ID. Walkietalk does
 not invent one. `callsign_mode` is `off`, `end_of_reply`, or `interval`;
 `callsign_interval_seconds` sets the interval. If enabled, ID uses the selected
-voice and shares the reply's transmit budget. A failed ID synthesis is reported
-locally; the existing behavior sends the answer without the ID.
+voice and normally shares the reply's transmit budget, shortening the answer
+audio to reserve space for the complete ID. If the ID and its gap leave no room
+for answer audio, Walkietalk sends the answer first and then the ID in a separate
+burst, with PTT released for 0.2 seconds between them. Each burst has its own
+transmit cap. Listening stays paused through both bursts, and post-transmit mute
+starts after the last one. The ID interval starts only after the transmission
+containing the ID succeeds. Any hardware failure stops the sequence.
+
+A failed ID synthesis or an ID too long for its own burst is reported locally;
+the answer is sent without the ID, and identification remains due. The CLI does
+not crop station-ID audio to make it fit.
 
 The parent owns PTT, supervises playback in a child process, and releases PTT
 on completion, handled failure, Ctrl+C, or SIGTERM. It cannot guarantee release

@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .agent import AgentSession, open_agent
 from .audio import Playback, Wav, read_wav
-from .callsign import CallsignSession, join_identification
+from .callsign import IDENT_GAP_SECONDS, CallsignSession, identification_transmissions
 from .capture import capture_from_device, capture_from_wav
 from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
@@ -335,20 +335,32 @@ def talk_command(args: argparse.Namespace) -> None:
                     emit("error", f"Speech failed: {exc}", file=sys.stderr)
                     emit("status", "Still listening; say the wake phrase and try again.")
                     continue
+                transmissions = (speech,)
+                ident = None
                 if callsigns.due():
                     try:
                         emit("status", "Generating station ID; PTT off...")
                         ident = radio_wav(
-                            voice.synthesize(config.callsign), spoken_seconds, truncate=True
+                            voice.synthesize(config.callsign, truncate=False), spoken_seconds
                         )
-                        speech = join_identification(speech, ident, spoken_seconds)
-                        callsigns.mark()
+                        transmissions = identification_transmissions(speech, ident, spoken_seconds)
                     except (WalkietalkError, OSError) as exc:
+                        ident = None
                         emit("error", f"Station ID failed: {exc}", file=sys.stderr)
                         emit("status", "Sending the answer without a station ID.")
                 # Capture has closed before STT. It stays closed throughout synthesis/TX.
                 # Hardware errors stop the loop after cleanup instead of retrying hardware.
-                transmit_speech(speech, config)
+                transmit_speech(transmissions[0], config)
+                if len(transmissions) == 2:
+                    emit(
+                        "status", "Station ID needs a separate burst; PTT released between bursts."
+                    )
+                    time.sleep(IDENT_GAP_SECONDS)
+                    transmit_speech(
+                        transmissions[1], config, finished="Station ID finished; PTT released."
+                    )
+                if ident is not None:
+                    callsigns.mark()
                 wait_post_tx_mute(config)
             emit("reply", f"Reply: {answer}")
             session.complete_turn()

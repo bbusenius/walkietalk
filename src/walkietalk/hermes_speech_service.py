@@ -28,12 +28,15 @@ class SpeechFailure(Exception):
 
 
 def validate_request(value, max_seconds=120):
-    if not isinstance(value, dict) or set(value) != {
+    required = {
         "text",
         "timeout_seconds",
         "max_audio_seconds",
-    }:
+    }
+    if not isinstance(value, dict) or not required <= set(value) <= required | {"truncate"}:
         raise ValueError("Invalid speech request")
+    if not isinstance(value.get("truncate", True), bool):
+        raise ValueError("Invalid truncate setting")
     text = value["text"]
     if not isinstance(text, str) or not text.strip() or len(text) > 2000:
         raise ValueError("Text must contain 1–2000 characters")
@@ -67,6 +70,11 @@ def synthesize_in_environment(request, directory: Path):
         raise SpeechFailure("Hermes returned an invalid speech file")
     if not 0 < source.stat().st_size <= MAX_SOURCE_BYTES:
         raise SpeechFailure("Hermes speech file exceeded the limit")
+    # Retain one extra sample in strict mode so generate() can detect and reject
+    # overlong audio instead of accepting an ID shortened by ffmpeg.
+    maximum = request["max_audio_seconds"]
+    if not request.get("truncate", True):
+        maximum = (math.ceil(maximum * 48000) + 1) / 48000
     subprocess.run(
         [
             "ffmpeg",
@@ -77,7 +85,7 @@ def synthesize_in_environment(request, directory: Path):
             "-i",
             str(source),
             "-t",
-            str(request["max_audio_seconds"]),
+            str(maximum),
             "-ac",
             "1",
             "-ar",

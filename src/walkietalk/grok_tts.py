@@ -204,7 +204,7 @@ class GrokTts:
             raise WalkietalkError("Grok TTS connection failed; no transmission") from None
         raise WalkietalkError("Grok TTS returned no audio; no transmission")
 
-    def _synthesize_direct(self, text: str) -> Wav:
+    def _synthesize_direct(self, text: str, *, truncate: bool = True) -> Wav:
         deadline = time.monotonic() + self.config.tts_timeout_seconds
         text = validate_reply(text, self.config.agent_max_reply_chars)
         audio = asyncio.run(self._fetch(text))
@@ -215,7 +215,7 @@ class GrokTts:
                 radio_wav(
                     read_wav(path, self.config.max_tx_seconds * 2),
                     self.config.max_tx_seconds - self.config.settle_seconds,
-                    truncate=True,
+                    truncate=truncate,
                 ),
                 self.config.tts_normalize,
             )
@@ -223,7 +223,7 @@ class GrokTts:
             raise WalkietalkError("Grok TTS timed out; audio discarded; no transmission")
         return speech
 
-    def synthesize(self, text: str) -> Wav:
+    def synthesize(self, text: str, *, truncate: bool = True) -> Wav:
         # The parent deadline also bounds DNS/library shutdown that may block
         # cancellation of an async HTTP request. This worker cannot access PTT.
         deadline = time.monotonic() + self.config.tts_timeout_seconds
@@ -255,6 +255,7 @@ class GrokTts:
                 prompt=json.dumps(
                     {
                         "text": text,
+                        "truncate": truncate,
                         "config": {field: getattr(self.config, field) for field in fields},
                     }
                 ).encode(),
@@ -282,7 +283,7 @@ class GrokTts:
                 radio_wav(
                     read_wav(path, self.config.max_tx_seconds * 2),
                     self.config.max_tx_seconds - self.config.settle_seconds,
-                    truncate=True,
+                    truncate=truncate,
                 ),
                 self.config.tts_normalize,
             )
@@ -296,7 +297,10 @@ def main() -> int:
     try:
         request = json.loads(sys.stdin.buffer.read(65536))
         voice = GrokTts(Config(**request["config"]))
-        write_wav(Path(sys.argv[1]), voice._synthesize_direct(request["text"]))
+        write_wav(
+            Path(sys.argv[1]),
+            voice._synthesize_direct(request["text"], truncate=request.get("truncate", True)),
+        )
         return 0
     except (WalkietalkError, OSError) as exc:
         print(json.dumps({"error": str(exc)}))

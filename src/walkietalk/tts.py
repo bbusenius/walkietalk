@@ -30,7 +30,7 @@ MAX_TTS_BYTES = speech_byte_budget(10)
 class TtsBackend(Protocol):
     def label(self) -> str: ...
     def prepare(self) -> None: ...
-    def synthesize(self, text: str) -> Wav: ...
+    def synthesize(self, text: str, *, truncate: bool = True) -> Wav: ...
 
 
 def _crop(wav: Wav, maximum: float) -> Wav:
@@ -123,7 +123,7 @@ class PiperTts:
                     "no automatic download or fallback"
                 )
 
-    def synthesize(self, text: str) -> Wav:
+    def synthesize(self, text: str, *, truncate: bool = True) -> Wav:
         deadline = time.monotonic() + self.config.tts_timeout_seconds
         text = validate_reply(text, self.config.agent_max_reply_chars)
         self.prepare()
@@ -155,7 +155,7 @@ class PiperTts:
                 raise WalkietalkError("Piper returned no bounded WAV file; no transmission")
             wav = read_wav(path, self.config.max_tx_seconds * 2)
             wav = radio_wav(
-                wav, self.config.max_tx_seconds - self.config.settle_seconds, truncate=True
+                wav, self.config.max_tx_seconds - self.config.settle_seconds, truncate=truncate
             )
             wav = level_wav(wav, self.config.tts_normalize)
             if time.monotonic() >= deadline:

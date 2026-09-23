@@ -69,6 +69,14 @@ def test_real_subprocess_uses_stdin_and_returns_48khz_without_keys(fake_piper):
     assert not Path(call["args"][-1]).exists()  # Temporary speech is removed.
 
 
+def test_piper_can_reject_overlong_station_id_instead_of_cropping(fake_piper):
+    config, _, _ = fake_piper  # Fake voice produces two seconds of audio.
+    voice = tts.PiperTts(replace(config, max_tx_seconds=1, settle_seconds=0))
+    assert voice.synthesize("Answer.").duration == 1
+    with pytest.raises(WalkietalkError, match="maximum"):
+        voice.synthesize("TEST1ID", truncate=False)
+
+
 def test_peak_normalize_fills_the_wav_and_off_keeps_engine_level(fake_piper):
     config, _, _ = fake_piper
     quiet = tts.PiperTts(config).synthesize("Hello.")

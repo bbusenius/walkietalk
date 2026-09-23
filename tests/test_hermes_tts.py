@@ -115,7 +115,8 @@ def test_bad_text_fails_before_worker(config, monkeypatch, text):
 
 
 @pytest.mark.parametrize("blocked", [False, True])
-def test_parent_deadline_and_environment_isolation(config, monkeypatch, blocked):
+@pytest.mark.parametrize("truncate", [False, True])
+def test_parent_deadline_and_environment_isolation(config, monkeypatch, blocked, truncate):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-inherit")
     original = hermes_tts.run_cli
     program = f"""
@@ -124,7 +125,8 @@ from walkietalk import hermes_tts
 from walkietalk.audio import Wav
 assert 'ANTHROPIC_API_KEY' not in os.environ
 assert os.environ['WALKIETALK_HERMES_TOKEN'] == 'local-service-token'
-def synthesize(self,text):
+def synthesize(self,text, *, truncate=True):
+    assert truncate == {truncate}
     if {blocked}: time.sleep(30)
     return Wav(b'\\x00\\x20'*4800,48000,.1)
 hermes_tts.HermesTts._synthesize_direct=synthesize
@@ -139,9 +141,9 @@ raise SystemExit(hermes_tts.main())
     start = time.monotonic()
     if blocked:
         with pytest.raises(WalkietalkError, match="timed out"):
-            hermes_tts.HermesTts(config).synthesize("Hello.")
+            hermes_tts.HermesTts(config).synthesize("Hello.", truncate=truncate)
     else:
-        assert hermes_tts.HermesTts(config).synthesize("Hello.").duration == 0.1
+        assert hermes_tts.HermesTts(config).synthesize("Hello.", truncate=truncate).duration == 0.1
     assert time.monotonic() - start < 2.5
 
 
@@ -229,6 +231,7 @@ def test_service_audio_and_sanitized_failure(monkeypatch):
         dict(max_audio_seconds=float("nan")),
         dict(provider="xai"),
         dict(timeout_seconds=121),
+        dict(truncate="false"),
     ],
 )
 def test_service_rejects_bad_limits_and_provider_override(monkeypatch, change):
@@ -238,7 +241,10 @@ def test_service_rejects_bad_limits_and_provider_override(monkeypatch, change):
 
 
 @pytest.mark.parametrize("provider", ["xai", "openai", "piper", "my-local-voice"])
-def test_service_honors_environment_provider_without_agent_call(tmp_path, monkeypatch, provider):
+@pytest.mark.parametrize("truncate", [True, False])
+def test_service_honors_environment_provider_without_agent_call(
+    tmp_path, monkeypatch, provider, truncate
+):
     source = tmp_path / "source.mp3"
     source.write_bytes(b"fake provider audio")
     tool = Mock(
@@ -257,10 +263,12 @@ def test_service_honors_environment_provider_without_agent_call(tmp_path, monkey
     )
     conversion = Mock()
     monkeypatch.setattr(service.subprocess, "run", conversion)
-    service.synthesize_in_environment(request_data(), tmp_path)
+    service.synthesize_in_environment(request_data(truncate=truncate), tmp_path)
     tool.assert_called_once_with("Finished agent answer.", str(source))
     assert conversion.call_args.args[0][0] == "ffmpeg"
     assert "-t" in conversion.call_args.args[0]
+    args = conversion.call_args.args[0]
+    assert float(args[args.index("-t") + 1]) == (2 if truncate else 96001 / 48000)
     tool.return_value = json.dumps(
         dict(success=True, provider="substituted", file_path=str(source))
     )
@@ -268,7 +276,9 @@ def test_service_honors_environment_provider_without_agent_call(tmp_path, monkey
         service.synthesize_in_environment(request_data(), tmp_path)
 
 
-@pytest.mark.parametrize("scenario", ["success", "blocked", "failed", "oversized", "empty"])
+@pytest.mark.parametrize(
+    "scenario", ["success", "blocked", "failed", "oversized", "empty", "one_extra_sample"]
+)
 def test_service_bounds_actual_provider_worker(tmp_path, monkeypatch, scenario):
     original = service.subprocess.Popen
     processes = []
@@ -281,6 +291,7 @@ if SCENARIO == 'failed': raise SystemExit(1)
 with wave.open(str(request.parent/'speech.wav'),'wb') as w:
     w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000)
     frames = 0 if SCENARIO == 'empty' else 48000 * (3 if SCENARIO == 'oversized' else 1)
+    if SCENARIO == 'one_extra_sample': frames = 96001
     w.writeframes(b'\\x00\\x20' * frames)
 """.replace("SCENARIO", repr(scenario))
 
@@ -352,3 +363,17 @@ def test_client_applies_radio_duration_cap_and_normalization(config, monkeypatch
     result = hermes_tts.HermesTts(config)._synthesize_direct("Hello.")
     assert result.duration == 0.8
     assert np.frombuffer(result.frames, dtype="<i2").max() == 32767
+    with pytest.raises(WalkietalkError, match="maximum"):
+        hermes_tts.HermesTts(config)._synthesize_direct("TEST1ID", truncate=False)
+
+
+def test_station_id_requests_strict_audio_from_hermes_service(config, monkeypatch):
+    def response(request):
+        assert json.loads(request.content)["truncate"] is False
+        return httpx.Response(200, content=audio_bytes(), headers={"content-type": "audio/wav"})
+
+    fake_http(monkeypatch, response)
+    assert (
+        hermes_tts.HermesTts(config)._synthesize_direct("TEST1ID", truncate=False).duration == 0.1
+    )
+    assert call_service(monkeypatch, payload=request_data(truncate=False))[0] == 200

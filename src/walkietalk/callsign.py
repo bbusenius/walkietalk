@@ -32,13 +32,15 @@ class CallsignSession:
         self.last_id_at = self.clock()
 
 
-def join_identification(answer: Wav, ident: Wav, maximum: float) -> Wav:
-    """Put the callsign after the answer in one transmission, cropped to the TX cap."""
+def identification_transmissions(answer: Wav, ident: Wav, maximum: float) -> tuple[Wav, ...]:
+    """Append the full ID when possible; otherwise plan a separate ID burst."""
+    answer = radio_wav(answer, maximum, truncate=True)
+    ident = radio_wav(ident, maximum)
     gap = max(0, int(IDENT_GAP_SECONDS * RADIO_RATE))
     ident_samples = len(ident.frames) // 2
     keep = max(0, int(maximum * RADIO_RATE) - ident_samples - gap)
-    if keep < 1 or ident_samples < 1:
-        return radio_wav(answer, maximum, truncate=True)
+    if keep < 1:
+        return answer, ident
     frames = answer.frames[: keep * 2] + b"\x00\x00" * gap + ident.frames
     duration = len(frames) / (2 * RADIO_RATE)
-    return radio_wav(Wav(frames, RADIO_RATE, duration), maximum, truncate=True)
+    return (radio_wav(Wav(frames, RADIO_RATE, duration), maximum),)
