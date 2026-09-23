@@ -371,24 +371,26 @@ def wait_post_tx_mute(config: Config) -> None:
 def acknowledge(
     config: Config, voice, text: str, *, preparing: str, failed: str, finished: str
 ) -> str:
-    """Speak one configured line. Return spoken, silent, or failed. Never raises."""
+    """Return spoken, silent, or failed for speech generation; transmission errors raise."""
     if voice is None or not text:
         return "silent"
     try:
         emit("status", preparing)
-        transmit_speech(
-            radio_wav(voice.synthesize(text), config.max_tx_seconds - config.settle_seconds),
-            config,
-            finished=finished,
-        )
+        speech = radio_wav(voice.synthesize(text), config.max_tx_seconds - config.settle_seconds)
     except (WalkietalkError, OSError) as exc:
         emit("error", f"{failed}: {exc}", file=sys.stderr)
         return "failed"
+    try:
+        transmit_speech(speech, config, finished=finished)
+    except (WalkietalkError, OSError) as exc:
+        raise WalkietalkError(
+            f"{failed}: {exc}. Stopping walkietalk; check the radio before restarting."
+        ) from exc
     return "spoken"
 
 
 def speak_shutdown_confirmation(config: Config, voice) -> None:
-    """Speak the code confirmation, then the caller stops. Failures stay local."""
+    """Speak the code confirmation, then stop; transmission errors exit through main."""
     if (
         acknowledge(
             config,

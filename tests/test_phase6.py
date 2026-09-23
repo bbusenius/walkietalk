@@ -254,11 +254,84 @@ def test_failed_shutdown_confirmation_still_exits(bridge, monkeypatch, capsys):
     )
     listener.transcribe.return_value = "stop bridge confirm stop"
     voice.synthesize.side_effect = WalkietalkError("Piper timed out")
-    assert cli.main([*ARGS, "--once"]) == 0
+    assert cli.main(ARGS) == 0
+    listener.transcribe.assert_called_once()
     backend.reply.assert_not_called()
     output = capsys.readouterr()
     assert "Shutdown confirmation failed" in output.err
     assert "without an on-air confirmation" in output.out
+
+
+@pytest.mark.parametrize("text", ["charlotte", "stop bridge", "stop bridge confirm stop"])
+@pytest.mark.parametrize("failure_at", ["play", "release"])
+def test_acknowledgement_transmission_failure_cleans_up_and_stops(
+    bridge, monkeypatch, capsys, text, failure_at
+):
+    config, backend, _, listener = bridge
+    config = replace(
+        config,
+        wake_confirmation_phrase="Go ahead.",
+        shutdown_enabled=True,
+        shutdown_phrase="stop bridge",
+        shutdown_code="confirm stop",
+        shutdown_arm_confirmation_phrase="Shutdown armed.",
+        shutdown_confirmation_phrase="Walkietalk shutting down.",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    listener.transcribe.side_effect = [text, "charlotte what is rain", KeyboardInterrupt()]
+    capture = Mock(return_value=utterance(time.monotonic()))
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    events = []
+    ptt = Mock()
+    playback = Mock()
+
+    def play(deadline):
+        events.append("play")
+        if failure_at == "play":
+            raise OSError("Audio device disconnected")
+
+    def release():
+        events.append("release")
+        if failure_at == "release":
+            raise WalkietalkError("PTT release could not be confirmed; turn the radio off")
+
+    playback.play.side_effect = play
+    ptt.off.side_effect = release
+    ptt.close.side_effect = lambda: events.append("serial closed")
+    playback.close.side_effect = lambda: events.append("playback closed")
+    monkeypatch.setattr(cli, "SerialPTT", Mock(return_value=ptt))
+    monkeypatch.setattr(cli, "Playback", Mock(return_value=playback))
+
+    assert cli.main(ARGS) == 1
+    capture.assert_called_once()
+    listener.transcribe.assert_called_once()
+    backend.reply.assert_not_called()
+    ptt.on.assert_called_once()
+    assert events == ["play", "release", "serial closed", "playback closed"]
+    output = capsys.readouterr()
+    assert "check the radio before restarting" in output.err
+    if failure_at == "release":
+        assert "PTT release could not be confirmed; turn the radio off" in output.err
+    else:
+        assert "Audio device disconnected" in output.err
+    assert "confirmation finished; PTT released" not in output.out
+    assert "Still armed" not in output.out
+
+
+@pytest.mark.parametrize("failure", [WalkietalkError("Piper timed out"), OSError("Voice failed")])
+def test_wake_speech_failure_allows_later_reply(bridge, monkeypatch, capsys, failure):
+    config, backend, voice, listener = bridge
+    config = replace(config, wake_confirmation_phrase="Go ahead.")
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    listener.transcribe.side_effect = ["charlotte", "charlotte what is rain", KeyboardInterrupt()]
+    voice.synthesize.side_effect = [failure, SPEECH]
+    transmission = Mock()
+    monkeypatch.setattr(cli, "transmit_speech", transmission)
+
+    assert cli.main(ARGS) == 130
+    backend.reply.assert_called_once()
+    transmission.assert_called_once_with(SPEECH, config)
+    assert "Wake confirmation failed" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("failure", ["agent", "prepare", "synthesis"])
