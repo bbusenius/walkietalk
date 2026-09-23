@@ -14,7 +14,8 @@ confirmation requires `talk --capture --transmit`.
 | Continuous `talk --capture` | No idle limit; silence does not end the program. |
 | `listening.conversation_timeout_seconds` | After the reply prints, how long a follow-up may omit the wake phrase. Expiry leaves the bridge listening. |
 | `vad.max_utterance_seconds` | Maximum recording length for one utterance; quiet waiting does not accumulate an unbounded recording. |
-| `stt.timeout_seconds` | Deadline for transcribing captured speech. |
+| `stt.timeout_seconds` | Deadline for transcribing captured speech. For Grok, one total budget covers worker startup, login refresh, upload, response reading, and any authentication retry. |
+| `stt.max_response_bytes` | Optional Grok limit per response body, including login and error responses. Positive integer; defaults to 1048576 bytes (1 MiB). Ignored by local Whisper. |
 | `agent.timeout_seconds` | Deadline for producing an answer, independent of answer length and reasoning effort. |
 | `shutdown.confirmation_seconds` | Time to start the separate confirmation utterance after shutdown is armed. Default 30 seconds; configurable above zero through 300. |
 | `shutdown.arm_confirmation_phrase` | Spoken radio line when the phrase alone arms shutdown. Required when shutdown is enabled. Played only with `talk --transmit`. |
@@ -164,6 +165,20 @@ inference job continues. Until that job finishes, new utterances are skipped
 with a local error; they are not queued. Its late transcript or error is
 discarded, and subsequent utterances can be transcribed once it finishes.
 If the job remains stuck, restart Walkietalk locally to restore transcription.
+
+With `grok` or `grok_api`, the entire transcription runs in a separate worker.
+When the deadline expires, Walkietalk terminates the worker and discards its
+transcript before resuming listening. Process cleanup may take up to one extra
+second. Increase `stt.timeout_seconds` (up to 120 seconds) if legitimate requests
+need more time. A login refresh or retry shares this budget rather than starting
+a fresh timeout. Startup checks the saved credentials without refreshing them.
+
+Grok responses exceeding `stt.max_response_bytes` are rejected with a local
+error instead of being truncated. This counts the bytes of each HTTP response
+body, including JSON metadata, rather than transcript characters. The same
+limit covers authentication and error bodies. For example, set
+`max_response_bytes: 2097152` inside the `stt` section to allow 2 MiB. Existing
+configurations that omit the setting use 1 MiB.
 
 ## Current limits
 

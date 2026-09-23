@@ -10,7 +10,21 @@ import yaml
 
 from walkietalk import cli
 from walkietalk.config import WalkietalkError, load_config
-from walkietalk.stt import GROK_STT_URL, GROK_TOKEN_URL, FasterWhisperStt, GrokAccountStt, open_stt
+from walkietalk.stt import (
+    GROK_STT_URL,
+    GROK_TOKEN_URL,
+    FasterWhisperStt,
+    GrokAccountStt,
+    GrokApiStt,
+    open_stt,
+)
+
+
+@pytest.fixture(autouse=True)
+def direct_grok_requests(monkeypatch):
+    # HTTP tests inject responses here; separate worker tests exercise process isolation.
+    for backend in (GrokAccountStt, GrokApiStt):
+        monkeypatch.setattr(backend, "transcribe", backend._transcribe_direct)
 
 
 @pytest.fixture
@@ -47,7 +61,7 @@ def write_grok_auth(
 
 class FakeResponse:
     def __init__(self, payload):
-        self.payload = payload
+        self.body = io.BytesIO(json.dumps(payload).encode())
 
     def __enter__(self):
         return self
@@ -55,8 +69,8 @@ class FakeResponse:
     def __exit__(self, *args):
         return False
 
-    def read(self):
-        return json.dumps(self.payload).encode()
+    def read(self, size):
+        return self.body.read(size)
 
 
 def test_open_stt_selects_faster_whisper(tmp_path, config_data):

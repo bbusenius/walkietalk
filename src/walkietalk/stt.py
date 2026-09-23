@@ -18,7 +18,13 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-from .config import STT_BACKENDS, STT_MODELS, Config, WalkietalkError
+from .config import (
+    DEFAULT_STT_MAX_RESPONSE_BYTES,
+    STT_BACKENDS,
+    STT_MODELS,
+    Config,
+    WalkietalkError,
+)
 
 CACHE = Path.home() / ".cache" / "walkietalk" / "faster-whisper"
 WHISPER_RATE = 16000
@@ -217,7 +223,32 @@ def _session_expired(session: dict, skew_seconds: int = 60) -> bool:
     return now.timestamp() >= expires.timestamp() - skew_seconds
 
 
-def refresh_grok_access_token(session: dict) -> str:
+def _grok_remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise WalkietalkError("Grok speech-to-text timed out; transcript discarded")
+    return left
+
+
+def _read_grok_body(response, maximum: int, deadline: float) -> bytes:
+    body = bytearray()
+    while True:
+        _grok_remaining(deadline)
+        chunk = response.read(min(65536, maximum + 1 - len(body)))
+        _grok_remaining(deadline)
+        if not chunk:
+            return bytes(body)
+        if len(body) + len(chunk) > maximum:
+            raise WalkietalkError(
+                f"Grok response exceeded stt.max_response_bytes ({maximum}); discarded"
+            )
+        body.extend(chunk)
+
+
+def refresh_grok_access_token(
+    session: dict, timeout: float, max_response_bytes: int = DEFAULT_STT_MAX_RESPONSE_BYTES
+) -> str:
+    deadline = time.monotonic() + timeout
     refresh = session.get("refresh_token")
     client_id = session.get("oidc_client_id")
     if not isinstance(refresh, str) or not isinstance(client_id, str):
@@ -236,13 +267,20 @@ def refresh_grok_access_token(session: dict) -> str:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
-        with urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read().decode())
-    except (HTTPError, URLError, json.JSONDecodeError) as exc:
+        with urlopen(request, timeout=_grok_remaining(deadline)) as response:
+            payload = json.loads(_read_grok_body(response, max_response_bytes, deadline))
+    except HTTPError as exc:
+        with exc:
+            _read_grok_body(exc, max_response_bytes, deadline)
+        raise WalkietalkError("SuperGrok login expired. Run: grok login") from exc
+    except TimeoutError:
+        raise WalkietalkError("Grok speech-to-text timed out; transcript discarded") from None
+    except (URLError, ValueError, UnicodeError, RecursionError) as exc:
         raise WalkietalkError("SuperGrok login expired. Run: grok login") from exc
     token = payload.get("access_token") if isinstance(payload, dict) else None
     if not isinstance(token, str) or not token:
         raise WalkietalkError("SuperGrok login expired. Run: grok login")
+    _grok_remaining(deadline)
     session["key"] = token
     if isinstance(payload.get("refresh_token"), str):
         session["refresh_token"] = payload["refresh_token"]
@@ -254,7 +292,14 @@ def refresh_grok_access_token(session: dict) -> str:
     return token
 
 
-def post_grok_stt(wav: bytes, token: str, timeout: float, keyterms: tuple[str, ...] = ()) -> str:
+def post_grok_stt(
+    wav: bytes,
+    token: str,
+    timeout: float,
+    keyterms: tuple[str, ...] = (),
+    max_response_bytes: int = DEFAULT_STT_MAX_RESPONSE_BYTES,
+) -> str:
+    deadline = time.monotonic() + timeout
     boundary = "----walkietalk" + uuid.uuid4().hex
     parts: list[bytes] = [
         (
@@ -294,27 +339,39 @@ def post_grok_stt(wav: bytes, token: str, timeout: float, keyterms: tuple[str, .
         },
     )
     try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode())
+        with urlopen(request, timeout=_grok_remaining(deadline)) as response:
+            payload = json.loads(_read_grok_body(response, max_response_bytes, deadline))
     except HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:200]
+        with exc:
+            detail = _read_grok_body(exc, max_response_bytes, deadline).decode(errors="replace")[
+                :200
+            ]
         raise WalkietalkError(f"Grok speech-to-text failed ({exc.code}): {detail}") from exc
+    except TimeoutError:
+        raise WalkietalkError("Grok speech-to-text timed out; transcript discarded") from None
     except URLError as exc:
         raise WalkietalkError(
             f"Grok speech-to-text is unreachable. faster-whisper was not used: {exc.reason}"
         ) from exc
-    except json.JSONDecodeError as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
         raise WalkietalkError("Grok speech-to-text returned invalid JSON") from exc
     text = payload.get("text") if isinstance(payload, dict) else None
     if not isinstance(text, str):
         raise WalkietalkError("Grok speech-to-text returned no transcript text")
+    _grok_remaining(deadline)
     return text.strip()
 
 
 class GrokAccountStt:
-    def __init__(self, timeout: float, keyterms: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        timeout: float,
+        keyterms: tuple[str, ...] = (),
+        max_response_bytes: int = DEFAULT_STT_MAX_RESPONSE_BYTES,
+    ) -> None:
         self.timeout = timeout
         self.keyterms = keyterms
+        self.max_response_bytes = max_response_bytes
         self._store: dict | None = None
         self._session: dict | None = None
 
@@ -327,50 +384,69 @@ class GrokAccountStt:
         self._store, _account, self._session = load_grok_store()
         return self._session
 
-    def _token(self) -> str:
+    def _token(self, deadline: float | None = None) -> str:
         session = self._load()
         token = session.get("key")
         if not isinstance(token, str) or not token:
             raise WalkietalkError("SuperGrok login has no access token. Run: grok login")
-        if _session_expired(session):
-            return self._refresh()
+        if deadline is not None and _session_expired(session):
+            return self._refresh(deadline)
         return token
 
-    def _refresh(self) -> str:
+    def _refresh(self, deadline: float) -> str:
         session = self._load()
-        token = refresh_grok_access_token(session)
+        token = refresh_grok_access_token(
+            session, _grok_remaining(deadline), self.max_response_bytes
+        )
+        _grok_remaining(deadline)
         if self._store is not None:
             save_grok_store(self._store)
         return token
 
-    def _remaining(self, deadline: float) -> float:
-        left = deadline - time.monotonic()
-        if left <= 0:
-            raise WalkietalkError(f"Grok speech-to-text timed out after {self.timeout:g}s")
-        return left
-
     def prepare(self) -> None:
+        # Startup checks credentials only; refresh belongs to the transcription deadline.
         self._token()
 
     def transcribe(self, pcm: bytes, rate: int) -> str:
+        from .grok_stt_worker import transcribe_in_worker
+
+        return transcribe_in_worker(self, pcm, rate)
+
+    def _transcribe_direct(self, pcm: bytes, rate: int, *, deadline: float | None = None) -> str:
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout
         wav = pcm_wav_bytes(pcm, rate)
-        deadline = time.monotonic() + self.timeout
         try:
-            return post_grok_stt(wav, self._token(), self._remaining(deadline), self.keyterms)
+            text = post_grok_stt(
+                wav,
+                self._token(deadline),
+                _grok_remaining(deadline),
+                self.keyterms,
+                self.max_response_bytes,
+            )
         except WalkietalkError as exc:
             if "(401)" not in str(exc):
                 raise
-            token = self._refresh()
-            return post_grok_stt(wav, token, self._remaining(deadline), self.keyterms)
+            token = self._refresh(deadline)
+            text = post_grok_stt(
+                wav, token, _grok_remaining(deadline), self.keyterms, self.max_response_bytes
+            )
+        _grok_remaining(deadline)
+        return text
 
 
 class GrokApiStt:
     def __init__(
-        self, timeout: float, token_env: str = "XAI_API_KEY", keyterms: tuple[str, ...] = ()
+        self,
+        timeout: float,
+        token_env: str = "XAI_API_KEY",
+        keyterms: tuple[str, ...] = (),
+        max_response_bytes: int = DEFAULT_STT_MAX_RESPONSE_BYTES,
     ) -> None:
         self.timeout = timeout
         self.token_env = token_env
         self.keyterms = keyterms
+        self.max_response_bytes = max_response_bytes
 
     def label(self) -> str:
         return f"grok_api ({GROK_STT_MODEL}; {self.token_env})"
@@ -384,10 +460,21 @@ class GrokApiStt:
             )
 
     def transcribe(self, pcm: bytes, rate: int) -> str:
+        from .grok_stt_worker import transcribe_in_worker
+
+        return transcribe_in_worker(self, pcm, rate)
+
+    def _transcribe_direct(self, pcm: bytes, rate: int, *, deadline: float | None = None) -> str:
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout
         self.prepare()
         token = os.environ[self.token_env]
         wav = pcm_wav_bytes(pcm, rate)
-        return post_grok_stt(wav, token, self.timeout, self.keyterms)
+        text = post_grok_stt(
+            wav, token, _grok_remaining(deadline), self.keyterms, self.max_response_bytes
+        )
+        _grok_remaining(deadline)
+        return text
 
 
 def open_stt(config: Config) -> SttBackend:
@@ -395,7 +482,11 @@ def open_stt(config: Config) -> SttBackend:
     if config.stt_backend == "faster-whisper":
         return FasterWhisperStt(config.stt_model, config.stt_timeout_seconds)
     if config.stt_backend == "grok":
-        return GrokAccountStt(config.stt_timeout_seconds, keyterms)
+        return GrokAccountStt(config.stt_timeout_seconds, keyterms, config.stt_max_response_bytes)
     if config.stt_backend == "grok_api":
-        return GrokApiStt(config.stt_timeout_seconds, keyterms=keyterms)
+        return GrokApiStt(
+            config.stt_timeout_seconds,
+            keyterms=keyterms,
+            max_response_bytes=config.stt_max_response_bytes,
+        )
     raise WalkietalkError(f"stt.backend must be one of {', '.join(STT_BACKENDS)}")

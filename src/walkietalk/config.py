@@ -10,6 +10,7 @@ import yaml
 
 STT_MODELS = ("tiny", "base")
 STT_BACKENDS = ("faster-whisper", "grok", "grok_api")
+DEFAULT_STT_MAX_RESPONSE_BYTES = 1024 * 1024
 TTS_NORMALIZE = ("off", "peak")
 CALLSIGN_MODES = ("off", "end_of_reply", "interval")
 AGENT_BACKENDS = ("stub", "hermes", "codex", "grok", "claude", "claude_api")
@@ -79,6 +80,7 @@ class Config:
     stt_model: str = "base"
     stt_backend: str = "faster-whisper"
     stt_timeout_seconds: float = 30
+    stt_max_response_bytes: int = DEFAULT_STT_MAX_RESPONSE_BYTES
     listening_mode: str = "wake_phrase"
     conversation_timeout_seconds: float = 60
     wake_primary: str = "charlotte"
@@ -197,8 +199,18 @@ def load_config(path: Path) -> Config:
             "vad, and wake sections. See config.example.yaml for required fields."
         )
     for section, fields in expected.items():
-        if not isinstance(data[section], dict) or set(data[section]) != fields:
+        optional = {"max_response_bytes"} if section == "stt" else set()
+        if not isinstance(data[section], dict) or not (
+            fields <= set(data[section]) <= fields | optional
+        ):
             raise WalkietalkError(f"{section} requires these fields: {', '.join(sorted(fields))}")
+    max_response_bytes = data["stt"].get("max_response_bytes", DEFAULT_STT_MAX_RESPONSE_BYTES)
+    if (
+        isinstance(max_response_bytes, bool)
+        or not isinstance(max_response_bytes, int)
+        or max_response_bytes <= 0
+    ):
+        raise WalkietalkError("stt.max_response_bytes must be a positive integer")
     for field in ("input_device", "output_device"):
         value = data["audio"][field]
         if not isinstance(value, str) or not value.strip() or value.strip().lower() == "default":
@@ -492,6 +504,7 @@ def load_config(path: Path) -> Config:
         stt_timeout_seconds=seconds(
             data["stt"]["timeout_seconds"], "stt.timeout_seconds", maximum=120
         ),
+        stt_max_response_bytes=max_response_bytes,
         listening_mode=mode,
         conversation_timeout_seconds=seconds(
             data["listening"]["conversation_timeout_seconds"],

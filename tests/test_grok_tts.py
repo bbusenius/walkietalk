@@ -386,10 +386,11 @@ def test_stt_reloads_login_rotated_by_tts(config, monkeypatch, tmp_path):
     path.write_text(json.dumps(state))
     seen = []
 
-    def transcribe(wav, token, timeout, keyterms):
+    def transcribe(wav, token, timeout, keyterms, max_response_bytes):
         seen.append(token)
         return "Hello."
 
     monkeypatch.setattr("walkietalk.stt.post_grok_stt", transcribe)
+    monkeypatch.setattr(GrokAccountStt, "transcribe", GrokAccountStt._transcribe_direct)
     assert listener.transcribe(b"\x00\x20" * 320, 16000) == "Hello."
     assert seen == ["tts-rotated-access"]

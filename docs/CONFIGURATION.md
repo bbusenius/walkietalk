@@ -91,7 +91,8 @@ colored logs.
 | `vad.max_utterance_seconds` | Cap on one incoming recording |
 | `stt.backend` | `faster-whisper`, `grok`, or `grok_api` |
 | `stt.model` | Local `tiny` or `base`; remains required for remote backends |
-| `stt.timeout_seconds` | Transcription deadline, independent of wait-for-speech and agent time |
+| `stt.timeout_seconds` | Transcription deadline (greater than zero, up to 120 seconds), independent of wait-for-speech and agent time. Grok includes worker startup, login refresh, upload, response reading, and authentication retry in one budget. |
+| `stt.max_response_bytes` | Optional positive integer; defaults to 1048576 (1 MiB). Caps each Grok transcript, login-refresh, or error response body. Oversized responses are discarded; local Whisper ignores this setting. |
 
 See [backend setup](BACKENDS.md) for model download and login instructions.
 Capture gain comes from the radio/interface; `audio.gain` only changes output.
