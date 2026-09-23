@@ -159,6 +159,12 @@ cancel pending shutdown. Hardware capture failures stop with a clear local
 error so a disconnected device is not hidden. One-shot commands and
 `agent-check` continue to exit with status 1 on failure.
 
+With local faster-whisper, a timeout stops waiting for the transcript but the
+inference job continues. Until that job finishes, new utterances are skipped
+with a local error; they are not queued. Its late transcript or error is
+discarded, and subsequent utterances can be transcribed once it finishes.
+If the job remains stuck, restart Walkietalk locally to restore transcription.
+
 ## Current limits
 
 Capture pauses while transcribing or waiting for an agent. Send shutdown

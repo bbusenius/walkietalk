@@ -107,26 +107,6 @@ def transcribe_audio(model, pcm: bytes, rate: int) -> str:
         raise WalkietalkError(f"Transcription failed: {exc}") from exc
 
 
-def _run_timed(fn, timeout: float, label: str):
-    result: list = []
-    error: list[BaseException] = []
-
-    def worker() -> None:
-        try:
-            result.append(fn())
-        except BaseException as exc:
-            error.append(exc)
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    thread.join(timeout)
-    if thread.is_alive():
-        raise WalkietalkError(f"{label} timed out after {timeout:g}s")
-    if error:
-        raise error[0]
-    return result[0]
-
-
 def pcm_wav_bytes(pcm: bytes, rate: int) -> bytes:
     buffer = BytesIO()
     with wave.open(buffer, "wb") as wav:
@@ -148,6 +128,8 @@ class FasterWhisperStt:
         self.model_name = model_name
         self.timeout = timeout
         self._model = None
+        self._worker: threading.Thread | None = None
+        self._worker_lock = threading.Lock()
 
     def label(self) -> str:
         return f"faster-whisper ({self.model_name})"
@@ -156,13 +138,33 @@ class FasterWhisperStt:
         self._model = load_model(self.model_name)
 
     def transcribe(self, pcm: bytes, rate: int) -> str:
-        if self._model is None:
-            self.prepare()
-        return _run_timed(
-            lambda: transcribe_audio(self._model, pcm, rate),
-            self.timeout,
-            "faster-whisper",
-        )
+        # Keep results local to this call so a timed-out result or error is discarded.
+        result: list[str] = []
+        error: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                result.append(transcribe_audio(self._model, pcm, rate))
+            except BaseException as exc:
+                error.append(exc)
+
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                raise WalkietalkError(
+                    "faster-whisper is still processing the previous audio; this utterance "
+                    "was skipped. Wait for it to finish, or restart walkietalk if it remains stuck."
+                )
+            if self._model is None:
+                self.prepare()
+            thread = threading.Thread(target=worker, daemon=True)
+            self._worker = thread
+            thread.start()
+        thread.join(self.timeout)
+        if thread.is_alive():
+            raise WalkietalkError(f"faster-whisper timed out after {self.timeout:g}s")
+        if error:
+            raise error[0]
+        return result[0]
 
 
 GROK_STT_URL = "https://api.x.ai/v1/stt"

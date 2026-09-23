@@ -1,5 +1,6 @@
 import io
 import json
+import threading
 import time
 from pathlib import Path
 from urllib.error import HTTPError
@@ -9,7 +10,7 @@ import yaml
 
 from walkietalk import cli
 from walkietalk.config import WalkietalkError, load_config
-from walkietalk.stt import GROK_STT_URL, GROK_TOKEN_URL, GrokAccountStt, _run_timed, open_stt
+from walkietalk.stt import GROK_STT_URL, GROK_TOKEN_URL, FasterWhisperStt, GrokAccountStt, open_stt
 
 
 @pytest.fixture
@@ -133,16 +134,61 @@ def test_grok_refresh_writes_auth_json(monkeypatch, tmp_path, config_data):
     assert "expires_at" in session
 
 
-def test_stt_timeout_returns_before_worker_finishes():
+@pytest.mark.parametrize("late_error", [False, True])
+def test_whisper_timeout_bounds_work_discards_late_outcome_and_recovers(monkeypatch, late_error):
+    listener = FasterWhisperStt("base", timeout=0.05)
+    monkeypatch.setattr("walkietalk.stt.load_model", lambda name: object())
+    release = threading.Event()
+    workers = []
+    inputs = []
+
+    def inference(model, pcm, rate):
+        workers.append(threading.current_thread())
+        inputs.append(pcm)
+        if pcm == b"first":
+            release.wait()
+            if late_error:
+                raise WalkietalkError("Late failure")
+            return "Late transcript"
+        return "Fresh transcript"
+
+    monkeypatch.setattr("walkietalk.stt.transcribe_audio", inference)
     started = time.monotonic()
+    try:
+        with pytest.raises(WalkietalkError, match="timed out"):
+            listener.transcribe(b"first", 16000)
+        assert time.monotonic() - started < 1.5
+        for _ in range(3):
+            with pytest.raises(WalkietalkError, match="still processing.*utterance was skipped"):
+                listener.transcribe(b"skipped", 16000)
+        assert inputs == [b"first"]
+        assert len(workers) == 1
+        assert workers[0].is_alive()
+    finally:
+        release.set()
+        # Also covers a worker that was slow to start during a failed test.
+        if listener._worker is not None:
+            listener._worker.join(timeout=2)
 
-    def slow():
-        time.sleep(5)
-        return "late"
+    assert not workers[0].is_alive()
+    listener.timeout = 2
+    assert listener.transcribe(b"fresh", 16000) == "Fresh transcript"
+    assert inputs == [b"first", b"fresh"]
 
-    with pytest.raises(WalkietalkError, match="timed out"):
-        _run_timed(slow, 0.2, "faster-whisper")
-    assert time.monotonic() - started < 1.5
+
+def test_whisper_inference_error_does_not_block_the_next_call(monkeypatch):
+    listener = FasterWhisperStt("base", timeout=2)
+    monkeypatch.setattr("walkietalk.stt.load_model", lambda name: object())
+
+    def inference(model, pcm, rate):
+        if pcm == b"bad":
+            raise WalkietalkError("Inference failed")
+        return "Fresh transcript"
+
+    monkeypatch.setattr("walkietalk.stt.transcribe_audio", inference)
+    with pytest.raises(WalkietalkError, match="Inference failed"):
+        listener.transcribe(b"bad", 16000)
+    assert listener.transcribe(b"fresh", 16000) == "Fresh transcript"
 
 
 def test_grok_does_not_use_whisper(monkeypatch, tmp_path, config_data):
