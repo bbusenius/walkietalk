@@ -434,19 +434,41 @@ def _transcript_from_event(event: RealtimeEvent) -> tuple[str | None, str | None
     return (None, None)
 
 
-async def wait_for_session_updated(client: GrokRealtimeClient) -> list[str]:
-    """Drain early events until session.updated (required before appending audio)."""
+async def wait_for_event(
+    client: GrokRealtimeClient,
+    event_type: str,
+    *,
+    timeout: float,
+    ignore_pings: bool = True,
+) -> list[str]:
+    """Drain events until ``event_type`` or timeout (pings ignored optionally)."""
     seen: list[str] = []
-    deadline = time.monotonic() + client.config.voice_agent_connect_timeout_seconds
+    deadline = time.monotonic() + timeout
     async for event in client.events():
         seen.append(event.type)
-        if event.type == "session.updated":
+        if ignore_pings and event.type == "ping":
+            if time.monotonic() >= deadline:
+                raise WalkietalkError(
+                    f"Grok realtime timed out waiting for {event_type} (pings only); "
+                    "no stt/agent/tts fallback"
+                )
+            continue
+        if event.type == event_type:
             return seen
         if time.monotonic() >= deadline:
             raise WalkietalkError(
-                "Grok realtime timed out waiting for session.updated; no stt/agent/tts fallback"
+                f"Grok realtime timed out waiting for {event_type}; no stt/agent/tts fallback"
             )
-    raise WalkietalkError("Grok realtime closed before session.updated; no stt/agent/tts fallback")
+    raise WalkietalkError(f"Grok realtime closed before {event_type}; no stt/agent/tts fallback")
+
+
+async def wait_for_session_updated(client: GrokRealtimeClient) -> list[str]:
+    """Drain early events until session.updated (required before appending audio)."""
+    return await wait_for_event(
+        client,
+        "session.updated",
+        timeout=client.config.voice_agent_connect_timeout_seconds,
+    )
 
 
 async def run_offline_turn(
@@ -467,6 +489,13 @@ async def run_offline_turn(
         for offset in range(0, len(session_pcm), APPEND_CHUNK_BYTES):
             await client.append_audio(session_pcm[offset : offset + APPEND_CHUNK_BYTES])
         await client.commit_audio()
+        seen.extend(
+            await wait_for_event(
+                client,
+                "input_audio_buffer.committed",
+                timeout=max(10.0, float(client.config.voice_agent_idle_timeout_seconds)),
+            )
+        )
         await client.create_response()
 
         audio_chunks: list[bytes] = []

@@ -34,6 +34,7 @@ from .grok_realtime import (
     open_voice_agent,
     pcm16_to_wav,
     resample_pcm16,
+    wait_for_event,
     wait_for_session_updated,
 )
 from .session import uninterrupted_cleanup
@@ -275,6 +276,13 @@ async def run_supervised_turn(
         for offset in range(0, len(session_pcm), APPEND_CHUNK_BYTES):
             await client.append_audio(session_pcm[offset : offset + APPEND_CHUNK_BYTES])
         await client.commit_audio()
+        seen.extend(
+            await wait_for_event(
+                client,
+                "input_audio_buffer.committed",
+                timeout=max(10.0, float(config.voice_agent_idle_timeout_seconds)),
+            )
+        )
         await client.create_response()
         turn_deadline = time.monotonic() + max(15.0, float(config.voice_agent_idle_timeout_seconds))
         try:

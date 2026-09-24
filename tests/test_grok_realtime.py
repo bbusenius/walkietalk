@@ -387,7 +387,10 @@ def scripted_reply_transport(pcm_out: bytes, *, with_transcripts=True) -> FakeTr
     half = len(pcm_out) // 2
     first = base64.b64encode(pcm_out[:half] or pcm_out).decode("ascii")
     second = base64.b64encode(pcm_out[half:] or b"\x00\x00").decode("ascii")
-    incoming = [event("session.updated")]
+    incoming = [
+        event("session.updated"),
+        event("input_audio_buffer.committed"),
+    ]
     if with_transcripts:
         incoming.append(
             event(
@@ -727,6 +730,7 @@ def test_supervised_voice_check_fake_transport_ptt_sequence(monkeypatch):
     transport = FakeTransport(
         incoming=[
             event("session.updated"),
+            event("input_audio_buffer.committed"),
             event(
                 OUTPUT_AUDIO_DELTA,
                 delta=base64.b64encode(b"\x01\x00" * 16).decode("ascii"),
