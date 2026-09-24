@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .agent import AgentSession, open_agent
+from .agent import AgentSession, open_agent, render_guidance
 from .audio import Playback, Wav, read_wav
 from .callsign import IDENT_GAP_SECONDS, CallsignSession, identification_transmissions
 from .capture import capture_from_device, capture_from_wav
@@ -198,16 +198,20 @@ def talk_command(args: argparse.Namespace) -> None:
     if (args.capture or args.transmit) and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
+    realtime = config.voice_agent_backend == "grok_realtime"
     session = ListeningSession(config)
     shutdown = ShutdownSession(config)
     callsigns = CallsignSession(config, time.monotonic)
-    agent = open_agent(config)
     spoken_seconds = config.max_tx_seconds - config.settle_seconds if args.transmit else None
+    agent = None
+    conversation = None
+    if not realtime:
 
-    def new_conversation(backend):
-        return AgentSession(config, backend, spoken_seconds=spoken_seconds)
+        def new_conversation(backend):
+            return AgentSession(config, backend, spoken_seconds=spoken_seconds)
 
-    conversation = new_conversation(agent)
+        agent = open_agent(config)
+        conversation = new_conversation(agent)
     once = args.once or args.wav is not None
     if args.timeout is not None and not (args.capture and args.once):
         raise WalkietalkError(
@@ -215,13 +219,30 @@ def talk_command(args: argparse.Namespace) -> None:
         )
     listener = open_stt(config)
     emit("status", f"Listener: {listener.label()}")
-    emit("status", f"Agent: {agent.label()}")
+    if realtime:
+        emit(
+            "status",
+            f"Voice agent: grok_realtime ({config.voice_agent_model}); "
+            "STT gates wake/shutdown; replies use realtime (not agent/tts)",
+        )
+    else:
+        emit("status", f"Agent: {agent.label()}")
     voice = None
     if args.transmit:
         voice = open_tts(config)
         voice.prepare()  # Missing engine/model fails before any agent request or serial open.
         emit("status", f"Voice: {voice.label()}")
-        emit("status", "Radio replies enabled; PTT stays off until speech and playback are ready.")
+        if realtime:
+            emit(
+                "status",
+                "Radio replies via parent-owned realtime TX; "
+                "PTT stays off until the first AI audio delta.",
+            )
+        else:
+            emit(
+                "status",
+                "Radio replies enabled; PTT stays off until speech and playback are ready.",
+            )
         if callsigns.enabled():
             emit(
                 "status",
@@ -233,6 +254,8 @@ def talk_command(args: argparse.Namespace) -> None:
                 "status",
                 f"Post-transmit mute {config.post_tx_mute_seconds:g}s after unkey.",
             )
+    elif realtime:
+        emit("status", "Realtime dry path: DryPTT only; no SerialPTT.")
     if args.transmit and not args.capture:
         preflight(config)
     if args.capture:
@@ -345,62 +368,110 @@ def talk_command(args: argparse.Namespace) -> None:
             # Eligibility is already decided using speech start time. Close the
             # old window while working; failure/interruption must not reopen it.
             session.close()
-            previous_history = conversation.history
-            try:
-                answer = conversation.reply(decision.traffic)
-            except (WalkietalkError, OSError) as exc:
-                if once:
-                    raise
-                emit("error", f"Agent failed: {exc}", file=sys.stderr)
-                # Keep completed pairs, but never resume a failed remote turn.
-                history = conversation.history
-                conversation = new_conversation(open_agent(config))
-                conversation.history = history
-                emit("status", "Still listening; say the wake phrase and try again.")
-                continue
-            if voice is not None:
+            if realtime:
                 try:
-                    emit("status", "Generating speech; PTT off...")
-                    speech = radio_wav(voice.synthesize(answer), spoken_seconds, truncate=True)
+                    emit("status", "Realtime voice turn; parent owns PTT...")
+                    if args.transmit:
+                        ptt = SerialPTT(config.serial_port, config.line)
+
+                        def play(pcm, rate, deadline):
+                            play_segment_via_playback(config, pcm, rate, deadline)
+
+                    else:
+                        ptt = DryPTT()
+                        play = play_segment_dry
+                    result = supervised_voice_check(
+                        config,
+                        utterance.pcm,
+                        utterance.rate,
+                        ptt,
+                        allow_key=True,
+                        play_segment=play,
+                        instructions=render_guidance(config, spoken=True),
+                    )
                 except (WalkietalkError, OSError) as exc:
-                    # A completed model reply that was never spoken is not radio history.
-                    conversation = new_conversation(open_agent(config))
-                    conversation.history = previous_history
                     if once:
                         raise
-                    emit("error", f"Speech failed: {exc}", file=sys.stderr)
+                    emit("error", f"Voice agent failed: {exc}", file=sys.stderr)
                     emit("status", "Still listening; say the wake phrase and try again.")
                     continue
-                transmissions = (speech,)
-                ident = None
-                if callsigns.due():
+                if result.input_transcript:
+                    emit("transcript", f"Heard: {result.input_transcript}")
+                if result.output_transcript:
+                    emit("reply", f"Reply: {result.output_transcript}")
+                elif result.reply_wav is None:
+                    emit("warn", "Voice agent returned no spoken audio; no stt/agent/tts fallback.")
+                if result.ptt_actions:
+                    summary = ", ".join(f"{item.kind}:{item.reason}" for item in result.ptt_actions)
+                    emit("status", f"PTT actions: {summary}")
+                if result.truncated_by_tx_cap:
+                    emit("warn", "TX duration cap truncated supervised playback.")
+                if args.transmit:
+                    wait_post_tx_mute(config)
+                session.complete_turn()
+                emit("status", session.status_line())
+            else:
+                previous_history = conversation.history
+                try:
+                    answer = conversation.reply(decision.traffic)
+                except (WalkietalkError, OSError) as exc:
+                    if once:
+                        raise
+                    emit("error", f"Agent failed: {exc}", file=sys.stderr)
+                    # Keep completed pairs, but never resume a failed remote turn.
+                    history = conversation.history
+                    conversation = new_conversation(open_agent(config))
+                    conversation.history = history
+                    emit("status", "Still listening; say the wake phrase and try again.")
+                    continue
+                if voice is not None:
                     try:
-                        emit("status", "Generating station ID; PTT off...")
-                        ident = radio_wav(
-                            voice.synthesize(config.callsign, truncate=False), spoken_seconds
-                        )
-                        transmissions = identification_transmissions(speech, ident, spoken_seconds)
+                        emit("status", "Generating speech; PTT off...")
+                        speech = radio_wav(voice.synthesize(answer), spoken_seconds, truncate=True)
                     except (WalkietalkError, OSError) as exc:
-                        ident = None
-                        emit("error", f"Station ID failed: {exc}", file=sys.stderr)
-                        emit("status", "Sending the answer without a station ID.")
-                # Capture has closed before STT. It stays closed throughout synthesis/TX.
-                # Hardware errors stop the loop after cleanup instead of retrying hardware.
-                transmit_speech(transmissions[0], config)
-                if len(transmissions) == 2:
-                    emit(
-                        "status", "Station ID needs a separate burst; PTT released between bursts."
-                    )
-                    time.sleep(IDENT_GAP_SECONDS)
-                    transmit_speech(
-                        transmissions[1], config, finished="Station ID finished; PTT released."
-                    )
-                if ident is not None:
-                    callsigns.mark()
-                wait_post_tx_mute(config)
-            emit("reply", f"Reply: {answer}")
-            session.complete_turn()
-            emit("status", session.status_line())
+                        # A completed model reply that was never spoken is not radio history.
+                        conversation = new_conversation(open_agent(config))
+                        conversation.history = previous_history
+                        if once:
+                            raise
+                        emit("error", f"Speech failed: {exc}", file=sys.stderr)
+                        emit("status", "Still listening; say the wake phrase and try again.")
+                        continue
+                    transmissions = (speech,)
+                    ident = None
+                    if callsigns.due():
+                        try:
+                            emit("status", "Generating station ID; PTT off...")
+                            ident = radio_wav(
+                                voice.synthesize(config.callsign, truncate=False), spoken_seconds
+                            )
+                            transmissions = identification_transmissions(
+                                speech, ident, spoken_seconds
+                            )
+                        except (WalkietalkError, OSError) as exc:
+                            ident = None
+                            emit("error", f"Station ID failed: {exc}", file=sys.stderr)
+                            emit("status", "Sending the answer without a station ID.")
+                    # Capture has closed before STT. It stays closed throughout synthesis/TX.
+                    # Hardware errors stop the loop after cleanup instead of retrying hardware.
+                    transmit_speech(transmissions[0], config)
+                    if len(transmissions) == 2:
+                        emit(
+                            "status",
+                            "Station ID needs a separate burst; PTT released between bursts.",
+                        )
+                        time.sleep(IDENT_GAP_SECONDS)
+                        transmit_speech(
+                            transmissions[1],
+                            config,
+                            finished="Station ID finished; PTT released.",
+                        )
+                    if ident is not None:
+                        callsigns.mark()
+                    wait_post_tx_mute(config)
+                emit("reply", f"Reply: {answer}")
+                session.complete_turn()
+                emit("status", session.status_line())
         else:
             emit("ignored", decision.message)
         if once:

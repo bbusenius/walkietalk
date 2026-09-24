@@ -931,3 +931,185 @@ def test_supervised_cli_transmit_requires_supervised(tmp_path):
         )
         == 1
     )
+
+
+# --- Talk routing: grok_realtime uses supervised TX; off keeps agent path ---
+
+
+def test_talk_routes_realtime_dry_ptt_without_agent(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["voice_agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "wake_phrase"
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    config_path = write_config(tmp_path, data)
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = lambda pcm, rate: "charlotte what is rain"
+
+    called = {}
+
+    def fake_supervised(config, pcm, rate, ptt, **kwargs):
+        called["ptt"] = type(ptt).__name__
+        called["allow_key"] = kwargs.get("allow_key")
+        called["instructions"] = kwargs.get("instructions")
+        assert pcm
+        assert rate == 24000
+        return SupervisedTxResult(
+            reply_wav=Wav(b"\x05\x00" * 32, REALTIME_PCM_RATE, 32 / REALTIME_PCM_RATE),
+            input_transcript="charlotte what is rain",
+            output_transcript="rain falls from clouds",
+            ptt_actions=(
+                PttAction("key", "first_output_audio_delta"),
+                PttAction("unkey", "output_audio.done"),
+            ),
+        )
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run for realtime talk")
+    )
+    monkeypatch.setattr(
+        cli, "open_tts", lambda *a, **k: pytest.fail("open_tts must not run without --transmit")
+    )
+    monkeypatch.setattr(cli, "supervised_voice_check", fake_supervised)
+    monkeypatch.setattr(
+        cli,
+        "SerialPTT",
+        lambda *a, **k: pytest.fail("SerialPTT must not run without --transmit"),
+    )
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert called["ptt"] == "DryPTT"
+    assert called["allow_key"] is True
+    assert called["instructions"]
+    assert "Voice agent: grok_realtime" in printed
+    assert "DryPTT" in printed
+    assert "PTT actions:" in printed
+    assert "Reply: rain falls from clouds" in printed
+
+
+def test_talk_backend_off_still_uses_agent(monkeypatch, tmp_path, capsys):
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    assert data["voice_agent"]["backend"] == "off"
+    data["listening"]["mode"] = "wake_phrase"
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    data["agent"]["backend"] = "stub"
+    config_path = write_config(tmp_path, data)
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = lambda pcm, rate: "charlotte what is rain"
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(
+        cli,
+        "supervised_voice_check",
+        lambda *a, **k: pytest.fail("supervised_voice_check must not run when backend off"),
+    )
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "Agent:" in printed
+    assert "Voice agent: grok_realtime" not in printed
+    assert "Reply:" in printed
+
+
+def test_talk_realtime_transmit_uses_serial_ptt(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["voice_agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "wake_phrase"
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    config_path = write_config(tmp_path, data)
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = lambda pcm, rate: "charlotte what is rain"
+
+    voice = type("V", (), {})()
+    voice.label = lambda self=None: "fake-tts"
+    voice.prepare = lambda self=None: None
+    voice.synthesize = lambda *a, **k: pytest.fail("TTS must not synthesize realtime replies")
+
+    called = {}
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            called["serial"] = True
+
+    def fake_supervised(config, pcm, rate, ptt, **kwargs):
+        called["ptt"] = type(ptt).__name__
+        assert kwargs.get("allow_key") is True
+        return SupervisedTxResult(
+            reply_wav=Wav(b"\x05\x00" * 16, REALTIME_PCM_RATE, 16 / REALTIME_PCM_RATE),
+            output_transcript="ok",
+            ptt_actions=(
+                PttAction("key", "first_output_audio_delta"),
+                PttAction("unkey", "output_audio.done"),
+            ),
+        )
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(cli, "open_tts", lambda config: voice)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run for realtime talk")
+    )
+    monkeypatch.setattr(cli, "supervised_voice_check", fake_supervised)
+    monkeypatch.setattr(cli, "SerialPTT", FakeSerial)
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: None)
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+                "--transmit",
+            ]
+        )
+        == 0
+    )
+    assert called.get("serial") is True
+    assert called["ptt"] == "FakeSerial"
+    printed = capsys.readouterr().out
+    assert "Reply: ok" in printed

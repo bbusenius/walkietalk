@@ -1,9 +1,11 @@
 # Grok Voice speech-to-speech plan
 
-**Status: Phases 1–3 code landed** (`voice_agent.backend: grok_realtime` schema/
-client, offline `voice-agent-check`, and parent-owned supervised TX with
-`--supervised` / `--transmit`). Live on-air demonstration is still pending until
-an operator provides `XAI_API_KEY` and Brad/Boss resumes the live pass.
+**Status: Phases 1–3 + talk wiring** (`voice_agent.backend: grok_realtime` schema/
+client, offline `voice-agent-check`, parent-owned supervised TX with
+`--supervised` / `--transmit`, and live `talk` routing when backend is
+`grok_realtime`: STT still gates wake/shutdown; accepted turns use realtime
+instead of agent→TTS; DryPTT without `--transmit`). Live on-air `--transmit`
+demonstration is still pending until Brad/Boss greenlights SerialPTT.
 
 This optional path would **not** replace:
 
@@ -149,6 +151,10 @@ Follow the existing one-phase-per-PR teaching workflow:
       `voice-agent-check --supervised` (DryPTT) / `--transmit` (SerialPTT);
       fake-PTT tests cover key/unkey/tool-gap/TX cap. **Live demonstration
       checklist still pending** (no live API or on-air pass in this PR yet).
+- [x] **Talk routing** — when `voice_agent.backend: grok_realtime`, `talk`
+      keeps STT wake/shutdown gates and routes accepted turns through
+      `supervised_voice_check` (DryPTT without `--transmit`). Serial path
+      unchanged when backend is `off`.
 
 Passing fake tests alone is not completion of a later phase. Record live checks
 separately before claiming the integration is verified.
