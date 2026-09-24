@@ -465,7 +465,8 @@ def run(args: argparse.Namespace) -> None:
         config = load_config(args.config)
         print("Config OK. No hardware, network, or login checks performed.")
         print(
-            f"Agent: {config.agent_backend}; STT: {config.stt_backend}; voice: {config.tts_backend}"
+            f"Agent: {config.agent_backend}; STT: {config.stt_backend}; "
+            f"voice: {config.tts_backend}; voice_agent: {config.voice_agent_backend}"
         )
         print(
             f"Listening: {config.listening_mode}; "

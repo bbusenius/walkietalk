@@ -23,6 +23,7 @@ own stores. Run the CLIs and Walkietalk as the same normal Linux user.
 | xAI developer API | `grok_api` | No direct chat adapter | `grok_api` | Explicit `XAI_API_KEY`; separate API billing |
 | Claude Code CLI | No adapter | `claude` | No adapter | Official Claude CLI saved account login |
 | Anthropic Messages API | No adapter | `claude_api` | No adapter | Explicit `ANTHROPIC_API_KEY`; separate API billing |
+| Grok Voice realtime (Phase 1) | Combined via `voice_agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; not wired to talk/TX yet |
 
 These are implemented adapters, not a promise that every provider model, account
 tier, CLI release, or upstream configuration works. The recorded family checks
@@ -165,8 +166,10 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" listen --capture
 
 It records one utterance; expect `Transcript:` and TX off. See
 [Grok agent](GROK.md) and [Grok voice](GROK-TTS.md) for adapter specifics.
-A combined Speech to Speech / realtime path is [planned only](GROK-REALTIME-PLAN.md); it is not implemented and does not replace these
-account adapters.
+A combined Speech to Speech / realtime path is selected explicitly with
+`voice_agent.backend: grok_realtime` (Phase 1: schema + fake-transport client;
+not wired into the radio session loop yet). See [realtime plan](GROK-REALTIME-PLAN.md).
+It does not replace these account adapters.
 
 ## Explicit billed APIs
 
@@ -176,8 +179,9 @@ in your private credentials file. STT requires that exact environment variable;
 voice can use a different name through `tts.grok_api_key_env`.
 Use the same transcription/WAV checks above. SuperGrok subscriptions and xAI
 developer API billing are separate; these adapters never borrow the CLI login.
-Speech to Speech realtime, if added later, would also require explicit API
-credits; see the [realtime plan](GROK-REALTIME-PLAN.md).
+Speech to Speech realtime (`voice_agent.backend: grok_realtime`) also requires
+explicit API credits via `XAI_API_KEY` (`voice_agent.api_key_env`); see the
+[realtime plan](GROK-REALTIME-PLAN.md). Phase 1 does not open the radio session.
 
 For Anthropic's [Messages API](https://platform.claude.com/docs/en/api/messages),
 select `agent.backend: claude_api` and set `ANTHROPIC_API_KEY="your-key"` in the

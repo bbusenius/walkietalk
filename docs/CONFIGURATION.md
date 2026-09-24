@@ -97,6 +97,22 @@ colored logs.
 See [backend setup](BACKENDS.md) for model download and login instructions.
 Capture gain comes from the radio/interface; `audio.gain` only changes output.
 
+## Combined voice agent (optional realtime)
+
+| Fields | Meaning |
+| --- | --- |
+| `voice_agent.backend` | `off` (default) or `grok_realtime`. Explicit combined Speech to Speech path; never a silent substitute for `stt` / `agent` / `tts` |
+| `voice_agent.model` | `grok-voice-latest` (default) or a versioned ID such as `grok-voice-think-fast-2.0` |
+| `voice_agent.voice` | Built-in or custom xAI voice ID (example `eve`) |
+| `voice_agent.api_key_env` | Environment variable **name** for the billed console key; default `XAI_API_KEY` (same as `grok_api`). SuperGrok login is never used |
+| `voice_agent.websocket_url` | Default `wss://api.x.ai/v1/realtime` |
+| `voice_agent.connect_timeout_seconds` | WebSocket connect deadline |
+| `voice_agent.idle_timeout_seconds` | Wait for server events after connect/commit |
+
+Phase 1 validates this schema and ships a fake-transport client. Selecting
+`grok_realtime` does not change the live `talk` radio loop yet. See
+[GROK-REALTIME-PLAN.md](GROK-REALTIME-PLAN.md).
+
 ## Wake and conversations
 
 `wake.primary` is your chosen phrase; `wake.aliases` contains explicit alternate

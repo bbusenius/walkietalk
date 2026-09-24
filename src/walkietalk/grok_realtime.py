@@ -1,0 +1,398 @@
+"""Grok Voice speech-to-speech realtime client (Phase 1: no radio/PTT).
+
+Explicit ``voice_agent.backend: grok_realtime`` path. Does not replace or fall
+back into ``stt`` / ``agent`` / ``tts`` grok / grok_api adapters. SuperGrok
+login is never used; auth is the billed ``XAI_API_KEY`` (or named env).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from .config import Config, WalkietalkError
+
+DEFAULT_WEBSOCKET_URL = "wss://api.x.ai/v1/realtime"
+DEFAULT_MODEL = "grok-voice-latest"
+
+# Server events parents will use for PTT later; this client only parses them.
+OUTPUT_AUDIO_DELTA = "response.output_audio.delta"
+OUTPUT_AUDIO_DONE = "response.output_audio.done"
+FUNCTION_CALL_ARGUMENTS_DONE = "response.function_call_arguments.done"
+ERROR_EVENT = "error"
+
+VOICE_AGENT_BACKENDS = ("off", "grok_realtime")
+
+
+class RealtimeTransport(Protocol):
+    """Minimal WebSocket surface for injectable fakes and the live client."""
+
+    async def send(self, data: str) -> None: ...
+
+    async def recv(self) -> str | bytes: ...
+
+    async def close(self) -> None: ...
+
+
+TransportFactory = Callable[[str, dict[str, str]], Awaitable[RealtimeTransport]]
+
+
+@dataclass(frozen=True)
+class RealtimeEvent:
+    """Parsed server event. Audio/PTT decisions stay outside this module."""
+
+    type: str
+    data: dict[str, Any]
+    is_first_output_audio_delta: bool = False
+    audio_delta_b64: str | None = None
+    function_name: str | None = None
+    function_call_id: str | None = None
+    function_arguments: str | None = None
+    error_message: str | None = None
+
+
+def valid_api_key(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and all(33 <= ord(c) <= 126 for c in value)
+
+
+def build_realtime_url(base: str, model: str) -> str:
+    """Attach ``model`` as a query parameter without dropping existing ones."""
+    parts = urlsplit(base)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["model"] = model
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def open_voice_agent(
+    config: Config,
+    *,
+    transport: RealtimeTransport | None = None,
+    transport_factory: TransportFactory | None = None,
+    api_key: str | None = None,
+) -> GrokRealtimeClient | None:
+    """Smallest registry hook: ``off`` → None; ``grok_realtime`` → client."""
+    backend = config.voice_agent_backend
+    if backend == "off":
+        return None
+    if backend == "grok_realtime":
+        return GrokRealtimeClient(
+            config,
+            transport=transport,
+            transport_factory=transport_factory,
+            api_key=api_key,
+        )
+    raise WalkietalkError(
+        "voice_agent.backend must be off or grok_realtime; "
+        "other names are not implemented and never fall back to stt/agent/tts"
+    )
+
+
+class GrokRealtimeClient:
+    """Realtime WebSocket session for Grok Voice; no serial, PortAudio, or PTT."""
+
+    def __init__(
+        self,
+        config: Config,
+        *,
+        transport: RealtimeTransport | None = None,
+        transport_factory: TransportFactory | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self.config = config
+        self._transport = transport
+        self._transport_factory = transport_factory
+        self._api_key = api_key
+        self._connected = False
+        self._saw_output_audio_delta = False
+        self._closed = False
+
+    def label(self) -> str:
+        return (
+            f"grok_realtime ({self.config.voice_agent_model}; "
+            f"{self.config.voice_agent_voice}; "
+            f"{self.config.voice_agent_api_key_env}; billed Speech to Speech API)"
+        )
+
+    def resolve_api_key(self) -> str:
+        """Read billed API key; never SuperGrok login. Raises WalkietalkError."""
+        if self._api_key is not None:
+            if not valid_api_key(self._api_key):
+                raise WalkietalkError(
+                    f"voice_agent.backend grok_realtime requires a valid "
+                    f"{self.config.voice_agent_api_key_env} for billed xAI Speech to Speech "
+                    "API access; no SuperGrok login fallback"
+                )
+            return self._api_key
+        token = os.environ.get(self.config.voice_agent_api_key_env)
+        if not valid_api_key(token):
+            raise WalkietalkError(
+                f"voice_agent.backend grok_realtime requires "
+                f"{self.config.voice_agent_api_key_env} for billed xAI Speech to Speech "
+                "API access; no SuperGrok login fallback"
+            )
+        return token
+
+    async def connect(self) -> None:
+        """Open the transport with Bearer auth. Missing/invalid key fails loudly."""
+        if self._connected:
+            return
+        key = self.resolve_api_key()
+        headers = {"Authorization": f"Bearer {key}"}
+        url = build_realtime_url(
+            self.config.voice_agent_websocket_url, self.config.voice_agent_model
+        )
+        try:
+            if self._transport is not None:
+                pass  # Injected fake/live transport already provided.
+            elif self._transport_factory is not None:
+                self._transport = await asyncio.wait_for(
+                    self._transport_factory(url, headers),
+                    timeout=self.config.voice_agent_connect_timeout_seconds,
+                )
+            else:
+                self._transport = await asyncio.wait_for(
+                    _connect_websockets(url, headers),
+                    timeout=self.config.voice_agent_connect_timeout_seconds,
+                )
+        except WalkietalkError:
+            raise
+        except TimeoutError as exc:
+            raise WalkietalkError(
+                "Grok realtime connection timed out; no stt/agent/tts fallback"
+            ) from exc
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            lowered = message.lower()
+            if any(token in lowered for token in ("401", "403", "unauthorized", "forbidden")):
+                raise WalkietalkError(
+                    "Grok realtime authentication failed; check billed "
+                    f"{self.config.voice_agent_api_key_env}; no SuperGrok login fallback"
+                ) from exc
+            raise WalkietalkError(
+                f"Grok realtime connection failed: {message}; no stt/agent/tts fallback"
+            ) from exc
+        self._connected = True
+        self._closed = False
+
+    async def session_update(
+        self,
+        *,
+        instructions: str | None = None,
+        voice: str | None = None,
+        turn_detection: dict[str, Any] | None = None,
+        extra_session: dict[str, Any] | None = None,
+    ) -> None:
+        """Send ``session.update`` after connect."""
+        self._require_open()
+        session: dict[str, Any] = {
+            "voice": voice if voice is not None else self.config.voice_agent_voice,
+            "audio": {
+                "input": {"format": {"type": "audio/pcm", "rate": 24000}},
+                "output": {"format": {"type": "audio/pcm", "rate": 24000}},
+            },
+        }
+        if instructions is not None:
+            session["instructions"] = instructions
+        if turn_detection is not None:
+            session["turn_detection"] = turn_detection
+        else:
+            # Manual commit fits half-duplex unkey; parent commits after RX ends.
+            session["turn_detection"] = None
+        if extra_session:
+            session.update(extra_session)
+        await self._send({"type": "session.update", "session": session})
+
+    async def append_audio(self, pcm16le: bytes) -> None:
+        """Append base64 PCM16 little-endian audio to the input buffer."""
+        self._require_open()
+        if not pcm16le:
+            return
+        await self._send(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(pcm16le).decode("ascii"),
+            }
+        )
+
+    async def commit_audio(self) -> None:
+        """Commit the input buffer as the end of the user turn (e.g. after unkey)."""
+        self._require_open()
+        await self._send({"type": "input_audio_buffer.commit"})
+
+    async def create_response(self) -> None:
+        """Request a model response after a manual commit (no server VAD)."""
+        self._require_open()
+        await self._send({"type": "response.create"})
+
+    async def events(self) -> AsyncIterator[RealtimeEvent]:
+        """Iterate parsed server events until the transport closes or idle timeout."""
+        self._require_open()
+        assert self._transport is not None
+        idle = self.config.voice_agent_idle_timeout_seconds
+        while not self._closed:
+            try:
+                raw = await asyncio.wait_for(self._transport.recv(), timeout=idle)
+            except TimeoutError as exc:
+                raise WalkietalkError(
+                    "Grok realtime idle timeout waiting for server events; "
+                    "no stt/agent/tts fallback"
+                ) from exc
+            except Exception as exc:
+                if self._closed:
+                    return
+                name = exc.__class__.__name__.lower()
+                # websockets ConnectionClosed* and fake-transport EOF end the stream.
+                if "connectionclosed" in name or name in {"connectionerror", "eoferror"}:
+                    return
+                message = str(exc).strip() or exc.__class__.__name__
+                raise WalkietalkError(
+                    f"Grok realtime transport error: {message}; no stt/agent/tts fallback"
+                ) from exc
+            event = self._parse_event(raw)
+            if event.type == ERROR_EVENT:
+                detail = event.error_message or "unknown error"
+                lowered = detail.lower()
+                if any(
+                    token in lowered
+                    for token in ("auth", "unauthorized", "forbidden", "api key", "invalid key")
+                ):
+                    raise WalkietalkError(
+                        f"Grok realtime authentication failed: {detail}; "
+                        f"check billed {self.config.voice_agent_api_key_env}; "
+                        "no SuperGrok login fallback"
+                    )
+                raise WalkietalkError(
+                    f"Grok realtime protocol error: {detail}; no stt/agent/tts fallback"
+                )
+            yield event
+
+    async def close(self) -> None:
+        if self._transport is None or self._closed:
+            self._closed = True
+            self._connected = False
+            return
+        self._closed = True
+        self._connected = False
+        try:
+            await self._transport.close()
+        except Exception:
+            pass
+
+    def _require_open(self) -> None:
+        if not self._connected or self._transport is None or self._closed:
+            raise WalkietalkError("Grok realtime client is not connected")
+
+    async def _send(self, payload: dict[str, Any]) -> None:
+        assert self._transport is not None
+        try:
+            await self._transport.send(json.dumps(payload))
+        except WalkietalkError:
+            raise
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            raise WalkietalkError(
+                f"Grok realtime send failed: {message}; no stt/agent/tts fallback"
+            ) from exc
+
+    def _parse_event(self, raw: str | bytes) -> RealtimeEvent:
+        if isinstance(raw, bytes):
+            # Binary audio frames are for a later transport mode; Phase 1 expects JSON.
+            raise WalkietalkError(
+                "Grok realtime received unexpected binary frame; configure JSON audio transport"
+            )
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise WalkietalkError(
+                "Grok realtime received malformed JSON; no stt/agent/tts fallback"
+            ) from exc
+        if not isinstance(data, dict):
+            raise WalkietalkError(
+                "Grok realtime received a non-object event; no stt/agent/tts fallback"
+            )
+        event_type = data.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            raise WalkietalkError(
+                "Grok realtime event missing type; no stt/agent/tts fallback"
+            )
+        first_delta = False
+        audio_b64 = None
+        function_name = None
+        call_id = None
+        arguments = None
+        error_message = None
+        if event_type == OUTPUT_AUDIO_DELTA:
+            audio = data.get("delta")
+            if audio is None:
+                audio = data.get("audio")
+            if isinstance(audio, str):
+                audio_b64 = audio
+            if not self._saw_output_audio_delta:
+                first_delta = True
+                self._saw_output_audio_delta = True
+        elif event_type == OUTPUT_AUDIO_DONE:
+            self._saw_output_audio_delta = False
+        elif event_type == FUNCTION_CALL_ARGUMENTS_DONE:
+            function_name = data.get("name") if isinstance(data.get("name"), str) else None
+            call_id = data.get("call_id") if isinstance(data.get("call_id"), str) else None
+            arguments = data.get("arguments") if isinstance(data.get("arguments"), str) else None
+            # Tool-call gap: parent should unkey; reset so next spoken audio is "first".
+            self._saw_output_audio_delta = False
+        elif event_type == ERROR_EVENT:
+            err = data.get("error")
+            if isinstance(err, dict):
+                message = err.get("message") or err.get("code") or err
+                error_message = str(message)
+            else:
+                error_message = str(data.get("message") or err or "error")
+        return RealtimeEvent(
+            type=event_type,
+            data=data,
+            is_first_output_audio_delta=first_delta,
+            audio_delta_b64=audio_b64,
+            function_name=function_name,
+            function_call_id=call_id,
+            function_arguments=arguments,
+            error_message=error_message,
+        )
+
+
+@dataclass
+class _WebSocketTransport:
+    """Thin adapter around the websockets library connection."""
+
+    connection: Any
+    _closed: bool = field(default=False, init=False)
+
+    async def send(self, data: str) -> None:
+        await self.connection.send(data)
+
+    async def recv(self) -> str | bytes:
+        return await self.connection.recv()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self.connection.close()
+
+
+async def _connect_websockets(url: str, headers: dict[str, str]) -> RealtimeTransport:
+    try:
+        import websockets
+    except ImportError as exc:
+        raise WalkietalkError(
+            "Grok realtime requires the websockets package; install project dependencies"
+        ) from exc
+    try:
+        connection = await websockets.connect(url, additional_headers=headers)
+    except TypeError:
+        # Older websockets used ``extra_headers``.
+        connection = await websockets.connect(url, extra_headers=headers)
+    return _WebSocketTransport(connection)

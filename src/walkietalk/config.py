@@ -19,6 +19,13 @@ AGENT_BACKEND_ERROR = (
     "other names are not implemented. Choose claude for the official CLI's saved login "
     "or claude_api for billed Messages API access"
 )
+VOICE_AGENT_BACKENDS = ("off", "grok_realtime")
+VOICE_AGENT_BACKEND_ERROR = (
+    "voice_agent.backend must be off or grok_realtime; "
+    "other names are not implemented and never fall back to stt/agent/tts"
+)
+DEFAULT_VOICE_AGENT_WEBSOCKET_URL = "wss://api.x.ai/v1/realtime"
+DEFAULT_VOICE_AGENT_MODEL = "grok-voice-latest"
 REASONING_EFFORTS = {
     "codex": ("default", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
     "grok": ("default", "none", "minimal", "low", "medium", "high", "xhigh", "max"),
@@ -125,6 +132,13 @@ class Config:
     tts_normalize: str = "off"
     hermes_tts_url: str = "http://127.0.0.1:8643"
     hermes_tts_token_env: str = "WALKIETALK_HERMES_TOKEN"
+    voice_agent_backend: str = "off"
+    voice_agent_model: str = DEFAULT_VOICE_AGENT_MODEL
+    voice_agent_voice: str = "eve"
+    voice_agent_api_key_env: str = "XAI_API_KEY"
+    voice_agent_websocket_url: str = DEFAULT_VOICE_AGENT_WEBSOCKET_URL
+    voice_agent_connect_timeout_seconds: float = 10
+    voice_agent_idle_timeout_seconds: float = 60
 
 
 def load_config(path: Path) -> Config:
@@ -192,11 +206,20 @@ def load_config(path: Path) -> Config:
             "claude_api_model",
             "claude_api_reasoning_effort",
         },
+        "voice_agent": {
+            "backend",
+            "model",
+            "voice",
+            "api_key_env",
+            "websocket_url",
+            "connect_timeout_seconds",
+            "idle_timeout_seconds",
+        },
     }
     if not isinstance(data, dict) or set(data) != set(expected):
         raise WalkietalkError(
             "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, tts, "
-            "vad, and wake sections. See config.example.yaml for required fields."
+            "vad, voice_agent, and wake sections. See config.example.yaml for required fields."
         )
     for section, fields in expected.items():
         optional = {"max_response_bytes"} if section == "stt" else set()
@@ -350,6 +373,59 @@ def load_config(path: Path) -> Config:
             raise WalkietalkError(
                 f"{section}.hermes_token_env must name an environment variable, not a token"
             )
+    voice_agent = data["voice_agent"]
+    voice_agent_backend = voice_agent["backend"]
+    if voice_agent_backend not in VOICE_AGENT_BACKENDS:
+        raise WalkietalkError(VOICE_AGENT_BACKEND_ERROR)
+    voice_agent_model = voice_agent["model"]
+    if not isinstance(voice_agent_model, str) or not re.fullmatch(
+        r"grok-voice-[A-Za-z0-9._-]+", voice_agent_model
+    ):
+        raise WalkietalkError(
+            "voice_agent.model must be a Grok Voice model ID such as grok-voice-latest"
+        )
+    voice_agent_voice = voice_agent["voice"]
+    if not isinstance(voice_agent_voice, str) or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,128}", voice_agent_voice
+    ):
+        raise WalkietalkError("voice_agent.voice must be a built-in or custom voice ID")
+    voice_agent_key_env = voice_agent["api_key_env"]
+    if not isinstance(voice_agent_key_env, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*", voice_agent_key_env
+    ):
+        raise WalkietalkError(
+            "voice_agent.api_key_env must name an environment variable, not a key"
+        )
+    voice_agent_url = voice_agent["websocket_url"]
+    try:
+        ws_url = urlsplit(voice_agent_url) if isinstance(voice_agent_url, str) else None
+        valid_ws = (
+            ws_url is not None
+            and ws_url.scheme == "wss"
+            and ws_url.hostname
+            and not ws_url.username
+            and not ws_url.password
+            and not ws_url.fragment
+            and not any(char.isspace() or not char.isprintable() for char in voice_agent_url)
+        )
+        if ws_url is not None:
+            _ws_port = ws_url.port
+    except ValueError:
+        valid_ws = False
+    if not valid_ws:
+        raise WalkietalkError(
+            "voice_agent.websocket_url must be a wss:// URL without credentials or fragment"
+        )
+    voice_agent_connect = seconds(
+        voice_agent["connect_timeout_seconds"],
+        "voice_agent.connect_timeout_seconds",
+        maximum=120,
+    )
+    voice_agent_idle = seconds(
+        voice_agent["idle_timeout_seconds"],
+        "voice_agent.idle_timeout_seconds",
+        maximum=600,
+    )
     mode = data["listening"]["mode"]
     if mode not in ("wake_phrase", "conversation"):
         raise WalkietalkError("listening.mode must be wake_phrase or conversation")
@@ -561,4 +637,11 @@ def load_config(path: Path) -> Config:
         tts_normalize=normalize,
         hermes_tts_url=data["tts"]["hermes_url"].rstrip("/"),
         hermes_tts_token_env=data["tts"]["hermes_token_env"],
+        voice_agent_backend=voice_agent_backend,
+        voice_agent_model=voice_agent_model,
+        voice_agent_voice=voice_agent_voice,
+        voice_agent_api_key_env=voice_agent_key_env,
+        voice_agent_websocket_url=voice_agent_url.rstrip("/"),
+        voice_agent_connect_timeout_seconds=voice_agent_connect,
+        voice_agent_idle_timeout_seconds=voice_agent_idle,
     )

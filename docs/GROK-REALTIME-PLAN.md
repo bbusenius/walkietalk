@@ -1,9 +1,9 @@
-# Grok Voice speech-to-speech plan (not implemented)
+# Grok Voice speech-to-speech plan
 
-**Status: plan only.** Walkietalk does not implement a Grok Speech to Speech /
-`/v1/realtime` adapter yet. This document records the intended architecture so a
-later teaching phase can add it without changing radio ownership or silently
-replacing existing backends.
+**Status: Phase 1 schema + fake-transport client landed** (`voice_agent.backend:
+grok_realtime`). Offline capture and supervised TX are not implemented yet. This
+document records the architecture so later phases can add radio glue without
+silently replacing existing backends.
 
 This optional path would **not** replace:
 
@@ -61,8 +61,9 @@ stays unchanged.
 
 ## Adapter shape
 
-Add a new combined **voice agent** backend kind (name TBD in a later schema PR),
-not a silent substitute stuffed into the existing `stt` / `agent` / `tts` slots.
+The combined **voice agent** backend kind is **`voice_agent.backend:
+grok_realtime`** (default `off`). It is not a silent substitute stuffed into the
+existing `stt` / `agent` / `tts` slots.
 
 | Concern | Expected owner |
 | --- | --- |
@@ -79,7 +80,7 @@ configured.
 
 Expect explicit developer API credentials for Speech to Speech:
 
-- `XAI_API_KEY` (or an equivalent named env field decided in a schema PR)
+- `XAI_API_KEY` via `voice_agent.api_key_env` (same billed console key as `grok_api`)
 - Console API credits; Speech to Speech is billed separately from text models
   (about **$0.08 per minute** of audio at the published Voice pricing table —
   confirm against current docs before any live check)
@@ -138,9 +139,9 @@ This documentation change does **not**:
 
 Follow the existing one-phase-per-PR teaching workflow:
 
-- [ ] **Schema + fake WebSocket tests** — explicit backend selection, auth env
-      name, failure contract, and automated fake-transport coverage with no live
-      credits
+- [x] **Schema + fake WebSocket tests** — `voice_agent.backend: grok_realtime`,
+      `XAI_API_KEY`, failure contract, and automated fake-transport coverage with
+      no live credits (`tests/test_grok_realtime.py`)
 - [ ] **Offline capture path** — file/capture in → streamed events → WAV or
       printed transcript/reply out; TX remains off
 - [ ] **Supervised TX** — parent-owned PTT playback with duration caps, unkey on
