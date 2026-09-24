@@ -519,7 +519,6 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
     )
 
 
-
 def run(args: argparse.Namespace) -> None:
     if args.command == "init":
         initialize(args.directory)

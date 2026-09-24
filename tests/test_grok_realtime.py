@@ -297,9 +297,7 @@ def test_error_event_auth_raises_walkietalk_error():
 
 
 def test_protocol_error_event_raises_without_fallback():
-    transport = FakeTransport(
-        incoming=[event("error", error={"message": "unknown event type"})]
-    )
+    transport = FakeTransport(incoming=[event("error", error={"message": "unknown event type"})])
 
     async def run():
         client = GrokRealtimeClient(
@@ -397,9 +395,7 @@ def scripted_reply_transport(pcm_out: bytes, *, with_transcripts=True) -> FakeTr
         ]
     )
     if with_transcripts:
-        incoming.append(
-            event("response.output_audio_transcript.done", transcript=" short reply ")
-        )
+        incoming.append(event("response.output_audio_transcript.done", transcript=" short reply "))
     incoming.extend([event(OUTPUT_AUDIO_DONE), event(RESPONSE_DONE)])
     return FakeTransport(incoming=incoming)
 
@@ -498,9 +494,7 @@ def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, caps
         assert pcm  # VAD may trim edges; must still deliver captured speech
         assert len(pcm) <= len(frames)
         return OfflineVoiceResult(
-            reply_wav=Wav(
-                reply_pcm, REALTIME_PCM_RATE, len(reply_pcm) / 2 / REALTIME_PCM_RATE
-            ),
+            reply_wav=Wav(reply_pcm, REALTIME_PCM_RATE, len(reply_pcm) / 2 / REALTIME_PCM_RATE),
             input_transcript="fixture heard",
             output_transcript="fixture reply",
             event_types=(OUTPUT_AUDIO_DELTA, OUTPUT_AUDIO_DONE, RESPONSE_DONE),
@@ -508,6 +502,7 @@ def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, caps
 
     # Replace the sync helper so CLI never opens a network socket.
     monkeypatch.setattr(cli, "offline_voice_check", fake_offline)
+
     def forbid_hw(*a, **k):
         pytest.fail("TX/hardware path must not run during offline voice-agent check")
 

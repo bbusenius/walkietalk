@@ -332,9 +332,7 @@ class GrokRealtimeClient:
             )
         event_type = data.get("type")
         if not isinstance(event_type, str) or not event_type:
-            raise WalkietalkError(
-                "Grok realtime event missing type; no stt/agent/tts fallback"
-            )
+            raise WalkietalkError("Grok realtime event missing type; no stt/agent/tts fallback")
         first_delta = False
         audio_b64 = None
         function_name = None
@@ -375,7 +373,6 @@ class GrokRealtimeClient:
             function_arguments=arguments,
             error_message=error_message,
         )
-
 
 
 @dataclass(frozen=True)
@@ -519,9 +516,8 @@ def offline_voice_check(
             "voice-agent-check requires voice_agent.backend: grok_realtime; "
             "it never falls back to stt/agent/tts"
         )
-    return asyncio.run(
-        run_offline_turn(client, pcm16le, input_rate, instructions=instructions)
-    )
+    return asyncio.run(run_offline_turn(client, pcm16le, input_rate, instructions=instructions))
+
 
 @dataclass
 class _WebSocketTransport:
