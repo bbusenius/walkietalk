@@ -27,6 +27,16 @@ xAI's Speech to Speech API streams recognition, reasoning, and speech over one
 realtime WebSocket (`wss://api.x.ai/v1/realtime`). Used carefully, that can
 shorten the gap between unkey and the first TX audio chunk.
 
+### Empirical note (2026-09-24)
+
+A live walkie-talkie / call test on Thursday 2026-09-24 found realtime
+speech-to-speech **noticeably faster** than the current Walkietalk
+STT→agent→TTS chain. Earlier analysis treated a shorter time-to-first-word as a
+reasonable expectation; the live test showed that the round-trip through
+separate STT and TTS stages cost more than modeled. The latency benefit is
+empirical, not only theoretical — but this document remains plan-only; no
+realtime adapter is implemented yet.
+
 Total TX airtime still needs the same discipline as today: short-answer agent
 instructions, existing TX duration caps, and parent unkey. A faster first word
 does not authorize longer transmissions.
