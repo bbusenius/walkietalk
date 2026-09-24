@@ -23,7 +23,7 @@ own stores. Run the CLIs and Walkietalk as the same normal Linux user.
 | xAI developer API | `grok_api` | No direct chat adapter | `grok_api` | Explicit `XAI_API_KEY`; separate API billing |
 | Claude Code CLI | No adapter | `claude` | No adapter | Official Claude CLI saved account login |
 | Anthropic Messages API | No adapter | `claude_api` | No adapter | Explicit `ANTHROPIC_API_KEY`; separate API billing |
-| Grok Voice realtime (Phase 1–2) | Combined via `voice_agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; offline `voice-agent-check` only; not wired to talk/TX yet |
+| Grok Voice realtime (Phases 1–3 code) | Combined via `voice_agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; `voice-agent-check --supervised[--transmit]`; not wired into `talk` yet; live demo pending |
 
 These are implemented adapters, not a promise that every provider model, account
 tier, CLI release, or upstream configuration works. The recorded family checks
@@ -167,10 +167,10 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" listen --capture
 It records one utterance; expect `Transcript:` and TX off. See
 [Grok agent](GROK.md) and [Grok voice](GROK-TTS.md) for adapter specifics.
 A combined Speech to Speech / realtime path is selected explicitly with
-`voice_agent.backend: grok_realtime` (Phases 1–2: schema, fake-transport client,
-and offline `voice-agent-check`; not wired into the radio session loop yet).
-See [realtime plan](GROK-REALTIME-PLAN.md). It does not replace these account
-adapters.
+`voice_agent.backend: grok_realtime` (Phases 1–3 code: schema, offline check,
+and supervised TX via `voice-agent-check --supervised`; not wired into `talk`
+yet; live on-air demo pending). See [realtime plan](GROK-REALTIME-PLAN.md).
+It does not replace these account adapters.
 
 ## Explicit billed APIs
 

@@ -1,9 +1,9 @@
 # Grok Voice speech-to-speech plan
 
-**Status: Phase 1–2 landed** (`voice_agent.backend: grok_realtime` schema/client
-plus offline `voice-agent-check`). Supervised TX / radio session glue is not
-implemented yet. This document records the architecture so Phase 3 can add
-parent-owned PTT without silently replacing existing backends.
+**Status: Phases 1–3 code landed** (`voice_agent.backend: grok_realtime` schema/
+client, offline `voice-agent-check`, and parent-owned supervised TX with
+`--supervised` / `--transmit`). Live on-air demonstration is still pending until
+an operator provides `XAI_API_KEY` and Brad/Boss resumes the live pass.
 
 This optional path would **not** replace:
 
@@ -145,8 +145,26 @@ Follow the existing one-phase-per-PR teaching workflow:
 - [x] **Offline capture path** — `voice-agent-check` WAV/`--capture` in →
       streamed events → reply WAV + printed transcripts; TX remains off
       (`offline_voice_check` / `tests/test_grok_realtime.py`)
-- [ ] **Supervised TX** — parent-owned PTT playback with duration caps, unkey on
-      tool pauses and errors, and a recorded live demonstration checklist
+- [x] **Supervised TX (code)** — parent-owned PTT in `voice_agent_tx.py`;
+      `voice-agent-check --supervised` (DryPTT) / `--transmit` (SerialPTT);
+      fake-PTT tests cover key/unkey/tool-gap/TX cap. **Live demonstration
+      checklist still pending** (no live API or on-air pass in this PR yet).
 
 Passing fake tests alone is not completion of a later phase. Record live checks
 separately before claiming the integration is verified.
+
+
+## Live supervised demonstration checklist (not executed in Phase 3 code PR)
+
+Do **not** run until Brad/Boss greenlights and `XAI_API_KEY` is available on the
+operator machine. CI and agents must not burn credits.
+
+1. Config: `voice_agent.backend: grok_realtime`, devices/PTT set, credentials.env has `XAI_API_KEY`.
+2. Dry supervised (no SerialPTT):  
+   `walkietalk -c CONFIG voice-agent-check UTTERANCE.wav --output dry-reply.wav --supervised`  
+   Expect DryPTT ON/OFF around audio bursts; reply WAV written.
+3. Live supervised (intentional on-air): walkie on the intended channel, then:  
+   `walkietalk -c CONFIG voice-agent-check UTTERANCE.wav --output live-reply.wav --supervised --transmit`  
+   Expect key on first AI audio, unkey on audio done, unkey during tool gaps, TX cap honored.
+4. Record: date, model/voice, observed key/unkey behavior, any RF issues.
+5. Abort immediately on stuck PTT; turn the radio off if release fails.

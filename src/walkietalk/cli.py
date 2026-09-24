@@ -22,6 +22,7 @@ from .shutdown import ShutdownSession
 from .stt import ensure_model, model_ready, model_size_bytes, open_stt
 from .term import capture_log, emit
 from .tts import open_tts, radio_wav, write_wav
+from .voice_agent_tx import play_segment_dry, play_segment_via_playback, supervised_voice_check
 from .wake import ListeningSession
 
 
@@ -89,6 +90,16 @@ def parser() -> argparse.ArgumentParser:
         required=True,
         type=Path,
         help="New reply WAV to create from streamed audio deltas",
+    )
+    voice_agent_check.add_argument(
+        "--supervised",
+        action="store_true",
+        help="Parent-owned PTT state machine (DryPTT unless --transmit)",
+    )
+    voice_agent_check.add_argument(
+        "--transmit",
+        action="store_true",
+        help="With --supervised, use real SerialPTT and playback; requires --config",
     )
     ptt = commands.add_parser("ptt", help="Brief talk-button test; dry run unless --transmit")
     ptt.add_argument(
@@ -477,14 +488,16 @@ def models_command(args: argparse.Namespace) -> None:
 
 
 def voice_agent_check_command(args: argparse.Namespace) -> None:
-    """Offline realtime turn: WAV or capture in, reply WAV out; never transmits."""
+    """Realtime turn: WAV/capture in, reply WAV out; supervised TX only with flags."""
     if args.wav is not None and args.capture:
         raise WalkietalkError("Use either a WAV file or --capture, not both")
     if args.wav is None and not args.capture:
         raise WalkietalkError(
             "Pass a WAV file to voice-agent-check, or --capture to listen on the AIOC"
         )
-    if args.capture and args.config is None:
+    if args.transmit and not args.supervised:
+        raise WalkietalkError("voice-agent-check --transmit requires --supervised")
+    if (args.capture or args.transmit) and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     if args.output.exists():
         raise WalkietalkError("Output file already exists; choose a new --output path")
@@ -495,14 +508,41 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
             "it never falls back to stt/agent/tts"
         )
     wait = seconds(args.timeout, "timeout", maximum=600)
-    emit("status", "Offline voice-agent check: no PTT and no transmission.")
     if args.capture:
         emit("meter", "Capturing one utterance for voice_agent...")
         utterance = capture_from_device(config.input_device, config, wait, log=capture_log)
     else:
         utterance = capture_from_wav(args.wav, config, log=capture_log)
     emit("status", f"Voice agent: grok_realtime ({config.voice_agent_model})")
-    result = offline_voice_check(config, utterance.pcm, utterance.rate)
+    if not args.supervised:
+        emit("status", "Offline voice-agent check: no PTT and no transmission.")
+        result = offline_voice_check(config, utterance.pcm, utterance.rate)
+        ptt_actions = ()
+        truncated = False
+    else:
+        allow_key = True
+        if args.transmit:
+            emit("status", "Supervised voice-agent TX: real SerialPTT with --transmit.")
+            ptt = SerialPTT(config.serial_port, config.line)
+
+            def play(pcm, rate, deadline):
+                play_segment_via_playback(config, pcm, rate, deadline)
+
+        else:
+            emit("status", "Supervised voice-agent dry run: DryPTT; no SerialPTT.")
+            ptt = DryPTT()
+            play = play_segment_dry
+        supervised = supervised_voice_check(
+            config,
+            utterance.pcm,
+            utterance.rate,
+            ptt,
+            allow_key=allow_key,
+            play_segment=play,
+        )
+        result = supervised
+        ptt_actions = supervised.ptt_actions
+        truncated = supervised.truncated_by_tx_cap
     if result.input_transcript:
         emit("transcript", f"Heard: {result.input_transcript}")
     if result.output_transcript:
@@ -512,10 +552,21 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
             "Voice agent returned no spoken audio; nothing written; no stt/agent/tts fallback"
         )
     write_wav(args.output, result.reply_wav)
+    if ptt_actions:
+        summary = ", ".join(f"{item.kind}:{item.reason}" for item in ptt_actions)
+        emit("status", f"PTT actions: {summary}")
+    if truncated:
+        emit("warn", "TX duration cap truncated supervised playback.")
+    if args.supervised and args.transmit:
+        tx_note = "SerialPTT used."
+    elif args.supervised:
+        tx_note = "DryPTT only."
+    else:
+        tx_note = "No hardware TX."
     emit(
         "status",
         f"Reply WAV: {args.output}; {result.reply_wav.rate} Hz, mono PCM16, "
-        f"{result.reply_wav.duration:.3f}s. No hardware TX.",
+        f"{result.reply_wav.duration:.3f}s. {tx_note}",
     )
 
 

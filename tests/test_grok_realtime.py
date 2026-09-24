@@ -25,9 +25,16 @@ from walkietalk.grok_realtime import (
     RESPONSE_DONE,
     GrokRealtimeClient,
     OfflineVoiceResult,
+    RealtimeEvent,
     offline_voice_check,
     open_voice_agent,
     resample_pcm16,
+)
+from walkietalk.voice_agent_tx import (
+    PttAction,
+    SupervisedRealtimeTx,
+    SupervisedTxResult,
+    supervised_voice_check,
 )
 
 
@@ -576,6 +583,259 @@ def test_voice_agent_check_cli_refuses_overwrite(tmp_path):
                 str(wav_path),
                 "--output",
                 str(out_path),
+            ]
+        )
+        == 1
+    )
+
+
+# --- Phase 3: parent-owned supervised TX (fake PTT; no live radio) ---
+
+
+@dataclass
+class FakePTT:
+    actions: list[str] = field(default_factory=list)
+    keyed: bool = False
+    opened: bool = False
+    closed: bool = False
+
+    def open(self) -> None:
+        self.opened = True
+        self.actions.append("open")
+
+    def on(self) -> None:
+        assert self.opened and not self.closed
+        self.keyed = True
+        self.actions.append("on")
+
+    def off(self) -> None:
+        self.keyed = False
+        self.actions.append("off")
+
+    def close(self) -> None:
+        self.closed = True
+        self.actions.append("close")
+
+
+def _delta(pcm: bytes, *, first: bool) -> RealtimeEvent:
+    return RealtimeEvent(
+        type=OUTPUT_AUDIO_DELTA,
+        data={"type": OUTPUT_AUDIO_DELTA, "delta": base64.b64encode(pcm).decode("ascii")},
+        is_first_output_audio_delta=first,
+        audio_delta_b64=base64.b64encode(pcm).decode("ascii"),
+    )
+
+
+def test_client_module_has_no_ptt_or_serial_imports():
+    source = Path("src/walkietalk/grok_realtime.py").read_text()
+    for banned in (
+        "from .ptt",
+        "import serial",
+        "SerialPTT",
+        "DryPTT",
+        "from .session import transmit",
+        "import sounddevice",
+        "from .session import",
+        "from .audio import Playback",
+    ):
+        assert banned not in source, banned
+
+
+def test_supervised_keys_on_first_delta_unkeys_on_audio_done():
+    config = realtime_config(max_tx_seconds=10, settle_seconds=0)
+    ptt = FakePTT()
+    played: list[bytes] = []
+
+    def play(pcm, rate, deadline):
+        played.append(pcm)
+
+    tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=play, clock=lambda: 0.0)
+    tx.handle(_delta(b"\x01\x00" * 10, first=True))
+    assert ptt.actions == ["open", "on"]
+    tx.handle(_delta(b"\x02\x00" * 10, first=False))
+    assert ptt.keyed is True
+    tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
+    assert ptt.actions == ["open", "on", "off"]
+    assert played == [b"\x01\x00" * 10 + b"\x02\x00" * 10]
+    tx.close()
+    assert ptt.actions[-1] == "close"
+
+
+def test_supervised_unkeys_on_tool_gap_and_rekeys_on_next_first_delta():
+    config = realtime_config(max_tx_seconds=10, settle_seconds=0)
+    ptt = FakePTT()
+    tx = SupervisedRealtimeTx(
+        config, ptt, allow_key=True, play_segment=lambda *a: None, clock=lambda: 0.0
+    )
+    tx.handle(_delta(b"\x01\x00" * 4, first=True))
+    tx.handle(
+        RealtimeEvent(
+            type=FUNCTION_CALL_ARGUMENTS_DONE,
+            data={"type": FUNCTION_CALL_ARGUMENTS_DONE, "name": "lookup"},
+        )
+    )
+    assert ptt.actions == ["open", "on", "off"]
+    tx.handle(_delta(b"\x03\x00" * 4, first=True))
+    assert ptt.actions == ["open", "on", "off", "on"]
+    tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
+    assert ptt.actions == ["open", "on", "off", "on", "off"]
+    tx.close()
+
+
+def test_supervised_tx_cap_truncates_and_unkeys():
+    config = realtime_config(max_tx_seconds=0.2, settle_seconds=0)
+    ptt = FakePTT()
+    played: list[int] = []
+
+    def play(pcm, rate, deadline):
+        played.append(len(pcm))
+
+    # 0.2s * 24000 * 2 = 9600 bytes max
+    tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=play, clock=lambda: 0.0)
+    huge = b"\x01\x00" * 20000
+    tx.handle(_delta(huge, first=True))
+    assert tx.truncated is True
+    assert ptt.actions.count("on") == 1
+    assert ptt.actions.count("off") == 1
+    assert played and played[0] <= 9600
+    tx.close()
+
+
+def test_supervised_never_keys_without_allow_key():
+    config = realtime_config()
+    ptt = FakePTT()
+    tx = SupervisedRealtimeTx(config, ptt, allow_key=False, play_segment=lambda *a: None)
+    tx.handle(_delta(b"\x01\x00" * 8, first=True))
+    tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
+    tx.close()
+    assert ptt.actions == []
+    assert tx.actions == []
+
+
+def test_supervised_unkeys_on_fail():
+    config = realtime_config(settle_seconds=0)
+    ptt = FakePTT()
+    tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=lambda *a: None)
+    tx.handle(_delta(b"\x01\x00" * 4, first=True))
+    tx.fail("boom")
+    assert "off" in ptt.actions
+    assert ptt.closed is True
+
+
+def test_supervised_voice_check_fake_transport_ptt_sequence(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    transport = FakeTransport(
+        incoming=[
+            event("session.updated"),
+            event(
+                OUTPUT_AUDIO_DELTA,
+                delta=base64.b64encode(b"\x01\x00" * 16).decode("ascii"),
+            ),
+            event(
+                OUTPUT_AUDIO_DELTA,
+                delta=base64.b64encode(b"\x02\x00" * 16).decode("ascii"),
+            ),
+            event(OUTPUT_AUDIO_DONE),
+            event(
+                FUNCTION_CALL_ARGUMENTS_DONE,
+                name="lookup",
+                call_id="c1",
+                arguments="{}",
+            ),
+            event(
+                OUTPUT_AUDIO_DELTA,
+                delta=base64.b64encode(b"\x03\x00" * 16).decode("ascii"),
+            ),
+            event(OUTPUT_AUDIO_DONE),
+            event("response.done"),
+        ]
+    )
+    ptt = FakePTT()
+    result = supervised_voice_check(
+        realtime_config(settle_seconds=0),
+        b"\x10\x00" * 2400,
+        24000,
+        ptt,
+        allow_key=True,
+        transport=transport,
+        api_key="fake-key",
+        play_segment=lambda *a: None,
+    )
+    kinds = [item.kind for item in result.ptt_actions]
+    assert kinds == ["key", "unkey", "key", "unkey"]
+    assert result.ptt_actions[0].reason == "first_output_audio_delta"
+    assert result.ptt_actions[1].reason == "output_audio.done"
+    assert result.ptt_actions[2].reason == "first_output_audio_delta"
+    assert result.ptt_actions[3].reason in {"output_audio.done", "response.done"}
+    assert ptt.closed is True
+    assert result.reply_wav is not None
+
+
+def test_supervised_cli_dry_ptt_without_transmit(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, frames = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    out_path = tmp_path / "reply.wav"
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["voice_agent"]["backend"] = "grok_realtime"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(data))
+
+    def fake_supervised(config, pcm, rate, ptt, **kwargs):
+        assert kwargs.get("allow_key") is True
+        assert type(ptt).__name__ == "DryPTT"
+        return SupervisedTxResult(
+            reply_wav=Wav(b"\x05\x00" * 32, REALTIME_PCM_RATE, 32 / REALTIME_PCM_RATE),
+            output_transcript="dry reply",
+            ptt_actions=(
+                PttAction("key", "first_output_audio_delta"),
+                PttAction("unkey", "output_audio.done"),
+            ),
+        )
+
+    monkeypatch.setattr(cli, "supervised_voice_check", fake_supervised)
+    monkeypatch.setattr(
+        cli,
+        "SerialPTT",
+        lambda *a, **k: pytest.fail("SerialPTT must not run without --transmit"),
+    )
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "voice-agent-check",
+                str(wav_path),
+                "--output",
+                str(out_path),
+                "--supervised",
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "DryPTT" in printed
+    assert "PTT actions:" in printed
+    assert out_path.is_file()
+
+
+def test_supervised_cli_transmit_requires_supervised(tmp_path):
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["voice_agent"]["backend"] = "grok_realtime"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(data))
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "voice-agent-check",
+                str(wav_path),
+                "--output",
+                str(tmp_path / "out.wav"),
+                "--transmit",
             ]
         )
         == 1
