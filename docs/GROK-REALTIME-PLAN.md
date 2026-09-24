@@ -1,9 +1,9 @@
 # Grok Voice speech-to-speech plan
 
-**Status: Phase 1 schema + fake-transport client landed** (`voice_agent.backend:
-grok_realtime`). Offline capture and supervised TX are not implemented yet. This
-document records the architecture so later phases can add radio glue without
-silently replacing existing backends.
+**Status: Phase 1–2 landed** (`voice_agent.backend: grok_realtime` schema/client
+plus offline `voice-agent-check`). Supervised TX / radio session glue is not
+implemented yet. This document records the architecture so Phase 3 can add
+parent-owned PTT without silently replacing existing backends.
 
 This optional path would **not** replace:
 
@@ -142,8 +142,9 @@ Follow the existing one-phase-per-PR teaching workflow:
 - [x] **Schema + fake WebSocket tests** — `voice_agent.backend: grok_realtime`,
       `XAI_API_KEY`, failure contract, and automated fake-transport coverage with
       no live credits (`tests/test_grok_realtime.py`)
-- [ ] **Offline capture path** — file/capture in → streamed events → WAV or
-      printed transcript/reply out; TX remains off
+- [x] **Offline capture path** — `voice-agent-check` WAV/`--capture` in →
+      streamed events → reply WAV + printed transcripts; TX remains off
+      (`offline_voice_check` / `tests/test_grok_realtime.py`)
 - [ ] **Supervised TX** — parent-owned PTT playback with duration caps, unkey on
       tool pauses and errors, and a recorded live demonstration checklist
 

@@ -14,6 +14,7 @@ from .callsign import IDENT_GAP_SECONDS, CallsignSession, identification_transmi
 from .capture import capture_from_device, capture_from_wav
 from .config import Config, WalkietalkError, load_config, seconds
 from .devices import audio_devices, preflight
+from .grok_realtime import offline_voice_check
 from .ptt import DryPTT, SerialPTT
 from .session import handle_stop_signals, transmit, uninterrupted_cleanup
 from .setup import credentials_environment, initialize
@@ -65,6 +66,30 @@ def parser() -> argparse.ArgumentParser:
     )
     tts_check.add_argument("text", help="Short text to turn into speech")
     tts_check.add_argument("--output", required=True, type=Path, help="New WAV file to create")
+    voice_agent_check = commands.add_parser(
+        "voice-agent-check",
+        help="Offline Grok realtime turn from WAV or --capture; never transmits",
+    )
+    voice_agent_check.add_argument(
+        "wav", nargs="?", type=Path, help="WAV utterance to send (no radio)"
+    )
+    voice_agent_check.add_argument(
+        "--capture",
+        action="store_true",
+        help="Record from the pinned AIOC input; does not open PTT",
+    )
+    voice_agent_check.add_argument(
+        "--timeout",
+        type=float,
+        default=60,
+        help="Seconds to wait for speech when capturing (default 60)",
+    )
+    voice_agent_check.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="New reply WAV to create from streamed audio deltas",
+    )
     ptt = commands.add_parser("ptt", help="Brief talk-button test; dry run unless --transmit")
     ptt.add_argument(
         "--seconds", type=float, default=1, help="Pulse length, at most max_tx_seconds"
@@ -451,6 +476,50 @@ def models_command(args: argparse.Namespace) -> None:
     emit("status", f"Ready at {path} ({size / 1_000_000:.0f} MB).")
 
 
+def voice_agent_check_command(args: argparse.Namespace) -> None:
+    """Offline realtime turn: WAV or capture in, reply WAV out; never transmits."""
+    if args.wav is not None and args.capture:
+        raise WalkietalkError("Use either a WAV file or --capture, not both")
+    if args.wav is None and not args.capture:
+        raise WalkietalkError(
+            "Pass a WAV file to voice-agent-check, or --capture to listen on the AIOC"
+        )
+    if args.capture and args.config is None:
+        raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
+    if args.output.exists():
+        raise WalkietalkError("Output file already exists; choose a new --output path")
+    config = load_config(args.config) if args.config else Config()
+    if config.voice_agent_backend != "grok_realtime":
+        raise WalkietalkError(
+            "voice-agent-check requires voice_agent.backend: grok_realtime; "
+            "it never falls back to stt/agent/tts"
+        )
+    wait = seconds(args.timeout, "timeout", maximum=600)
+    emit("status", "Offline voice-agent check: no PTT and no transmission.")
+    if args.capture:
+        emit("meter", "Capturing one utterance for voice_agent...")
+        utterance = capture_from_device(config.input_device, config, wait, log=capture_log)
+    else:
+        utterance = capture_from_wav(args.wav, config, log=capture_log)
+    emit("status", f"Voice agent: grok_realtime ({config.voice_agent_model})")
+    result = offline_voice_check(config, utterance.pcm, utterance.rate)
+    if result.input_transcript:
+        emit("transcript", f"Heard: {result.input_transcript}")
+    if result.output_transcript:
+        emit("reply", f"Reply: {result.output_transcript}")
+    if result.reply_wav is None:
+        raise WalkietalkError(
+            "Voice agent returned no spoken audio; nothing written; no stt/agent/tts fallback"
+        )
+    write_wav(args.output, result.reply_wav)
+    emit(
+        "status",
+        f"Reply WAV: {args.output}; {result.reply_wav.rate} Hz, mono PCM16, "
+        f"{result.reply_wav.duration:.3f}s. No hardware TX.",
+    )
+
+
+
 def run(args: argparse.Namespace) -> None:
     if args.command == "init":
         initialize(args.directory)
@@ -488,6 +557,9 @@ def run(args: argparse.Namespace) -> None:
             f"Speech WAV: {args.output}; {speech.rate} Hz, mono PCM16, {speech.duration:.3f}s. "
             "No hardware opened.",
         )
+        return
+    if args.command == "voice-agent-check":
+        voice_agent_check_command(args)
         return
     if args.command == "agent-check":
         config = load_config(args.config) if args.config else Config()
@@ -626,7 +698,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         if args.command in {"listen", "talk"}:
             emit("warn", "Stopped; capture closed.", file=sys.stderr)
-        elif args.command in {"models", "agent-check", "tts-check"}:
+        elif args.command in {"models", "agent-check", "tts-check", "voice-agent-check"}:
             emit("warn", "Stopped.", file=sys.stderr)
         else:
             emit("warn", "Stopped; PTT cleanup attempted.", file=sys.stderr)

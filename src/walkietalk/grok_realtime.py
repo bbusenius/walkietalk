@@ -1,4 +1,4 @@
-"""Grok Voice speech-to-speech realtime client (Phase 1: no radio/PTT).
+"""Grok Voice speech-to-speech realtime client (Phases 1–2: no radio/PTT).
 
 Explicit ``voice_agent.backend: grok_realtime`` path. Does not replace or fall
 back into ``stt`` / ``agent`` / ``tts`` grok / grok_api adapters. SuperGrok
@@ -16,10 +16,24 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import numpy as np
+
+from .audio import Wav
 from .config import Config, WalkietalkError
 
 DEFAULT_WEBSOCKET_URL = "wss://api.x.ai/v1/realtime"
 DEFAULT_MODEL = "grok-voice-latest"
+REALTIME_PCM_RATE = 24000
+# ~100 ms chunks at 24 kHz mono PCM16.
+APPEND_CHUNK_BYTES = REALTIME_PCM_RATE // 10 * 2
+
+INPUT_TRANSCRIPT_EVENTS = (
+    "conversation.item.input_audio_transcription.completed",
+    "conversation.item.input_audio_transcription.updated",
+)
+OUTPUT_TRANSCRIPT_DELTA = "response.output_audio_transcript.delta"
+OUTPUT_TRANSCRIPT_DONE = "response.output_audio_transcript.done"
+RESPONSE_DONE = "response.done"
 
 # Server events parents will use for PTT later; this client only parses them.
 OUTPUT_AUDIO_DELTA = "response.output_audio.delta"
@@ -362,6 +376,152 @@ class GrokRealtimeClient:
             error_message=error_message,
         )
 
+
+
+@dataclass(frozen=True)
+class OfflineVoiceResult:
+    """Offline capture result: reply audio and any transcripts. No TX."""
+
+    reply_wav: Wav | None
+    input_transcript: str = ""
+    output_transcript: str = ""
+    event_types: tuple[str, ...] = ()
+
+
+def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int = REALTIME_PCM_RATE) -> bytes:
+    """Resample mono PCM16 little-endian to the realtime session rate."""
+    if src_rate <= 0 or dst_rate <= 0:
+        raise WalkietalkError("Invalid PCM sample rate for voice agent")
+    if not pcm:
+        return b""
+    if len(pcm) % 2:
+        raise WalkietalkError("PCM16 audio length must be even")
+    if src_rate == dst_rate:
+        return pcm
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    n = int(round(samples.size * dst_rate / src_rate))
+    if n < 1:
+        return b""
+    resampled = np.interp(
+        np.linspace(0, 1, n, endpoint=False),
+        np.linspace(0, 1, samples.size, endpoint=False),
+        samples,
+    )
+    return np.rint(resampled).clip(-32768, 32767).astype("<i2").tobytes()
+
+
+def pcm16_to_wav(pcm: bytes, rate: int = REALTIME_PCM_RATE) -> Wav | None:
+    if not pcm:
+        return None
+    if len(pcm) % 2:
+        raise WalkietalkError("Assembled reply PCM16 length must be even")
+    duration = len(pcm) / 2 / rate
+    return Wav(pcm, rate, duration)
+
+
+def _transcript_from_event(event: RealtimeEvent) -> tuple[str | None, str | None]:
+    """Return (input_transcript_update, output_transcript_update)."""
+    data = event.data
+    if event.type in INPUT_TRANSCRIPT_EVENTS:
+        value = data.get("transcript")
+        return (value if isinstance(value, str) else None, None)
+    if event.type == OUTPUT_TRANSCRIPT_DONE:
+        value = data.get("transcript")
+        return (None, value if isinstance(value, str) else None)
+    if event.type == OUTPUT_TRANSCRIPT_DELTA:
+        value = data.get("delta")
+        if value is None:
+            value = data.get("transcript")
+        return (None, value if isinstance(value, str) else None)
+    return (None, None)
+
+
+async def run_offline_turn(
+    client: GrokRealtimeClient,
+    pcm16le: bytes,
+    input_rate: int,
+    *,
+    instructions: str | None = None,
+) -> OfflineVoiceResult:
+    """One offline utterance: append/commit PCM, collect reply audio, never TX."""
+    await client.connect()
+    try:
+        await client.session_update(instructions=instructions)
+        session_pcm = resample_pcm16(pcm16le, input_rate, REALTIME_PCM_RATE)
+        if not session_pcm:
+            raise WalkietalkError("Voice agent input audio is empty after resampling")
+        for offset in range(0, len(session_pcm), APPEND_CHUNK_BYTES):
+            await client.append_audio(session_pcm[offset : offset + APPEND_CHUNK_BYTES])
+        await client.commit_audio()
+        await client.create_response()
+
+        audio_chunks: list[bytes] = []
+        input_transcript = ""
+        output_parts: list[str] = []
+        output_final = ""
+        seen: list[str] = []
+        async for event in client.events():
+            seen.append(event.type)
+            if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
+                try:
+                    audio_chunks.append(base64.b64decode(event.audio_delta_b64, validate=True))
+                except (ValueError, TypeError) as exc:
+                    raise WalkietalkError(
+                        "Grok realtime returned invalid audio delta; no stt/agent/tts fallback"
+                    ) from exc
+            in_update, out_update = _transcript_from_event(event)
+            if in_update is not None:
+                input_transcript = in_update
+            if out_update is not None:
+                if event.type == OUTPUT_TRANSCRIPT_DELTA:
+                    output_parts.append(out_update)
+                else:
+                    output_final = out_update
+            if event.type == RESPONSE_DONE:
+                break
+
+        output_transcript = output_final or "".join(output_parts)
+        reply = pcm16_to_wav(b"".join(audio_chunks), REALTIME_PCM_RATE)
+        return OfflineVoiceResult(
+            reply_wav=reply,
+            input_transcript=input_transcript.strip(),
+            output_transcript=output_transcript.strip(),
+            event_types=tuple(seen),
+        )
+    finally:
+        await client.close()
+
+
+def offline_voice_check(
+    config: Config,
+    pcm16le: bytes,
+    input_rate: int,
+    *,
+    transport: RealtimeTransport | None = None,
+    transport_factory: TransportFactory | None = None,
+    api_key: str | None = None,
+    instructions: str | None = None,
+) -> OfflineVoiceResult:
+    """Sync entry for CLI/tests. Requires ``voice_agent.backend: grok_realtime``."""
+    if config.voice_agent_backend != "grok_realtime":
+        raise WalkietalkError(
+            "voice-agent-check requires voice_agent.backend: grok_realtime; "
+            "it never falls back to stt/agent/tts"
+        )
+    client = open_voice_agent(
+        config,
+        transport=transport,
+        transport_factory=transport_factory,
+        api_key=api_key,
+    )
+    if client is None:
+        raise WalkietalkError(
+            "voice-agent-check requires voice_agent.backend: grok_realtime; "
+            "it never falls back to stt/agent/tts"
+        )
+    return asyncio.run(
+        run_offline_turn(client, pcm16le, input_rate, instructions=instructions)
+    )
 
 @dataclass
 class _WebSocketTransport:

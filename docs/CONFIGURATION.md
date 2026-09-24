@@ -67,6 +67,7 @@ Global options (`-c`, `--env-file`, `--no-env-file`) go **before** the command.
 | `models` | Download/verify configured local Whisper weights | Explicit download; network if missing |
 | `agent-check 'text'` | Ask the selected agent without a wake phrase | No STT, audio, or PTT; remote request for a real agent |
 | `tts-check 'text' --output NEW.wav` | Synthesize and save a WAV | No radio/playback; selected voice may use network; refuses overwrite |
+| `voice-agent-check WAV|--capture --output NEW.wav` | Offline Grok realtime turn (`voice_agent.backend: grok_realtime`) | No PTT/TX; writes reply WAV; may use network; refuses overwrite |
 | `ptt --seconds 1` | Simulate key/unkey | Add `--transmit` with `-c` for actual PTT |
 | `play speech.wav` | Validate/simulate a mono PCM16 WAV | Add `--transmit` with `-c` for actual playback and PTT |
 | `listen speech.wav` | Transcribe one utterance from a file | No radio; selected STT may use network |
@@ -109,7 +110,8 @@ Capture gain comes from the radio/interface; `audio.gain` only changes output.
 | `voice_agent.connect_timeout_seconds` | WebSocket connect deadline |
 | `voice_agent.idle_timeout_seconds` | Wait for server events after connect/commit |
 
-Phase 1 validates this schema and ships a fake-transport client. Selecting
+Phases 1–2 validate this schema, ship a fake-transport client, and provide
+`voice-agent-check` for offline WAV/`--capture` turns (TX off). Selecting
 `grok_realtime` does not change the live `talk` radio loop yet. See
 [GROK-REALTIME-PLAN.md](GROK-REALTIME-PLAN.md).
 

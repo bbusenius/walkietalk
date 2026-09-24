@@ -1,4 +1,4 @@
-"""Phase 1: Grok realtime schema + fake-transport coverage (no live network)."""
+"""Grok realtime Phase 1–2: schema, fake transport, offline capture (no live network)."""
 
 from __future__ import annotations
 
@@ -6,19 +6,28 @@ import asyncio
 import base64
 import json
 import os
+import wave
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 import yaml
 
+from walkietalk import cli
+from walkietalk.audio import Wav
 from walkietalk.config import Config, WalkietalkError, load_config
 from walkietalk.grok_realtime import (
+    APPEND_CHUNK_BYTES,
     FUNCTION_CALL_ARGUMENTS_DONE,
     OUTPUT_AUDIO_DELTA,
     OUTPUT_AUDIO_DONE,
+    REALTIME_PCM_RATE,
+    RESPONSE_DONE,
     GrokRealtimeClient,
+    OfflineVoiceResult,
+    offline_voice_check,
     open_voice_agent,
+    resample_pcm16,
 )
 
 
@@ -351,3 +360,228 @@ def test_happy_path_runs_without_xai_api_key_in_environment(monkeypatch):
         await client.close()
 
     asyncio.run(run())
+
+
+# --- Phase 2: offline capture path (WAV in → deltas → WAV out; no TX) ---
+
+
+def pcm_wav(path: Path, *, rate=48000, samples=4800, amplitude=8000):
+    # Leading/trailing silence so EnergyVad can start and end (hangover 400ms).
+    silence = b"\x00\x00" * (rate // 2)  # 0.5s > default hangover_ms
+    speech = (amplitude).to_bytes(2, "little", signed=True) * samples
+    frames = silence + speech + silence
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(rate)
+        writer.writeframes(frames)
+    return path, frames
+
+
+def scripted_reply_transport(pcm_out: bytes, *, with_transcripts=True) -> FakeTransport:
+    half = len(pcm_out) // 2
+    first = base64.b64encode(pcm_out[:half] or pcm_out).decode("ascii")
+    second = base64.b64encode(pcm_out[half:] or b"\x00\x00").decode("ascii")
+    incoming = [event("session.updated")]
+    if with_transcripts:
+        incoming.append(
+            event(
+                "conversation.item.input_audio_transcription.completed",
+                transcript=" hello radio ",
+            )
+        )
+    incoming.extend(
+        [
+            event(OUTPUT_AUDIO_DELTA, delta=first),
+            event(OUTPUT_AUDIO_DELTA, delta=second),
+        ]
+    )
+    if with_transcripts:
+        incoming.append(
+            event("response.output_audio_transcript.done", transcript=" short reply ")
+        )
+    incoming.extend([event(OUTPUT_AUDIO_DONE), event(RESPONSE_DONE)])
+    return FakeTransport(incoming=incoming)
+
+
+def test_resample_pcm16_48k_to_24k():
+    pcm = b"\x00\x10" * 4800  # 0.1s at 48 kHz
+    out = resample_pcm16(pcm, 48000, 24000)
+    assert len(out) == 2400 * 2
+    assert resample_pcm16(out, 24000, 24000) == out
+
+
+def test_offline_voice_check_requires_grok_realtime_backend():
+    with pytest.raises(WalkietalkError, match="grok_realtime"):
+        offline_voice_check(Config(), b"\x00\x00" * 100, 24000, api_key="x")
+
+
+def test_offline_wav_in_assembles_reply_wav_without_tx(monkeypatch, tmp_path):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    reply_pcm = b"\x01\x00\x02\x00\x03\x00\x04\x00" * 100
+    transport = scripted_reply_transport(reply_pcm)
+    config = realtime_config()
+    input_pcm = b"\x10\x00" * 4800  # 0.2s at 24 kHz
+
+    # Hardware / radio paths must never be touched in Phase 2 offline tests.
+    def forbid_tx(*a, **k):
+        pytest.fail("TX path must not run during offline voice-agent check")
+
+    for name in ("SerialPTT", "Playback", "transmit", "DryPTT"):
+        monkeypatch.setattr(cli, name, forbid_tx)
+
+    result = offline_voice_check(
+        config,
+        input_pcm,
+        24000,
+        transport=transport,
+        api_key="fake-only-for-this-test",
+    )
+    assert isinstance(result, OfflineVoiceResult)
+    assert result.reply_wav is not None
+    assert result.reply_wav.rate == REALTIME_PCM_RATE
+    assert result.reply_wav.frames == reply_pcm
+    assert result.input_transcript == "hello radio"
+    assert result.output_transcript == "short reply"
+    assert OUTPUT_AUDIO_DELTA in result.event_types
+    assert OUTPUT_AUDIO_DONE in result.event_types
+    assert RESPONSE_DONE in result.event_types
+
+    sent = [json.loads(item) for item in transport.sent]
+    assert sent[0]["type"] == "session.update"
+    appends = [item for item in sent if item["type"] == "input_audio_buffer.append"]
+    assert appends
+    reconstructed = b"".join(base64.b64decode(item["audio"]) for item in appends)
+    assert reconstructed == input_pcm
+    assert any(item["type"] == "input_audio_buffer.commit" for item in sent)
+    assert any(item["type"] == "response.create" for item in sent)
+    assert transport.closed is True
+
+
+def test_offline_chunks_large_pcm(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    # > one append chunk so the client splits frames.
+    input_pcm = b"\x00\x01" * (APPEND_CHUNK_BYTES // 2 + 50)
+    reply_pcm = b"\x00\x02" * 32
+    transport = scripted_reply_transport(reply_pcm, with_transcripts=False)
+    result = offline_voice_check(
+        realtime_config(),
+        input_pcm,
+        REALTIME_PCM_RATE,
+        transport=transport,
+        api_key="fake-key",
+    )
+    appends = [
+        json.loads(item)
+        for item in transport.sent
+        if json.loads(item)["type"] == "input_audio_buffer.append"
+    ]
+    assert len(appends) >= 2
+    assert result.reply_wav is not None
+    assert result.reply_wav.frames == reply_pcm
+
+
+def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, frames = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    out_path = tmp_path / "reply.wav"
+    reply_pcm = b"\x05\x00" * 64
+
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["voice_agent"]["backend"] = "grok_realtime"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(data))
+
+    def fake_offline(config, pcm, rate, **kwargs):
+        assert config.voice_agent_backend == "grok_realtime"
+        assert rate == 24000
+        assert pcm  # VAD may trim edges; must still deliver captured speech
+        assert len(pcm) <= len(frames)
+        return OfflineVoiceResult(
+            reply_wav=Wav(
+                reply_pcm, REALTIME_PCM_RATE, len(reply_pcm) / 2 / REALTIME_PCM_RATE
+            ),
+            input_transcript="fixture heard",
+            output_transcript="fixture reply",
+            event_types=(OUTPUT_AUDIO_DELTA, OUTPUT_AUDIO_DONE, RESPONSE_DONE),
+        )
+
+    # Replace the sync helper so CLI never opens a network socket.
+    monkeypatch.setattr(cli, "offline_voice_check", fake_offline)
+    def forbid_hw(*a, **k):
+        pytest.fail("TX/hardware path must not run during offline voice-agent check")
+
+    for name in ("SerialPTT", "Playback", "transmit", "DryPTT", "preflight"):
+        monkeypatch.setattr(cli, name, forbid_hw)
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "voice-agent-check",
+                str(wav_path),
+                "--output",
+                str(out_path),
+            ]
+        )
+        == 0
+    )
+    assert out_path.is_file()
+    with wave.open(str(out_path), "rb") as reader:
+        assert reader.getnchannels() == 1
+        assert reader.getsampwidth() == 2
+        assert reader.getframerate() == REALTIME_PCM_RATE
+        assert reader.readframes(reader.getnframes()) == reply_pcm
+    printed = capsys.readouterr().out
+    assert "Heard: fixture heard" in printed
+    assert "Reply: fixture reply" in printed
+    assert "No hardware TX" in printed
+    assert "No PTT" in printed or "no PTT" in printed
+
+
+def test_voice_agent_check_cli_rejects_backend_off(tmp_path):
+    wav_path, _ = pcm_wav(tmp_path / "in.wav")
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    assert data["voice_agent"]["backend"] == "off"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(data))
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "voice-agent-check",
+                str(wav_path),
+                "--output",
+                str(tmp_path / "out.wav"),
+            ]
+        )
+        == 1
+    )
+
+
+def test_voice_agent_check_cli_refuses_overwrite(tmp_path):
+    wav_path, _ = pcm_wav(tmp_path / "in.wav")
+    out_path = tmp_path / "exists.wav"
+    out_path.write_bytes(b"x")
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["voice_agent"]["backend"] = "grok_realtime"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(data))
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "voice-agent-check",
+                str(wav_path),
+                "--output",
+                str(out_path),
+            ]
+        )
+        == 1
+    )
