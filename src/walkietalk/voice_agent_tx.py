@@ -34,6 +34,7 @@ from .grok_realtime import (
     open_voice_agent,
     pcm16_to_wav,
     resample_pcm16,
+    response_events,
     wait_for_event,
     wait_for_session_updated,
 )
@@ -284,16 +285,20 @@ async def run_supervised_turn(
             )
         )
         await client.create_response()
-        turn_deadline = time.monotonic() + max(15.0, float(config.voice_agent_idle_timeout_seconds))
+        turn_deadline = None
         try:
-            async for event in client.events():
+            async for event in response_events(client):
                 if event.type == "ping":
                     seen.append(event.type)
-                    if time.monotonic() >= turn_deadline:
+                    if turn_deadline is not None and time.monotonic() >= turn_deadline:
                         raise WalkietalkError(
                             "Grok realtime turn timed out (pings only); no stt/agent/tts fallback"
                         )
                     continue
+                if turn_deadline is None:
+                    turn_deadline = time.monotonic() + max(
+                        15.0, float(config.voice_agent_idle_timeout_seconds)
+                    )
                 seen.append(event.type)
                 if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
                     try:

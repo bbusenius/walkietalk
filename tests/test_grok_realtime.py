@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from walkietalk import cli
+from walkietalk import cli, grok_realtime
 from walkietalk.audio import Wav
 from walkietalk.config import Config, WalkietalkError, load_config
 from walkietalk.grok_realtime import (
@@ -29,11 +29,13 @@ from walkietalk.grok_realtime import (
     offline_voice_check,
     open_voice_agent,
     resample_pcm16,
+    run_offline_turn,
 )
 from walkietalk.voice_agent_tx import (
     PttAction,
     SupervisedRealtimeTx,
     SupervisedTxResult,
+    run_supervised_turn,
     supervised_voice_check,
 )
 
@@ -485,6 +487,91 @@ def test_offline_chunks_large_pcm(monkeypatch):
     assert len(appends) >= 2
     assert result.reply_wav is not None
     assert result.reply_wav.frames == reply_pcm
+
+
+@pytest.mark.parametrize("supervised", [False, True], ids=["offline", "supervised"])
+@pytest.mark.parametrize("ping_delay", [0.001, 0.1], ids=["frequent-pings", "slow-pings"])
+def test_response_start_pings_only_fails_fast(monkeypatch, supervised, ping_delay):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    assert grok_realtime.RESPONSE_START_TIMEOUT_SECONDS == 15.0
+    monkeypatch.setattr(grok_realtime, "RESPONSE_START_TIMEOUT_SECONDS", 0.05)
+
+    class PingingTransport(FakeTransport):
+        async def recv(self):
+            if self.incoming:
+                return await super().recv()
+            await asyncio.sleep(ping_delay)
+            return event("ping")
+
+    transport = PingingTransport(
+        incoming=[
+            event("session.updated"),
+            event("input_audio_buffer.committed"),
+            event("ping"),
+        ]
+    )
+    config = realtime_config(voice_agent_idle_timeout_seconds=60)
+    client = GrokRealtimeClient(config, transport=transport, api_key="fake-key")
+    ptt = FakePTT()
+
+    async def run():
+        if supervised:
+            turn = run_supervised_turn(
+                client, config, b"\x10\x00" * 2400, 24000, ptt, allow_key=True
+            )
+        else:
+            turn = run_offline_turn(client, b"\x10\x00" * 2400, 24000)
+        # A regression to the 60-second idle deadline must fail this test quickly.
+        with pytest.raises(WalkietalkError, match="no model response after audio commit") as exc:
+            await asyncio.wait_for(turn, timeout=1.0)
+        message = str(exc.value)
+        assert "input may not be intelligible speech" in message
+        assert "PCM16 mono 24 kHz" in message
+        assert "no stt/agent/tts fallback" in message
+
+    asyncio.run(run())
+    assert [json.loads(item)["type"] for item in transport.sent][-2:] == [
+        "input_audio_buffer.commit",
+        "response.create",
+    ]
+    assert transport.closed
+    assert "on" not in ptt.actions
+
+
+@pytest.mark.parametrize("supervised", [False, True], ids=["offline", "supervised"])
+def test_response_started_can_finish_after_start_timeout(monkeypatch, supervised):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(grok_realtime, "RESPONSE_START_TIMEOUT_SECONDS", 0.05)
+
+    class DelayedDoneTransport(FakeTransport):
+        async def recv(self):
+            if self.incoming and json.loads(self.incoming[0])["type"] == RESPONSE_DONE:
+                await asyncio.sleep(0.1)
+            return await super().recv()
+
+    reply_pcm = b"\x01\x00" * 16
+    transport = DelayedDoneTransport(
+        incoming=[
+            event("session.updated"),
+            event("input_audio_buffer.committed"),
+            event("ping"),
+            event(OUTPUT_AUDIO_DELTA, delta=base64.b64encode(reply_pcm).decode("ascii")),
+            event("ping"),
+            event(RESPONSE_DONE),
+        ]
+    )
+    config = realtime_config(voice_agent_idle_timeout_seconds=60)
+    kwargs = {"transport": transport, "api_key": "fake-key"}
+    if supervised:
+        result = supervised_voice_check(
+            config, b"\x10\x00" * 2400, 24000, FakePTT(), allow_key=False, **kwargs
+        )
+    else:
+        result = offline_voice_check(config, b"\x10\x00" * 2400, 24000, **kwargs)
+    assert result.reply_wav is not None
+    assert result.reply_wav.frames == reply_pcm
+    assert result.event_types[-4:] == ("ping", OUTPUT_AUDIO_DELTA, "ping", RESPONSE_DONE)
+    assert transport.closed
 
 
 def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, capsys):

@@ -27,6 +27,7 @@ DEFAULT_MODEL = "grok-voice-latest"
 REALTIME_PCM_RATE = 24000
 # ~100 ms chunks at 24 kHz mono PCM16.
 APPEND_CHUNK_BYTES = REALTIME_PCM_RATE // 10 * 2
+RESPONSE_START_TIMEOUT_SECONDS = 15.0
 
 INPUT_TRANSCRIPT_EVENTS = (
     "conversation.item.input_audio_transcription.completed",
@@ -471,6 +472,29 @@ async def wait_for_session_updated(client: GrokRealtimeClient) -> list[str]:
     )
 
 
+async def response_events(client: GrokRealtimeClient) -> AsyncIterator[RealtimeEvent]:
+    """Bound the wait for the first non-ping after response.create, independent of idle."""
+    events = client.events()
+    deadline = time.monotonic() + RESPONSE_START_TIMEOUT_SECONDS
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(anext(events), timeout=deadline - time.monotonic())
+            except (TimeoutError, StopAsyncIteration) as exc:
+                raise WalkietalkError(
+                    "Grok realtime produced no model response after audio commit "
+                    "(response.create); input may not be intelligible speech; "
+                    "use PCM16 mono 24 kHz speech audio; no stt/agent/tts fallback"
+                ) from exc
+            yield event
+            if event.type != "ping":
+                break
+        async for event in events:
+            yield event
+    finally:
+        await events.aclose()
+
+
 async def run_offline_turn(
     client: GrokRealtimeClient,
     pcm16le: bytes,
@@ -502,18 +526,19 @@ async def run_offline_turn(
         input_transcript = ""
         output_parts: list[str] = []
         output_final = ""
-        # Pings must not keep a turn open forever.
-        turn_deadline = time.monotonic() + max(
-            15.0, float(client.config.voice_agent_idle_timeout_seconds)
-        )
-        async for event in client.events():
+        turn_deadline = None
+        async for event in response_events(client):
             if event.type == "ping":
                 seen.append(event.type)
-                if time.monotonic() >= turn_deadline:
+                if turn_deadline is not None and time.monotonic() >= turn_deadline:
                     raise WalkietalkError(
                         "Grok realtime turn timed out (pings only); no stt/agent/tts fallback"
                     )
                 continue
+            if turn_deadline is None:
+                turn_deadline = time.monotonic() + max(
+                    15.0, float(client.config.voice_agent_idle_timeout_seconds)
+                )
             seen.append(event.type)
             if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
                 try:
