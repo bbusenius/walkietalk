@@ -59,6 +59,9 @@ validation. `setup.py` owns packaged templates and private credential-file loadi
   selected backend or remote environment.
 - The parent owns PTT; isolated playback prevents blocked audio from stopping
   timeout/unkey handling. Preserve these boundaries when adding integrations.
+- A combined voice-agent (for example Grok Speech to Speech realtime) would be a
+  new backend kind, not a silent fill-in for `stt`/`agent`/`tts`; see
+  [GROK-REALTIME-PLAN.md](GROK-REALTIME-PLAN.md).
 
 Add explicit config fields/defaults to the schema and both examples, document
 auth/billing and capability limits, and test the adapter's actual failure contract:
