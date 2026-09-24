@@ -34,6 +34,7 @@ from .grok_realtime import (
     open_voice_agent,
     pcm16_to_wav,
     resample_pcm16,
+    wait_for_session_updated,
 )
 from .session import uninterrupted_cleanup
 from .tts import radio_wav, write_wav
@@ -267,6 +268,7 @@ async def run_supervised_turn(
     await client.connect()
     try:
         await client.session_update(instructions=instructions)
+        seen.extend(await wait_for_session_updated(client))
         session_pcm = resample_pcm16(pcm16le, input_rate, REALTIME_PCM_RATE)
         if not session_pcm:
             raise WalkietalkError("Voice agent input audio is empty after resampling")
@@ -274,8 +276,16 @@ async def run_supervised_turn(
             await client.append_audio(session_pcm[offset : offset + APPEND_CHUNK_BYTES])
         await client.commit_audio()
         await client.create_response()
+        turn_deadline = time.monotonic() + max(15.0, float(config.voice_agent_idle_timeout_seconds))
         try:
             async for event in client.events():
+                if event.type == "ping":
+                    seen.append(event.type)
+                    if time.monotonic() >= turn_deadline:
+                        raise WalkietalkError(
+                            "Grok realtime turn timed out (pings only); no stt/agent/tts fallback"
+                        )
+                    continue
                 seen.append(event.type)
                 if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
                     try:
@@ -296,6 +306,11 @@ async def run_supervised_turn(
                 tx.handle(event)
                 if event.type == RESPONSE_DONE or tx.truncated:
                     break
+                if time.monotonic() >= turn_deadline:
+                    raise WalkietalkError(
+                        "Grok realtime turn timed out waiting for response.done; "
+                        "no stt/agent/tts fallback"
+                    )
         except WalkietalkError:
             tx.fail("protocol_error")
             raise
