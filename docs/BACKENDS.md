@@ -165,6 +165,8 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" listen --capture
 
 It records one utterance; expect `Transcript:` and TX off. See
 [Grok agent](GROK.md) and [Grok voice](GROK-TTS.md) for adapter specifics.
+A combined Speech to Speech / realtime path is [planned only](GROK-REALTIME-PLAN.md); it is not implemented and does not replace these
+account adapters.
 
 ## Explicit billed APIs
 
@@ -174,6 +176,8 @@ in your private credentials file. STT requires that exact environment variable;
 voice can use a different name through `tts.grok_api_key_env`.
 Use the same transcription/WAV checks above. SuperGrok subscriptions and xAI
 developer API billing are separate; these adapters never borrow the CLI login.
+Speech to Speech realtime, if added later, would also require explicit API
+credits; see the [realtime plan](GROK-REALTIME-PLAN.md).
 
 For Anthropic's [Messages API](https://platform.claude.com/docs/en/api/messages),
 select `agent.backend: claude_api` and set `ANTHROPIC_API_KEY="your-key"` in the

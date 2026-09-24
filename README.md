@@ -81,6 +81,7 @@ setup and supervise live transmission.
 - [Backend setup and supported integrations](docs/BACKENDS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Development and adding an adapter](docs/DEVELOPMENT.md)
+- [Grok Voice speech-to-speech plan (not implemented)](docs/GROK-REALTIME-PLAN.md)
 - [Phase 8 installation demonstration](docs/PHASE8-DEMO.md)
 
 MIT licensed. Python package version: `0.1.0`.
