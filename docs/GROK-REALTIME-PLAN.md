@@ -1,176 +1,112 @@
-# Grok Voice speech-to-speech plan
+# Grok realtime speech-to-speech
 
-**Status: Phases 1–3 + live speech-to-speech talk** (`agent.backend: grok_realtime`
-schema/client, offline `voice-agent-check`, parent-owned supervised TX, and live
-`talk` that streams mic/WAV frames into a warm realtime session during capture;
-STT gates wake/shutdown only; accepted turns `commit`+`response.create` — not
-`decision.traffic` as `input_text` / TTS). DryPTT without `--transmit`. Live
-on-air `--transmit` demonstration still pending Brad/Boss SerialPTT greenlight.
+Select `agent.backend: grok_realtime` to stream captured PCM audio directly to
+xAI's Speech to Speech WebSocket. This is an explicit billed API backend using
+`agent.realtime.api_key_env` (default `XAI_API_KEY`), not a SuperGrok login.
+The independent STT, text-agent, and TTS backends remain available for other
+agent selections. Realtime `talk` does not open them.
 
-This optional path would **not** replace:
+The original PR review and its regression evidence are recorded in
+[PR-16-REVIEW.md](PR-16-REVIEW.md).
 
-| Existing selection | Role today |
-| --- | --- |
-| `stt.backend: grok` / `grok_api` | Voice Transcribe (`POST /v1/stt`) |
-| `agent.backend: grok` | Grok Build CLI text replies |
-| `tts.backend: grok` / `grok_api` | Voice API (`POST /v1/tts`) |
+## Turn flow
 
-Those adapters stay independent. Choosing realtime later must be an explicit
-operator selection, not a fallback when STT, agent, or TTS fails.
+1. Capture/VAD sends audio frames into a warm WebSocket as they arrive.
+2. At the end of capture, Walkietalk commits the audio. For cold wake detection
+   or enabled shutdown controls, it waits for this same session's final input
+   transcript before deciding whether to request a reply. It never sends that
+   transcript back as a substitute text question.
+3. A rejected, wake-only, or shutdown-control item is deleted before any
+   `response.create`. Failed/missing transcripts discard the session and fail
+   closed. In an open conversation with shutdown disabled, no transcript gate
+   is needed: the committed audio immediately requests a response.
+4. Output PCM chunks feed an isolated audio worker incrementally. Device
+   preparation happens with PTT off; the first audible chunk keys PTT, waits the
+   configured radio settle interval, and enters the playback stream. Only
+   preceding quiet audio is limited to the 150 ms pre-roll window.
+5. Audio completion or a tool gap drains queued playback before releasing PTT.
+   A separate watchdog enforces the total TX airtime budget even if the network,
+   event loop, or audio worker stalls. Cancellation releases PTT and stops audio.
+6. A configured station ID uses a separate bounded realtime voice burst after
+   the reply. Interval IDs are marked only after successful transmission.
 
-## Motivation
+The fastest path is an accepted follow-up with shutdown disabled. Wake and
+shutdown detection still require native transcript completion; they do not
+invoke a separate transcription service or local speech model. VAD hangover,
+model processing, network delay, and radio settle time still affect latency.
 
-Today a spoken radio turn is serial: capture → STT → wake/agent gates → TTS →
-parent-owned PTT playback. That is clear and testable, but time-to-first-spoken-
-word includes the full STT and agent round trips before any audio leaves the
-gateway.
+Silent carriers and radio noise can pass the energy detector without yielding
+words. The input transcript gate has a separate five-second deadline (or the
+configured idle timeout if shorter), covering commit and transcript arrival.
+Pings do not extend it. On expiry the turn is discarded without a reply and
+continuous mode resumes listening with its existing window deadline unchanged,
+using the same `Ignored (empty transcript). Window unchanged.` message as other
+modes. An explicitly empty transcript is
+also ignored, including in an open conversation with shutdown controls enabled.
 
-xAI's Speech to Speech API streams recognition, reasoning, and speech over one
-realtime WebSocket (`wss://api.x.ai/v1/realtime`). Used carefully, that can
-shorten the gap between unkey and the first TX audio chunk.
+## Recovery and conversation state
 
-### Empirical note (2026-09-24)
+Healthy turns reuse the voice session and its conversation. On response failure,
+TX truncation, or cancellation, Walkietalk attempts `response.cancel` and closes
+the socket. It deliberately discards that conversation rather than retaining
+unheard speech or accidentally processing leftover response events. The next
+utterance reconnects with the configured instructions and starts fresh.
 
-A live walkie-talkie / call test on Thursday 2026-09-24 found realtime
-speech-to-speech **noticeably faster** than the current Walkietalk
-STT→agent→TTS chain. Earlier analysis treated a shorter time-to-first-word as a
-reasonable expectation; the live test showed that the round-trip through
-separate STT and TTS stages cost more than modeled. The latency benefit is
-empirical, not only theoretical — but this document remains plan-only; no
-realtime adapter is implemented yet.
+Upload and transcript failures discard all partial input. A network failure
+while capturing abandons that recording and returns to wake listening. PTT
+control failures stop the command after cleanup rather than retrying hardware.
+A healthy socket stays open while `talk` is running; the conversation follow-up
+window controls acceptance, not the lifetime of the billed connection.
 
-Total TX airtime still needs the same discipline as today: short-answer agent
-instructions, existing TX duration caps, and parent unkey. A faster first word
-does not authorize longer transmissions.
+## Configuration
 
-## PTT and half-duplex
+`agent.realtime` and its individual fields are optional; omitted values use the
+shown defaults. Older configurations for other backends continue to load.
 
-Push-to-talk simplex is not a blocker. Phone-style barge-in does not apply: the
-operator cannot interrupt TX on the same channel while the gateway is keyed.
+```yaml
+agent:
+  backend: grok_realtime
+  realtime:
+    model: grok-voice-latest
+    voice: eve
+    api_key_env: XAI_API_KEY
+    websocket_url: wss://api.x.ai/v1/realtime
+    connect_timeout_seconds: 10
+    idle_timeout_seconds: 60
+```
 
-Map radio events to realtime turns roughly as follows:
+This fragment belongs inside a complete Walkietalk configuration. Existing
+`wake`, `shutdown`, `listening`, and radio duration/callsign settings still apply.
+`agent.web_search` enables the realtime session's native web-search tool.
 
-1. Operator keys, speaks, and unkeys (end of RX utterance).
-2. Walkietalk treats that unkey / end-of-utterance as the user-turn commit into
-   the realtime session (after the wake gate allows the turn).
-3. When the session emits AI audio, the **parent** keys PTT, plays bounded audio,
-   then unkeys — the same ownership rule as every other TTS path.
-4. Idle conversation windows and session teardown stay under Walkietalk control;
-   the WebSocket must not keep the radio keyed.
+## Verification
 
-Do not embed serial, PortAudio, or PTT inside the realtime client. Radio glue
-stays unchanged.
+Automated tests use fake transports, fake PTT, and isolated subprocesses with no
+audio hardware. They cover streaming before completion, preservation of the
+first chunk, native wake/shutdown gates, failure recovery, watchdog deadlines,
+cancellation during drain, station IDs, and configuration compatibility.
 
-## Adapter shape
+No live xAI request or on-air transmission was performed during the PR review
+fixes. RF quality and actual end-of-utterance-to-first-audio latency remain to be
+measured on the operator's AIOC setup.
 
-The combined **voice agent** backend kind is **`agent.backend:
-grok_realtime`** (default `off`). It is not a silent substitute stuffed into the
-existing `stt` / `agent` / `tts` slots.
+Operator checks (each realtime request uses API credits):
 
-| Concern | Expected owner |
-| --- | --- |
-| Wake / shutdown phrases | Existing gates; realtime audio in only after wake allows |
-| Conversation idle timeout | Walkietalk session policy |
-| WebSocket open/close and streaming | New voice-agent adapter |
-| PCM validation, gain, TX caps, unkey | Parent / existing radio path |
+- `voice-agent-check UTTERANCE.wav --output reply.wav`: capture-file input and
+  saved reply audio, with no radio hardware.
+- Add `--supervised` for fake PTT; this does not measure physical playback timing.
+- `talk --capture`: native wake/control handling and streamed audio input with
+  printed replies; no radio output.
+- `talk --capture --transmit`: actual streaming radio playback. Measure the gap
+  from end of received speech to the first audible reply, confirm first words
+  are intact, test station identification, and verify release on interruption.
 
-Keep selecting independent STT, agent, and TTS backends for operators who want
-the current serial path. Realtime is an alternate combined route when explicitly
-configured.
+All hardware commands require an explicit `-c CONFIG`. Live API spending and
+on-air testing remain operator-authorized checks, not CI work.
 
-## Billing and authentication
+## References
 
-Expect explicit developer API credentials for Speech to Speech:
-
-- `XAI_API_KEY` via `agent.realtime.api_key_env` (same billed console key as `grok_api`)
-- Console API credits; Speech to Speech is billed separately from text models
-  (about **$0.08 per minute** of audio at the published Voice pricing table —
-  confirm against current docs before any live check)
-
-**SuperGrok Plus** powers the existing account-login `grok` STT / Build / TTS
-adapters. That entitlement is separate from embedding `/v1/realtime` in
-Walkietalk. Never auto-switch a subscription login to API billing; that remains
-an existing project rule for every Grok path.
-
-Live API spend belongs to supervised operator checks, not CI.
-
-## Hard parts
-
-These need design attention before claiming the path is ready:
-
-- **RF audio quality.** Walkie capture is noisy and band-limited compared with
-  headset demos; VAD and recognition may need different thresholds or offline
-  capture tests first.
-- **Wake vs long-lived session.** A WebSocket held open for conversation must
-  still respect wake addressing and idle timeout; do not leave a billed session
-  running after the operator walks away.
-- **Long answers vs TX discipline.** Streaming speech can outrun radio caps;
-  truncate or stop synthesis when the parent hits the TX limit, then unkey.
-- **Tool-call pauses.** If the session pauses audio while calling tools, unkey
-  during the gap and re-key only when spoken audio resumes — avoid dead air with
-  PTT held.
-- **Cost of an open WebSocket.** Idle open time still costs; close promptly when
-  the conversation window expires or talk mode exits.
-
-## Optional hybrid later
-
-A later phase could keep **local STT for wake only**, then hand the conversational
-core to realtime after the wake phrase matches. That preserves offline wake
-checks and limits billed realtime minutes to addressed turns. It is optional and
-not required for the first realtime adapter.
-
-## Official references
-
-- [Voice / Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/voice)
-- [Models and pricing](https://docs.x.ai/docs/models#pricing)
-- [Billing](https://docs.x.ai/docs/key-information/billing)
-
-Also see the implemented Grok paths: [Grok agent](GROK.md),
-[Grok voice](GROK-TTS.md), and [Backend setup](BACKENDS.md).
-
-## Out of scope for the plan PR
-
-This documentation change does **not**:
-
-- implement adapter code or WebSocket clients
-- add config schema fields or example YAML keys
-- run live `/v1/realtime` API checks
-- perform on-air testing
-
-## Suggested future implementation phases
-
-Follow the existing one-phase-per-PR teaching workflow:
-
-- [x] **Schema + fake WebSocket tests** — `agent.backend: grok_realtime`,
-      `XAI_API_KEY`, failure contract, and automated fake-transport coverage with
-      no live credits (`tests/test_grok_realtime.py`)
-- [x] **Offline capture path** — `voice-agent-check` WAV/`--capture` in →
-      streamed events → reply WAV + printed transcripts; TX remains off
-      (`offline_voice_check` / `tests/test_grok_realtime.py`)
-- [x] **Supervised TX (code)** — parent-owned PTT in `voice_agent_tx.py`;
-      `voice-agent-check --supervised` (DryPTT) / `--transmit` (SerialPTT);
-      fake-PTT tests cover key/unkey/tool-gap/TX cap. **Live demonstration
-      checklist still pending** (no live API or on-air pass in this PR yet).
-- [x] **Talk routing** — when `agent.backend: grok_realtime`, `talk`
-      keeps STT wake/shutdown gates and routes accepted turns through
-      `supervised_voice_check` (DryPTT without `--transmit`). Serial path
-      unchanged when backend is `off`.
-
-Passing fake tests alone is not completion of a later phase. Record live checks
-separately before claiming the integration is verified.
-
-
-## Live supervised demonstration checklist (not executed in Phase 3 code PR)
-
-Do **not** run until Brad/Boss greenlights and `XAI_API_KEY` is available on the
-operator machine. CI and agents must not burn credits.
-
-1. Config: `agent.backend: grok_realtime`, devices/PTT set, credentials.env has `XAI_API_KEY`.
-2. Dry supervised (no SerialPTT):  
-   `walkietalk -c CONFIG voice-agent-check UTTERANCE.wav --output dry-reply.wav --supervised`  
-   Expect DryPTT ON/OFF around audio bursts; reply WAV written.
-3. Live supervised (intentional on-air): walkie on the intended channel, then:  
-   `walkietalk -c CONFIG voice-agent-check UTTERANCE.wav --output live-reply.wav --supervised --transmit`  
-   Expect key on first AI audio, unkey on audio done, unkey during tool gaps, TX cap honored.
-4. Record: date, model/voice, observed key/unkey behavior, any RF issues.
-5. Abort immediately on stuck PTT; turn the radio off if release fails.
+- [Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech)
+- [Voice protocol](https://docs.x.ai/developers/rest-api-reference/inference/voice)
+- [Backend setup](BACKENDS.md)
+- [Configuration](CONFIGURATION.md)

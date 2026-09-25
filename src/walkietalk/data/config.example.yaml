@@ -63,7 +63,7 @@ agent:
   claude_api_key_env: "ANTHROPIC_API_KEY" # env NAME; separately billed Messages API
   claude_api_model: "claude-sonnet-5"
   claude_api_reasoning_effort: "low" # default omits effort; useful for models without it
-  realtime:
+  realtime:                # optional; omitted fields use these defaults
     model: "grok-voice-latest"  # or grok-voice-think-fast-2.0
     voice: "eve"                # built-in or custom xAI voice ID
     api_key_env: "XAI_API_KEY"  # billed console key; never SuperGrok login

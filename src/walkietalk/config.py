@@ -212,7 +212,6 @@ def load_config(path: Path) -> Config:
             "claude_api_key_env",
             "claude_api_model",
             "claude_api_reasoning_effort",
-            "realtime",
         },
     }
     if isinstance(data, dict) and "voice_agent" in data:
@@ -224,13 +223,20 @@ def load_config(path: Path) -> Config:
         )
     for section, fields in expected.items():
         optional = {"max_response_bytes"} if section == "stt" else set()
+        if section == "agent":
+            optional = {"realtime"}
         if not isinstance(data[section], dict) or not (
             fields <= set(data[section]) <= fields | optional
         ):
             raise WalkietalkError(f"{section} requires these fields: {', '.join(sorted(fields))}")
-    realtime = data["agent"]["realtime"]
-    if not isinstance(realtime, dict) or set(realtime) != set(REALTIME_FIELDS):
+    realtime = data["agent"].get("realtime", {})
+    if not isinstance(realtime, dict) or not set(realtime) <= set(REALTIME_FIELDS):
         raise WalkietalkError("agent.realtime requires these fields: " + ", ".join(REALTIME_FIELDS))
+    defaults = Config()
+    realtime = {
+        **{name: getattr(defaults, "agent_realtime_" + name) for name in REALTIME_FIELDS},
+        **realtime,
+    }
     max_response_bytes = data["stt"].get("max_response_bytes", DEFAULT_STT_MAX_RESPONSE_BYTES)
     if (
         isinstance(max_response_bytes, bool)

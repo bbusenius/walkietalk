@@ -23,7 +23,7 @@ own stores. Run the CLIs and Walkietalk as the same normal Linux user.
 | xAI developer API | `grok_api` | No direct chat adapter | `grok_api` | Explicit `XAI_API_KEY`; separate API billing |
 | Claude Code CLI | No adapter | `claude` | No adapter | Official Claude CLI saved account login |
 | Anthropic Messages API | No adapter | `claude_api` | No adapter | Explicit `ANTHROPIC_API_KEY`; separate API billing |
-| Grok Voice realtime (Phases 1–3 code) | Combined via `voice_agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; `voice-agent-check --supervised[--transmit]`; not wired into `talk` yet; live demo pending |
+| Grok Voice realtime | Combined via `agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; live audio in/out through `talk`; native wake/control transcripts; on-air validation pending |
 
 These are implemented adapters, not a promise that every provider model, account
 tier, CLI release, or upstream configuration works. The recorded family checks
@@ -166,11 +166,10 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" listen --capture
 
 It records one utterance; expect `Transcript:` and TX off. See
 [Grok agent](GROK.md) and [Grok voice](GROK-TTS.md) for adapter specifics.
-A combined Speech to Speech / realtime path is selected explicitly with
-`voice_agent.backend: grok_realtime` (Phases 1–3 code: schema, offline check,
-and supervised TX via `voice-agent-check --supervised`; not wired into `talk`
-yet; live on-air demo pending). See [realtime plan](GROK-REALTIME-PLAN.md).
-It does not replace these account adapters.
+Select `agent.backend: grok_realtime` for live speech-to-speech in `talk`.
+Captured audio streams directly to xAI; replies play incrementally, and native
+input transcripts handle wake/shutdown controls. Separate STT and TTS backends
+are not opened. See [realtime setup](GROK-REALTIME-PLAN.md).
 
 ## Explicit billed APIs
 
@@ -180,9 +179,9 @@ in your private credentials file. STT requires that exact environment variable;
 voice can use a different name through `tts.grok_api_key_env`.
 Use the same transcription/WAV checks above. SuperGrok subscriptions and xAI
 developer API billing are separate; these adapters never borrow the CLI login.
-Speech to Speech realtime (`voice_agent.backend: grok_realtime`) also requires
-explicit API credits via `XAI_API_KEY` (`voice_agent.api_key_env`); see the
-[realtime plan](GROK-REALTIME-PLAN.md). Phase 1 does not open the radio session.
+Speech to Speech realtime (`agent.backend: grok_realtime`) also requires
+explicit API credits via `XAI_API_KEY` (`agent.realtime.api_key_env`); see the
+[realtime setup](GROK-REALTIME-PLAN.md). Radio output requires `--transmit`.
 
 For Anthropic's [Messages API](https://platform.claude.com/docs/en/api/messages),
 select `agent.backend: claude_api` and set `ANTHROPIC_API_KEY="your-key"` in the

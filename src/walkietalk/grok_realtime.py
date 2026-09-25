@@ -12,7 +12,7 @@ import base64
 import json
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -43,6 +43,8 @@ OUTPUT_AUDIO_DELTA = "response.output_audio.delta"
 OUTPUT_AUDIO_DONE = "response.output_audio.done"
 FUNCTION_CALL_ARGUMENTS_DONE = "response.function_call_arguments.done"
 ERROR_EVENT = "error"
+_MAX_TRANSCRIPTION_KEYTERMS = 100
+_MAX_KEYTERM_CHARS = 50
 
 
 class RealtimeTransport(Protocol):
@@ -70,6 +72,27 @@ class RealtimeEvent:
     function_call_id: str | None = None
     function_arguments: str | None = None
     error_message: str | None = None
+
+
+def _transcription_keyterms(terms: Sequence[str] | None) -> list[str]:
+    if not terms:
+        return []
+    kept: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if not isinstance(term, str):
+            continue
+        cleaned = " ".join(term.split())
+        if not cleaned or len(cleaned) > _MAX_KEYTERM_CHARS:
+            continue
+        folded = cleaned.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        kept.append(cleaned)
+        if len(kept) >= _MAX_TRANSCRIPTION_KEYTERMS:
+            break
+    return kept
 
 
 def valid_api_key(value: object) -> bool:
@@ -197,6 +220,7 @@ class GrokRealtimeClient:
         turn_detection: dict[str, Any] | None = None,
         extra_session: dict[str, Any] | None = None,
         include_web_search: bool | None = None,
+        transcription_keyterms: Sequence[str] | None = None,
     ) -> None:
         """Send ``session.update`` after connect.
 
@@ -223,6 +247,10 @@ class GrokRealtimeClient:
         )
         if use_search:
             session["tools"] = [dict(REALTIME_WEB_SEARCH_TOOL)]
+        keyterms = _transcription_keyterms(transcription_keyterms)
+        if keyterms:
+            # Bias ASR toward the wake names. The shutdown code is not included.
+            session["audio"]["input"]["transcription"] = {"keyterms": keyterms}
         if extra_session:
             session.update(extra_session)
         await self._send({"type": "session.update", "session": session})
@@ -287,6 +315,14 @@ class GrokRealtimeClient:
         self._require_open()
         await self._send({"type": "response.create"})
 
+    async def cancel_response(self) -> None:
+        self._require_open()
+        await self._send({"type": "response.cancel"})
+
+    async def delete_item(self, item_id: str) -> None:
+        self._require_open()
+        await self._send({"type": "conversation.item.delete", "item_id": item_id})
+
     async def events(self) -> AsyncIterator[RealtimeEvent]:
         """Iterate parsed server events until the transport closes or idle timeout."""
         self._require_open()
@@ -306,6 +342,7 @@ class GrokRealtimeClient:
                 name = exc.__class__.__name__.lower()
                 # websockets ConnectionClosed* and fake-transport EOF end the stream.
                 if "connectionclosed" in name or name in {"connectionerror", "eoferror"}:
+                    self._connected = False
                     return
                 message = str(exc).strip() or exc.__class__.__name__
                 raise WalkietalkError(
@@ -337,7 +374,7 @@ class GrokRealtimeClient:
         self._closed = True
         self._connected = False
         try:
-            await self._transport.close()
+            await asyncio.wait_for(self._transport.close(), timeout=2)
         except Exception:
             pass
 

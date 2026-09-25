@@ -102,7 +102,7 @@ Capture gain comes from the radio/interface; `audio.gain` only changes output.
 
 | Fields | Meaning |
 | --- | --- |
-| `agent.backend: grok_realtime` | Combined Speech to Speech agent backend (alongside stub/hermes/codex/grok/claude/claude_api). STT still gates wake/shutdown; replies and spoken acks use realtime voice — not text agent or TTS |
+| `agent.backend: grok_realtime` | Combined Speech to Speech agent backend (alongside stub/hermes/codex/grok/claude/claude_api). Native realtime transcripts gate wake/shutdown; input and output audio stream without separate STT, text-agent, or TTS backends |
 | `agent.realtime.model` | `grok-voice-latest` (default) or a versioned ID such as `grok-voice-think-fast-2.0` |
 | `agent.realtime.voice` | Built-in or custom xAI voice ID (example `eve`) |
 | `agent.realtime.api_key_env` | Environment variable **name** for the billed console key; default `XAI_API_KEY` (same as `grok_api`). SuperGrok login is never used |
@@ -111,10 +111,13 @@ Capture gain comes from the radio/interface; `audio.gain` only changes output.
 | `agent.realtime.idle_timeout_seconds` | Wait for server events after connect/commit |
 | `agent.web_search` (with grok_realtime) | When true, realtime `session.update` includes `tools: [{type: web_search}]` |
 
-Phases 1–3 provide schema, fake-transport client, offline `voice-agent-check`,
-and parent-owned supervised TX (`--supervised` / `--transmit`). Selecting
-`grok_realtime` does not change the live `talk` radio loop yet. See
-[GROK-REALTIME-PLAN.md](GROK-REALTIME-PLAN.md).
+Selecting `grok_realtime` routes `talk` through the live voice session. The
+`agent.realtime` section and individual fields may be omitted to use defaults.
+Open follow-ups with shutdown disabled do not wait for a transcript. Other
+turns use native input transcripts before requesting a reply; rejected/control
+items are deleted. Output is played incrementally with a separate PTT watchdog.
+Interrupted responses discard the remote conversation before reconnecting.
+See [realtime behavior and verification](GROK-REALTIME-PLAN.md).
 
 ## Wake and conversations
 
