@@ -42,6 +42,21 @@ def no_radio_transmission(monkeypatch):
         monkeypatch.setattr(cli, name, forbidden)
 
 
+def test_is_armed_true_only_while_confirmation_window_open(config):
+    now = [100.0]
+    shutdown = ShutdownSession(config, clock=lambda: now[0])
+    assert shutdown.is_armed is False
+    assert shutdown.decide("bridge shutdown", 100).kind == "armed"
+    assert shutdown.is_armed is True
+    now[0] = 129.9
+    assert shutdown.is_armed is True
+    now[0] = 130.0
+    assert shutdown.is_armed is False
+    shutdown.expire_if_needed()
+    assert shutdown.armed_until is None
+    assert shutdown.is_armed is False
+
+
 def test_shutdown_accepts_two_utterances_and_never_uses_wake_window(config):
     now = [100]
     shutdown = ShutdownSession(config, clock=lambda: now[0])

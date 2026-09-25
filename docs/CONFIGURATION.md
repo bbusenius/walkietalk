@@ -67,6 +67,7 @@ Global options (`-c`, `--env-file`, `--no-env-file`) go **before** the command.
 | `models` | Download/verify configured local Whisper weights | Explicit download; network if missing |
 | `agent-check 'text'` | Ask the selected agent without a wake phrase | No STT, audio, or PTT; remote request for a real agent |
 | `tts-check 'text' --output NEW.wav` | Synthesize and save a WAV | No radio/playback; selected voice may use network; refuses overwrite |
+| `voice-agent-check WAV|--capture --output NEW.wav [--supervised] [--transmit]` | Grok realtime turn (`agent.backend: grok_realtime`) | Default offline (no PTT). `--supervised` uses DryPTT; `--transmit` requires `--supervised` + `-c` for SerialPTT |
 | `ptt --seconds 1` | Simulate key/unkey | Add `--transmit` with `-c` for actual PTT |
 | `play speech.wav` | Validate/simulate a mono PCM16 WAV | Add `--transmit` with `-c` for actual playback and PTT |
 | `listen speech.wav` | Transcribe one utterance from a file | No radio; selected STT may use network |
@@ -96,6 +97,28 @@ colored logs.
 
 See [backend setup](BACKENDS.md) for model download and login instructions.
 Capture gain comes from the radio/interface; `audio.gain` only changes output.
+
+## Combined voice agent (optional realtime)
+
+| Fields | Meaning |
+| --- | --- |
+| `agent.backend: grok_realtime` | Combined Speech to Speech agent backend (alongside stub/hermes/codex/grok/claude/claude_api). Native realtime transcripts gate wake/shutdown; input and output audio stream without separate STT, text-agent, or TTS backends |
+| `agent.realtime.model` | `grok-voice-latest` (default) or a versioned ID such as `grok-voice-think-fast-2.0` |
+| `agent.realtime.voice` | Built-in or custom xAI voice ID (example `eve`) |
+| `agent.realtime.api_key_env` | Environment variable **name** for the billed console key; default `XAI_API_KEY` (same as `grok_api`). SuperGrok login is never used |
+| `agent.realtime.websocket_url` | Default `wss://api.x.ai/v1/realtime` |
+| `agent.realtime.connect_timeout_seconds` | WebSocket connect deadline |
+| `agent.realtime.idle_timeout_seconds` | Wait for server events after connect/commit |
+| `agent.web_search` (with grok_realtime) | When true, realtime `session.update` includes `tools: [{type: web_search}]` |
+
+Selecting `grok_realtime` routes `talk` through the live voice session. The
+`agent.realtime` section and individual fields may be omitted to use defaults.
+All turns, including open follow-ups, wait for a native transcript so empty
+input and wake-only phrases are handled consistently. Rejected/control items
+are deleted before requesting a reply. Output is played incrementally with a
+separate PTT watchdog. Completed audio turns are bounded by `agent.history_turns`.
+Interrupted responses discard the remote conversation before reconnecting.
+See [realtime behavior and verification](GROK-REALTIME-PLAN.md).
 
 ## Wake and conversations
 

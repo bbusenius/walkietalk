@@ -121,6 +121,12 @@ def open_agent(config: Config) -> AgentBackend:
         from .claude_api import ClaudeApiAgent
 
         return ClaudeApiAgent(config)
+    if config.agent_backend == "grok_realtime":
+        raise WalkietalkError(
+            "agent.backend grok_realtime is the realtime voice path; "
+            "it does not open a text agent. Use talk (native voice and control transcripts) "
+            "or voice-agent-check instead of agent-check"
+        )
     raise WalkietalkError(AGENT_BACKEND_ERROR)
 
 

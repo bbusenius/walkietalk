@@ -37,6 +37,11 @@ class ShutdownSession:
     def close(self) -> None:
         self.armed_until = None
 
+    @property
+    def is_armed(self) -> bool:
+        """True when confirmation window is open (armed_until set and not expired)."""
+        return self.armed_until is not None and self.clock() < self.armed_until
+
     def expire_if_needed(self) -> str | None:
         if self.armed_until is None or self.clock() < self.armed_until:
             return None

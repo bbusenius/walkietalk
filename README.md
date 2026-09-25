@@ -40,9 +40,12 @@ wheel built from it. For development, use `pip install -e '.[dev]'` instead.
 | --- | --- |
 | Recognize incoming speech (STT) | Local faster-whisper; Grok Voice Transcribe with saved login or explicit billed API key |
 | Answer (agent) | Offline stub; Hermes environment; Codex CLI; Grok Build CLI; Claude CLI or explicit Messages API |
+| Live speech-to-speech | Grok realtime (`agent.backend: grok_realtime`); native audio input/output with billed xAI API access |
 | Speak the answer (TTS) | Local Piper; Grok speech with saved login or explicit billed API key; the Hermes environment's speech provider |
 
-These choices are independent. A Hermes agent retains its own context, skills,
+The STT, text-agent, and TTS choices are independent. The optional
+[speech-to-speech backend](docs/GROK-REALTIME-PLAN.md) handles live audio and
+native wake/control transcripts in one session. A Hermes agent retains its own context, skills,
 and memory, even if another backend speaks its answer. Grok Build is an agent;
 Grok Voice Transcribe is STT. No backend silently substitutes another backend or
 switches from subscription login to billed API access.
@@ -81,7 +84,7 @@ setup and supervise live transmission.
 - [Backend setup and supported integrations](docs/BACKENDS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Development and adding an adapter](docs/DEVELOPMENT.md)
-- [Grok Voice speech-to-speech plan (not implemented)](docs/GROK-REALTIME-PLAN.md)
+- [Grok Voice speech-to-speech (Phases 1–3 code; live demo pending)](docs/GROK-REALTIME-PLAN.md)
 - [Phase 8 installation demonstration](docs/PHASE8-DEMO.md)
 
 MIT licensed. Python package version: `0.1.0`.

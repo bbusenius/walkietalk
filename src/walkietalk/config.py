@@ -13,12 +13,27 @@ STT_BACKENDS = ("faster-whisper", "grok", "grok_api")
 DEFAULT_STT_MAX_RESPONSE_BYTES = 1024 * 1024
 TTS_NORMALIZE = ("off", "peak")
 CALLSIGN_MODES = ("off", "end_of_reply", "interval")
-AGENT_BACKENDS = ("stub", "hermes", "codex", "grok", "claude", "claude_api")
+AGENT_BACKENDS = ("stub", "hermes", "codex", "grok", "claude", "claude_api", "grok_realtime")
 AGENT_BACKEND_ERROR = (
-    "agent.backend must be stub, hermes, codex, grok, claude, or claude_api; "
+    "agent.backend must be stub, hermes, codex, grok, claude, claude_api, or grok_realtime; "
     "other names are not implemented. Choose claude for the official CLI's saved login "
-    "or claude_api for billed Messages API access"
+    "or claude_api for billed Messages API access. Choose grok_realtime for xAI Speech to Speech"
 )
+VOICE_AGENT_MIGRATE_ERROR = (
+    "voice_agent: is no longer supported. Migrate to agent.backend: grok_realtime and "
+    "agent.realtime: {model, voice, api_key_env, websocket_url, connect_timeout_seconds, "
+    "idle_timeout_seconds}. Remove the top-level voice_agent section. See config.example.yaml"
+)
+REALTIME_FIELDS = (
+    "model",
+    "voice",
+    "api_key_env",
+    "websocket_url",
+    "connect_timeout_seconds",
+    "idle_timeout_seconds",
+)
+DEFAULT_REALTIME_WEBSOCKET_URL = "wss://api.x.ai/v1/realtime"
+DEFAULT_REALTIME_MODEL = "grok-voice-latest"
 REASONING_EFFORTS = {
     "codex": ("default", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
     "grok": ("default", "none", "minimal", "low", "medium", "high", "xhigh", "max"),
@@ -125,6 +140,12 @@ class Config:
     tts_normalize: str = "off"
     hermes_tts_url: str = "http://127.0.0.1:8643"
     hermes_tts_token_env: str = "WALKIETALK_HERMES_TOKEN"
+    agent_realtime_model: str = DEFAULT_REALTIME_MODEL
+    agent_realtime_voice: str = "eve"
+    agent_realtime_api_key_env: str = "XAI_API_KEY"
+    agent_realtime_websocket_url: str = DEFAULT_REALTIME_WEBSOCKET_URL
+    agent_realtime_connect_timeout_seconds: float = 10
+    agent_realtime_idle_timeout_seconds: float = 60
 
 
 def load_config(path: Path) -> Config:
@@ -193,6 +214,8 @@ def load_config(path: Path) -> Config:
             "claude_api_reasoning_effort",
         },
     }
+    if isinstance(data, dict) and "voice_agent" in data:
+        raise WalkietalkError(VOICE_AGENT_MIGRATE_ERROR)
     if not isinstance(data, dict) or set(data) != set(expected):
         raise WalkietalkError(
             "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, tts, "
@@ -200,10 +223,20 @@ def load_config(path: Path) -> Config:
         )
     for section, fields in expected.items():
         optional = {"max_response_bytes"} if section == "stt" else set()
+        if section == "agent":
+            optional = {"realtime"}
         if not isinstance(data[section], dict) or not (
             fields <= set(data[section]) <= fields | optional
         ):
             raise WalkietalkError(f"{section} requires these fields: {', '.join(sorted(fields))}")
+    realtime = data["agent"].get("realtime", {})
+    if not isinstance(realtime, dict) or not set(realtime) <= set(REALTIME_FIELDS):
+        raise WalkietalkError("agent.realtime requires these fields: " + ", ".join(REALTIME_FIELDS))
+    defaults = Config()
+    realtime = {
+        **{name: getattr(defaults, "agent_realtime_" + name) for name in REALTIME_FIELDS},
+        **realtime,
+    }
     max_response_bytes = data["stt"].get("max_response_bytes", DEFAULT_STT_MAX_RESPONSE_BYTES)
     if (
         isinstance(max_response_bytes, bool)
@@ -350,6 +383,55 @@ def load_config(path: Path) -> Config:
             raise WalkietalkError(
                 f"{section}.hermes_token_env must name an environment variable, not a token"
             )
+    realtime_model = realtime["model"]
+    if not isinstance(realtime_model, str) or not re.fullmatch(
+        r"grok-voice-[A-Za-z0-9._-]+", realtime_model
+    ):
+        raise WalkietalkError(
+            "agent.realtime.model must be a Grok Voice model ID such as grok-voice-latest"
+        )
+    realtime_voice = realtime["voice"]
+    if not isinstance(realtime_voice, str) or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,128}", realtime_voice
+    ):
+        raise WalkietalkError("agent.realtime.voice must be a built-in or custom voice ID")
+    realtime_key_env = realtime["api_key_env"]
+    if not isinstance(realtime_key_env, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*", realtime_key_env
+    ):
+        raise WalkietalkError(
+            "agent.realtime.api_key_env must name an environment variable, not a key"
+        )
+    realtime_url = realtime["websocket_url"]
+    try:
+        ws_url = urlsplit(realtime_url) if isinstance(realtime_url, str) else None
+        valid_ws = (
+            ws_url is not None
+            and ws_url.scheme == "wss"
+            and ws_url.hostname
+            and not ws_url.username
+            and not ws_url.password
+            and not ws_url.fragment
+            and not any(char.isspace() or not char.isprintable() for char in realtime_url)
+        )
+        if ws_url is not None:
+            _ws_port = ws_url.port
+    except ValueError:
+        valid_ws = False
+    if not valid_ws:
+        raise WalkietalkError(
+            "agent.realtime.websocket_url must be a wss:// URL without credentials or fragment"
+        )
+    realtime_connect = seconds(
+        realtime["connect_timeout_seconds"],
+        "agent.realtime.connect_timeout_seconds",
+        maximum=120,
+    )
+    realtime_idle = seconds(
+        realtime["idle_timeout_seconds"],
+        "agent.realtime.idle_timeout_seconds",
+        maximum=600,
+    )
     mode = data["listening"]["mode"]
     if mode not in ("wake_phrase", "conversation"):
         raise WalkietalkError("listening.mode must be wake_phrase or conversation")
@@ -561,4 +643,10 @@ def load_config(path: Path) -> Config:
         tts_normalize=normalize,
         hermes_tts_url=data["tts"]["hermes_url"].rstrip("/"),
         hermes_tts_token_env=data["tts"]["hermes_token_env"],
+        agent_realtime_model=realtime_model,
+        agent_realtime_voice=realtime_voice,
+        agent_realtime_api_key_env=realtime_key_env,
+        agent_realtime_websocket_url=realtime_url.rstrip("/"),
+        agent_realtime_connect_timeout_seconds=realtime_connect,
+        agent_realtime_idle_timeout_seconds=realtime_idle,
     )

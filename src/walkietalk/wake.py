@@ -64,6 +64,10 @@ class ListeningSession:
     def _follow_up_open(self, at: float) -> bool:
         return self.awake_until is not None and at < self.awake_until
 
+    def follow_up_open_at(self, at: float) -> bool:
+        """True when conversation follow-up accepts traffic that started at ``at``."""
+        return self.config.listening_mode == "conversation" and self._follow_up_open(at)
+
     def close(self) -> None:
         self.awake_until = None
 
