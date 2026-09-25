@@ -42,6 +42,10 @@ wake:
   primary: "charlotte"
   aliases: ["charlot", "sharlot"]
   confirmation_phrase: ""  # spoken when this phrase arrives with no traffic; empty stays silent
+sleep:                    # optional; omit this section or leave primary empty to disable
+  primary: "go to sleep"
+  aliases: ["stop listening"]
+  confirmation_phrase: "Standing by." # spoken with talk --transmit; empty stays silent
 agent:
   backend: "stub"          # stub, hermes, codex, grok, claude, claude_api, or grok_realtime
   max_reply_chars: 600     # reject oversized replies; 1–2000 characters

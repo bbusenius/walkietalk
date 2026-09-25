@@ -21,6 +21,8 @@ confirmation requires `talk --capture --transmit`.
 | `shutdown.arm_confirmation_phrase` | Spoken radio line when the phrase alone arms shutdown. Required when shutdown is enabled. Played only with `talk --transmit`. |
 | `shutdown.confirmation_phrase` | Spoken radio line after the code is accepted, including a phrase and code in one transmission. Required when shutdown is enabled. Played only with `talk --transmit`. |
 | `wake.confirmation_phrase` | Spoken radio line when the wake phrase arrives with no traffic. Empty stays silent. Played only with `talk --transmit`. |
+| `sleep.primary` / `sleep.aliases` | End the follow-up window immediately and wait for a wake phrase. Use a complete command, optionally prefixed by the wake phrase. See [configuration](CONFIGURATION.md#wake-and-conversations). |
+| `sleep.confirmation_phrase` | Spoken after sleep closes the window. Empty stays silent. Played only with `talk --transmit`. |
 | `talk --capture --once --timeout 5` | One-shot diagnostic: wait up to five seconds for speech. Default 60; maximum 300. |
 
 Continuous mode rejects an explicit `--timeout` with a usage error explaining

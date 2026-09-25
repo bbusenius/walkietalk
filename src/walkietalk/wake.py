@@ -1,4 +1,4 @@
-"""Wake-name matching and the conversation follow-up window."""
+"""Wake/sleep phrase matching and the conversation follow-up window."""
 
 from __future__ import annotations
 
@@ -93,6 +93,22 @@ class ListeningSession:
                 False, "empty", "", state, "Ignored (empty transcript). Window unchanged."
             )
         matched, traffic = strip_wake(text, self.config.wake_primary, self.config.wake_aliases)
+        if self.config.sleep_primary:
+            from .shutdown import normalize_command
+
+            sleeps = {
+                normalize_command(phrase)
+                for phrase in (self.config.sleep_primary, *self.config.sleep_aliases)
+            }
+            if sleeps & {normalize_command(text), normalize_command(traffic)}:
+                self.close()
+                return GateDecision(
+                    False,
+                    "sleep",
+                    "",
+                    "waiting_for_wake",
+                    f'Sleep heard; say "{self.config.wake_primary}" when you need me.',
+                )
         follow_up = self.config.listening_mode == "conversation" and self._follow_up_open(
             speech_started_at
         )

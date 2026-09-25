@@ -847,6 +847,8 @@ class RealtimeTalkSession:
             await self._client.connect()
             self._client.start_reader()
             terms = (self.config.wake_primary, *self.config.wake_aliases)
+            if self.config.sleep_primary:
+                terms += (self.config.sleep_primary, *self.config.sleep_aliases)
             await self._client.session_update(
                 instructions=_talk_instructions(self.config, instructions),
                 transcription_keyterms=terms,

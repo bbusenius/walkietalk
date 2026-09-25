@@ -479,6 +479,8 @@ class GrokApiStt:
 
 def open_stt(config: Config) -> SttBackend:
     keyterms = (config.wake_primary, *config.wake_aliases)
+    if config.sleep_primary:
+        keyterms += (config.sleep_primary, *config.sleep_aliases)
     if config.stt_backend == "faster-whisper":
         return FasterWhisperStt(config.stt_model, config.stt_timeout_seconds)
     if config.stt_backend == "grok":

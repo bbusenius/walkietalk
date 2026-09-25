@@ -357,7 +357,7 @@ def talk_command(args: argparse.Namespace) -> None:
         emit(
             "status",
             f"Agent: grok_realtime ({config.agent_realtime_model}); "
-            "native realtime transcripts gate wake/shutdown; audio replies stream directly",
+            "native realtime transcripts gate wake/sleep/shutdown; audio replies stream directly",
         )
     else:
         emit("status", f"Agent: {agent.label()}")
@@ -538,25 +538,32 @@ def talk_command(args: argparse.Namespace) -> None:
                 continue
             emit("transcript", f"Transcript: {text}")
             decision = session.decide(text, started)
-            if decision.kind == "wake_only":
+            if decision.kind in ("wake_only", "sleep"):
+                sleeping = decision.kind == "sleep"
+                label = "Sleep" if sleeping else "Wake"
                 emit("status", decision.message)
                 if talk_realtime is not None:
                     _clear_realtime_input(talk_realtime)
                 spoken = acknowledge(
                     config,
                     voice,
-                    config.wake_confirmation_phrase,
-                    preparing="Speaking wake confirmation; PTT off until speech is ready...",
-                    failed="Wake confirmation failed",
-                    finished="Wake confirmation finished; PTT released.",
+                    config.sleep_confirmation_phrase
+                    if sleeping
+                    else config.wake_confirmation_phrase,
+                    preparing=(
+                        f"Speaking {label.lower()} confirmation; PTT off until speech is ready..."
+                    ),
+                    failed=f"{label} confirmation failed",
+                    finished=f"{label} confirmation finished; PTT released.",
                     realtime=realtime,
                     transmit=args.transmit,
                 )
                 if spoken == "spoken":
                     wait_post_tx_mute(config)
                 elif spoken == "failed":
-                    emit("status", "Wake was received; the confirmation was not transmitted.")
-                session.complete_turn()
+                    emit("status", f"{label} was received; the confirmation was not transmitted.")
+                if not sleeping:
+                    session.complete_turn()
                 emit("status", session.status_line())
             elif decision.accepted:
                 emit("accepted", decision.message)
@@ -977,6 +984,12 @@ def run(args: argparse.Namespace) -> None:
                 flush=True,
             )
         print(ListeningSession(config).status_line(), flush=True)
+        if config.sleep_primary:
+            print(
+                f"Sleep: {' / '.join((config.sleep_primary, *config.sleep_aliases))}; "
+                f"confirmation {config.sleep_confirmation_phrase!r} with talk --transmit",
+                flush=True,
+            )
         if config.shutdown_enabled:
             print(
                 "Shutdown: enabled; phrase confirmation "

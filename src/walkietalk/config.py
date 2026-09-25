@@ -101,6 +101,9 @@ class Config:
     wake_primary: str = "charlotte"
     wake_aliases: tuple[str, ...] = ()
     wake_confirmation_phrase: str = ""
+    sleep_primary: str = ""
+    sleep_aliases: tuple[str, ...] = ()
+    sleep_confirmation_phrase: str = ""
     agent_backend: str = "stub"
     agent_max_reply_chars: int = 600
     agent_history_turns: int = 8
@@ -216,11 +219,14 @@ def load_config(path: Path) -> Config:
     }
     if isinstance(data, dict) and "voice_agent" in data:
         raise WalkietalkError(VOICE_AGENT_MIGRATE_ERROR)
-    if not isinstance(data, dict) or set(data) != set(expected):
+    if not isinstance(data, dict) or not set(expected) <= set(data) <= set(expected) | {"sleep"}:
         raise WalkietalkError(
             "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, tts, "
-            "vad, and wake sections. See config.example.yaml for required fields."
+            "vad, and wake sections, with an optional sleep section. "
+            "See config.example.yaml for required fields."
         )
+    if "sleep" in data:
+        expected["sleep"] = {"primary", "aliases", "confirmation_phrase"}
     for section, fields in expected.items():
         optional = {"max_response_bytes"} if section == "stt" else set()
         if section == "agent":
@@ -446,6 +452,29 @@ def load_config(path: Path) -> Config:
     from .shutdown import normalize_command
     from .wake import strip_wake
 
+    sleep = data.get("sleep", {"primary": "", "aliases": [], "confirmation_phrase": ""})
+    for field in ("primary", "confirmation_phrase"):
+        value = sleep[field]
+        if (
+            not isinstance(value, str)
+            or len(value) > 200
+            or any(not char.isprintable() for char in value)
+            or (value and not normalize_command(value))
+        ):
+            raise WalkietalkError(
+                f"sleep.{field} must be empty or text with words, at most 200 characters"
+            )
+    if not isinstance(sleep["aliases"], list) or any(
+        not isinstance(value, str)
+        or not normalize_command(value)
+        or len(value) > 200
+        or any(not char.isprintable() for char in value)
+        for value in sleep["aliases"]
+    ):
+        raise WalkietalkError("sleep.aliases must be a list of non-empty phrases")
+    if sleep["aliases"] and not sleep["primary"]:
+        raise WalkietalkError("Set sleep.primary before adding sleep.aliases")
+
     shutdown = data["shutdown"]
     if not isinstance(shutdown["enabled"], bool):
         raise WalkietalkError("shutdown.enabled must be true or false")
@@ -484,6 +513,35 @@ def load_config(path: Path) -> Config:
     wakes = {normalize_command(v) for v in (primary, *aliases)}
     if normalize_command(wake_ack) in wakes:
         raise WalkietalkError("wake.confirmation_phrase must differ from the wake names")
+    if sleep["primary"]:
+        sleeps = {normalize_command(v) for v in (sleep["primary"], *sleep["aliases"])}
+        # Include optional wake prefixes in the collision check, just as at runtime.
+        other = [primary, *aliases, wake_ack, sleep["confirmation_phrase"]]
+        if shutdown["enabled"]:
+            other.extend(
+                [
+                    shutdown["phrase"],
+                    *shutdown["phrase_aliases"],
+                    shutdown["code"],
+                    *shutdown["code_aliases"],
+                    shutdown["arm_confirmation_phrase"],
+                    shutdown["confirmation_phrase"],
+                ]
+            )
+        variants = {
+            normalize_command(candidate)
+            for value in other
+            for candidate in (value, strip_wake(value, primary, aliases)[1])
+        }
+        sleep_variants = sleeps | {
+            normalize_command(strip_wake(value, primary, aliases)[1])
+            for value in (sleep["primary"], *sleep["aliases"])
+        }
+        if sleep_variants & variants:
+            raise WalkietalkError(
+                "Sleep phrases must differ from wake names, confirmation phrases, "
+                "and enabled shutdown controls"
+            )
     if shutdown["enabled"]:
         if not all(
             normalize_command(shutdown[field])
@@ -596,6 +654,9 @@ def load_config(path: Path) -> Config:
         wake_primary=primary.strip(),
         wake_aliases=tuple(alias.strip() for alias in aliases),
         wake_confirmation_phrase=wake_ack.strip(),
+        sleep_primary=sleep["primary"].strip(),
+        sleep_aliases=tuple(alias.strip() for alias in sleep["aliases"]),
+        sleep_confirmation_phrase=sleep["confirmation_phrase"].strip(),
         agent_backend=agent_backend,
         agent_max_reply_chars=positive_integer(
             data["agent"]["max_reply_chars"], "agent.max_reply_chars", maximum=2000

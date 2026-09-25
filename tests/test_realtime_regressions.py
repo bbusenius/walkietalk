@@ -1067,3 +1067,70 @@ def test_reconnect_preserves_wake_guidance_without_accumulating_it():
         assert prompts[1].count("## Radio routing") == 1
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("transmit", [False, True])
+def test_sleep_deletes_control_audio_preserves_history_and_waits_for_wake(monkeypatch, transmit):
+    cfg = config(
+        listening_mode="conversation",
+        sleep_primary="go to sleep",
+        sleep_aliases=("stop listening",),
+        sleep_confirmation_phrase="Standing by.",
+    )
+    remote = Voice(
+        transcripts=(
+            "charlotte first question",
+            "Charlotte, stop listening!",
+            "talking to another person",
+            "charlotte next question",
+        )
+    )
+    session = RealtimeTalkSession(cfg, transport=remote, api_key="fake")
+    gate = ListeningSession(cfg, clock=lambda: 100)
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "ListeningSession", lambda _: gate)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: session)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    acks = []
+
+    def speak(config, text, ptt, **kwargs):
+        assert gate.awake_until is None
+        assert text == cfg.sleep_confirmation_phrase
+        # The original session retains only the completed question/answer pair.
+        assert session.warm_connected
+        assert [m["item_id"] for m in remote.sent if m["type"] == "conversation.item.delete"] == [
+            "user-2"
+        ]
+        acks.append(text)
+        return SupervisedTxResult(None, ptt_actions=(PttAction("key", "audible_audio_energy"),))
+
+    monkeypatch.setattr(cli, "speak_text_via_realtime", speak)
+    captures = 0
+
+    def capture(*_, on_frame, **__):
+        nonlocal captures
+        captures += 1
+        if captures > 4:
+            raise KeyboardInterrupt
+        if captures in (3, 4):
+            assert gate.awake_until is None
+        on_frame(PCM, 24000)
+        return SimpleNamespace(pcm=PCM, rate=24000, started_at=100)
+
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    args = ["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture"]
+    assert cli.main(args + (["--transmit"] if transmit else [])) == 130
+    assert acks == (["Standing by."] if transmit else [])
+    assert remote.types().count("session.update") == 1
+    assert remote.types().count("response.create") == 2
+    assert [m["item_id"] for m in remote.sent if m["type"] == "conversation.item.delete"] == [
+        "user-2",
+        "user-3",
+    ]
+    settings = next(m["session"] for m in remote.sent if m["type"] == "session.update")
+    terms = settings["audio"]["input"]["transcription"]["keyterms"]
+    assert "go to sleep" in terms
+    assert "stop listening" in terms
+    assert gate.awake_until == 100 + cfg.conversation_timeout_seconds

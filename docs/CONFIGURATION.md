@@ -140,6 +140,33 @@ Choose your own names; no agent identity is hardcoded.
 
 Only the traffic after the wake phrase goes to the agent. A follow-up uses the
 same bounded radio context; this is not a resumed desktop CLI conversation.
+
+To end the follow-up window immediately, configure a sleep phrase:
+
+```yaml
+sleep:
+  primary: "go to sleep"
+  aliases: ["stop listening"]
+  confirmation_phrase: "Standing by."
+```
+
+Say the primary phrase or an alias alone, optionally after the wake phrase
+(for example, “Charlotte, go to sleep”). Sleep matches the complete utterance,
+ignoring case, punctuation, and whitespace. Mentions inside longer sentences
+do not trigger it. Sleep works in both listening modes, including when already
+waiting for a wake phrase. It closes the window before confirmation and keeps
+the bridge running, ready for the next wake phrase. Conversation history and
+the normal timeout behavior are preserved. Sleep never requests an agent reply
+or enters conversation history. With `grok_realtime`, the bridge removes the
+transcribed control audio from the remote conversation before acknowledging it.
+
+`sleep.confirmation_phrase` is spoken with `talk --transmit`, using the same
+voice path as wake confirmation. Receive-only mode prints the sleep status.
+An empty confirmation stays silent; a failed confirmation still leaves the
+window closed. Omit the optional `sleep` section or leave `sleep.primary` empty
+with no aliases to disable sleep. Existing configs remain valid. Restart after
+editing the configuration.
+
 Continuous mode returns to listening after STT, agent, or speech errors. Failed
 or unheard agent turns are not retained as completed radio answers. Hardware
 capture failures stop with a local error.
