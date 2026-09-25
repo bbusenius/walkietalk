@@ -46,6 +46,8 @@ def collect_utterance(
     wait_deadline: float | None,
     log: Callable[[str], None],
     on_wait: Callable[[], None] | None = None,
+    on_frame: Callable[[bytes, int], None] | None = None,
+    on_reset: Callable[[], None] | None = None,
 ) -> Utterance:
     vad = EnergyVad(energy_threshold, hangover_ms, max_utterance_seconds, rate)
     warned_overflow = False
@@ -58,7 +60,15 @@ def collect_utterance(
             warned_overflow = True
         if not vad.speaking and wait_deadline is not None and time.monotonic() >= wait_deadline:
             break
+        before = len(vad.captured)
         state, level = vad.push(frame)
+        if on_frame is not None or on_reset is not None:
+            after = len(vad.captured)
+            if after < before:
+                if on_reset is not None:
+                    on_reset()
+            elif after > before and on_frame is not None:
+                on_frame(bytes(vad.captured[before:after]), rate)
         n += 1
         if state == "waiting" and on_wait is not None:
             on_wait()
@@ -109,7 +119,13 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
-def capture_from_wav(path: Path, config: Config, log: Callable[[str], None] = _log) -> Utterance:
+def capture_from_wav(
+    path: Path,
+    config: Config,
+    log: Callable[[str], None] = _log,
+    on_frame: Callable[[bytes, int], None] | None = None,
+    on_reset: Callable[[], None] | None = None,
+) -> Utterance:
     wav = read_wav(path, 60, gain=1)
     log(f"WAV: {wav.rate} Hz, mono PCM16, {wav.duration:.3f}s")
     return collect_utterance(
@@ -120,6 +136,8 @@ def capture_from_wav(path: Path, config: Config, log: Callable[[str], None] = _l
         max_utterance_seconds=config.max_utterance_seconds,
         wait_deadline=None,
         log=log,
+        on_frame=on_frame,
+        on_reset=on_reset,
     )
 
 
@@ -129,6 +147,8 @@ def capture_from_device(
     wait_seconds: float | None,
     log: Callable[[str], None] = _log,
     on_wait: Callable[[], None] | None = None,
+    on_frame: Callable[[bytes, int], None] | None = None,
+    on_reset: Callable[[], None] | None = None,
 ) -> Utterance:
     import sounddevice as sd
 
@@ -174,6 +194,8 @@ def capture_from_device(
             wait_deadline=None if wait_seconds is None else time.monotonic() + wait_seconds,
             log=log,
             on_wait=on_wait,
+            on_frame=on_frame,
+            on_reset=on_reset,
         )
     except sd.PortAudioError as exc:
         raise WalkietalkError(

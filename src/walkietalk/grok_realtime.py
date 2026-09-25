@@ -1,6 +1,6 @@
 """Grok Voice speech-to-speech realtime client (Phases 1–2: no radio/PTT).
 
-Explicit ``voice_agent.backend: grok_realtime`` path. Does not replace or fall
+Explicit ``agent.backend: grok_realtime`` path. Does not replace or fall
 back into ``stt`` / ``agent`` / ``tts`` grok / grok_api adapters. SuperGrok
 login is never used; auth is the billed ``XAI_API_KEY`` (or named env).
 """
@@ -24,6 +24,7 @@ from .config import Config, WalkietalkError
 
 DEFAULT_WEBSOCKET_URL = "wss://api.x.ai/v1/realtime"
 DEFAULT_MODEL = "grok-voice-latest"
+REALTIME_WEB_SEARCH_TOOL = {"type": "web_search"}
 REALTIME_PCM_RATE = 24000
 # ~100 ms chunks at 24 kHz mono PCM16.
 APPEND_CHUNK_BYTES = REALTIME_PCM_RATE // 10 * 2
@@ -42,9 +43,6 @@ OUTPUT_AUDIO_DELTA = "response.output_audio.delta"
 OUTPUT_AUDIO_DONE = "response.output_audio.done"
 FUNCTION_CALL_ARGUMENTS_DONE = "response.function_call_arguments.done"
 ERROR_EVENT = "error"
-
-VOICE_AGENT_BACKENDS = ("off", "grok_realtime")
-
 
 class RealtimeTransport(Protocol):
     """Minimal WebSocket surface for injectable fakes and the live client."""
@@ -92,20 +90,14 @@ def open_voice_agent(
     transport_factory: TransportFactory | None = None,
     api_key: str | None = None,
 ) -> GrokRealtimeClient | None:
-    """Smallest registry hook: ``off`` → None; ``grok_realtime`` → client."""
-    backend = config.voice_agent_backend
-    if backend == "off":
+    """Registry hook: ``agent.backend: grok_realtime`` → client; else None."""
+    if config.agent_backend != "grok_realtime":
         return None
-    if backend == "grok_realtime":
-        return GrokRealtimeClient(
-            config,
-            transport=transport,
-            transport_factory=transport_factory,
-            api_key=api_key,
-        )
-    raise WalkietalkError(
-        "voice_agent.backend must be off or grok_realtime; "
-        "other names are not implemented and never fall back to stt/agent/tts"
+    return GrokRealtimeClient(
+        config,
+        transport=transport,
+        transport_factory=transport_factory,
+        api_key=api_key,
     )
 
 
@@ -130,9 +122,9 @@ class GrokRealtimeClient:
 
     def label(self) -> str:
         return (
-            f"grok_realtime ({self.config.voice_agent_model}; "
-            f"{self.config.voice_agent_voice}; "
-            f"{self.config.voice_agent_api_key_env}; billed Speech to Speech API)"
+            f"grok_realtime ({self.config.agent_realtime_model}; "
+            f"{self.config.agent_realtime_voice}; "
+            f"{self.config.agent_realtime_api_key_env}; billed Speech to Speech API)"
         )
 
     def resolve_api_key(self) -> str:
@@ -140,16 +132,16 @@ class GrokRealtimeClient:
         if self._api_key is not None:
             if not valid_api_key(self._api_key):
                 raise WalkietalkError(
-                    f"voice_agent.backend grok_realtime requires a valid "
-                    f"{self.config.voice_agent_api_key_env} for billed xAI Speech to Speech "
+                    f"agent.backend grok_realtime requires a valid "
+                    f"{self.config.agent_realtime_api_key_env} for billed xAI Speech to Speech "
                     "API access; no SuperGrok login fallback"
                 )
             return self._api_key
-        token = os.environ.get(self.config.voice_agent_api_key_env)
+        token = os.environ.get(self.config.agent_realtime_api_key_env)
         if not valid_api_key(token):
             raise WalkietalkError(
-                f"voice_agent.backend grok_realtime requires "
-                f"{self.config.voice_agent_api_key_env} for billed xAI Speech to Speech "
+                f"agent.backend grok_realtime requires "
+                f"{self.config.agent_realtime_api_key_env} for billed xAI Speech to Speech "
                 "API access; no SuperGrok login fallback"
             )
         return token
@@ -161,7 +153,7 @@ class GrokRealtimeClient:
         key = self.resolve_api_key()
         headers = {"Authorization": f"Bearer {key}"}
         url = build_realtime_url(
-            self.config.voice_agent_websocket_url, self.config.voice_agent_model
+            self.config.agent_realtime_websocket_url, self.config.agent_realtime_model
         )
         try:
             if self._transport is not None:
@@ -169,12 +161,12 @@ class GrokRealtimeClient:
             elif self._transport_factory is not None:
                 self._transport = await asyncio.wait_for(
                     self._transport_factory(url, headers),
-                    timeout=self.config.voice_agent_connect_timeout_seconds,
+                    timeout=self.config.agent_realtime_connect_timeout_seconds,
                 )
             else:
                 self._transport = await asyncio.wait_for(
                     _connect_websockets(url, headers),
-                    timeout=self.config.voice_agent_connect_timeout_seconds,
+                    timeout=self.config.agent_realtime_connect_timeout_seconds,
                 )
         except WalkietalkError:
             raise
@@ -188,7 +180,7 @@ class GrokRealtimeClient:
             if any(token in lowered for token in ("401", "403", "unauthorized", "forbidden")):
                 raise WalkietalkError(
                     "Grok realtime authentication failed; check billed "
-                    f"{self.config.voice_agent_api_key_env}; no SuperGrok login fallback"
+                    f"{self.config.agent_realtime_api_key_env}; no SuperGrok login fallback"
                 ) from exc
             raise WalkietalkError(
                 f"Grok realtime connection failed: {message}; no stt/agent/tts fallback"
@@ -203,11 +195,16 @@ class GrokRealtimeClient:
         voice: str | None = None,
         turn_detection: dict[str, Any] | None = None,
         extra_session: dict[str, Any] | None = None,
+        include_web_search: bool | None = None,
     ) -> None:
-        """Send ``session.update`` after connect."""
+        """Send ``session.update`` after connect.
+
+        When ``include_web_search`` is None, tools follow ``agent.web_search`` for
+        ``agent.backend: grok_realtime``. Pass False to omit tools (e.g. force_message acks).
+        """
         self._require_open()
         session: dict[str, Any] = {
-            "voice": voice if voice is not None else self.config.voice_agent_voice,
+            "voice": voice if voice is not None else self.config.agent_realtime_voice,
             "audio": {
                 "input": {"format": {"type": "audio/pcm", "rate": 24000}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},
@@ -220,9 +217,49 @@ class GrokRealtimeClient:
         else:
             # Manual commit fits half-duplex unkey; parent commits after RX ends.
             session["turn_detection"] = None
+        use_search = (
+            self.config.agent_web_search
+            if include_web_search is None
+            else include_web_search
+        )
+        if use_search:
+            session["tools"] = [dict(REALTIME_WEB_SEARCH_TOOL)]
         if extra_session:
             session.update(extra_session)
         await self._send({"type": "session.update", "session": session})
+
+    async def create_force_message(self, text: str, *, interruptible: bool = False) -> None:
+        """Ask the server to speak ``text`` verbatim (xAI force_message; no response.create)."""
+        self._require_open()
+        if not isinstance(text, str) or not text.strip():
+            raise WalkietalkError("force_message text must be non-empty")
+        await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "force_message",
+                    "role": "assistant",
+                    "interruptible": interruptible,
+                    "content": [{"type": "output_text", "text": text}],
+                },
+            }
+        )
+
+    async def create_user_text_message(self, text: str) -> None:
+        """Add a trusted user text turn (no audio upload / second ASR)."""
+        self._require_open()
+        if not isinstance(text, str) or not text.strip():
+            raise WalkietalkError("user text message must be non-empty")
+        await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
 
     async def append_audio(self, pcm16le: bytes) -> None:
         """Append base64 PCM16 little-endian audio to the input buffer."""
@@ -241,6 +278,11 @@ class GrokRealtimeClient:
         self._require_open()
         await self._send({"type": "input_audio_buffer.commit"})
 
+    async def clear_audio(self) -> None:
+        """Discard uncommitted input audio (rejected wake / ignored turn)."""
+        self._require_open()
+        await self._send({"type": "input_audio_buffer.clear"})
+
     async def create_response(self) -> None:
         """Request a model response after a manual commit (no server VAD)."""
         self._require_open()
@@ -250,7 +292,7 @@ class GrokRealtimeClient:
         """Iterate parsed server events until the transport closes or idle timeout."""
         self._require_open()
         assert self._transport is not None
-        idle = self.config.voice_agent_idle_timeout_seconds
+        idle = self.config.agent_realtime_idle_timeout_seconds
         while not self._closed:
             try:
                 raw = await asyncio.wait_for(self._transport.recv(), timeout=idle)
@@ -280,7 +322,7 @@ class GrokRealtimeClient:
                 ):
                     raise WalkietalkError(
                         f"Grok realtime authentication failed: {detail}; "
-                        f"check billed {self.config.voice_agent_api_key_env}; "
+                        f"check billed {self.config.agent_realtime_api_key_env}; "
                         "no SuperGrok login fallback"
                     )
                 raise WalkietalkError(
@@ -468,7 +510,7 @@ async def wait_for_session_updated(client: GrokRealtimeClient) -> list[str]:
     return await wait_for_event(
         client,
         "session.updated",
-        timeout=client.config.voice_agent_connect_timeout_seconds,
+        timeout=client.config.agent_realtime_connect_timeout_seconds,
     )
 
 
@@ -517,7 +559,7 @@ async def run_offline_turn(
             await wait_for_event(
                 client,
                 "input_audio_buffer.committed",
-                timeout=max(10.0, float(client.config.voice_agent_idle_timeout_seconds)),
+                timeout=max(10.0, float(client.config.agent_realtime_idle_timeout_seconds)),
             )
         )
         await client.create_response()
@@ -537,7 +579,7 @@ async def run_offline_turn(
                 continue
             if turn_deadline is None:
                 turn_deadline = time.monotonic() + max(
-                    15.0, float(client.config.voice_agent_idle_timeout_seconds)
+                    15.0, float(client.config.agent_realtime_idle_timeout_seconds)
                 )
             seen.append(event.type)
             if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
@@ -585,10 +627,10 @@ def offline_voice_check(
     api_key: str | None = None,
     instructions: str | None = None,
 ) -> OfflineVoiceResult:
-    """Sync entry for CLI/tests. Requires ``voice_agent.backend: grok_realtime``."""
-    if config.voice_agent_backend != "grok_realtime":
+    """Sync entry for CLI/tests. Requires ``agent.backend: grok_realtime``."""
+    if config.agent_backend != "grok_realtime":
         raise WalkietalkError(
-            "voice-agent-check requires voice_agent.backend: grok_realtime; "
+            "voice-agent-check requires agent.backend: grok_realtime; "
             "it never falls back to stt/agent/tts"
         )
     client = open_voice_agent(
@@ -599,7 +641,7 @@ def offline_voice_check(
     )
     if client is None:
         raise WalkietalkError(
-            "voice-agent-check requires voice_agent.backend: grok_realtime; "
+            "voice-agent-check requires agent.backend: grok_realtime; "
             "it never falls back to stt/agent/tts"
         )
     return asyncio.run(run_offline_turn(client, pcm16le, input_rate, instructions=instructions))

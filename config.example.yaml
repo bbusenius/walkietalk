@@ -43,11 +43,11 @@ wake:
   aliases: ["charlot", "sharlot"]
   confirmation_phrase: ""  # spoken when this phrase arrives with no traffic; empty stays silent
 agent:
-  backend: "stub"          # stub, hermes, codex, grok, claude, or claude_api
+  backend: "stub"          # stub, hermes, codex, grok, claude, claude_api, or grok_realtime
   max_reply_chars: 600     # reject oversized replies; 1–2000 characters
   history_turns: 8         # completed traffic/reply pairs to retain; 1–32
   timeout_seconds: 60      # overall agent deadline; >0 to 300 seconds
-  web_search: false        # true allows a public web lookup; shell and files stay off
+  web_search: false        # true allows web lookup (text agents) or realtime session tools
   instructions: ""         # empty keeps the default guidance; {max_reply_chars}, {spoken_seconds}, {max_words}
   hermes_url: "http://127.0.0.1:8642" # API base URL without /v1; use reachable Docker IP if needed
   hermes_token_env: "WALKIETALK_HERMES_TOKEN" # environment variable name, never the token
@@ -63,14 +63,13 @@ agent:
   claude_api_key_env: "ANTHROPIC_API_KEY" # env NAME; separately billed Messages API
   claude_api_model: "claude-sonnet-5"
   claude_api_reasoning_effort: "low" # default omits effort; useful for models without it
-voice_agent:
-  backend: "off"              # off, or grok_realtime (combined S2S; not stt/agent/tts)
-  model: "grok-voice-latest"  # or grok-voice-think-fast-2.0
-  voice: "eve"                # built-in or custom xAI voice ID
-  api_key_env: "XAI_API_KEY"  # billed console key; never SuperGrok login
-  websocket_url: "wss://api.x.ai/v1/realtime"
-  connect_timeout_seconds: 10
-  idle_timeout_seconds: 60    # wait for server events after connect/commit
+  realtime:
+    model: "grok-voice-latest"  # or grok-voice-think-fast-2.0
+    voice: "eve"                # built-in or custom xAI voice ID
+    api_key_env: "XAI_API_KEY"  # billed console key; never SuperGrok login
+    websocket_url: "wss://api.x.ai/v1/realtime"
+    connect_timeout_seconds: 10
+    idle_timeout_seconds: 60    # wait for server events after connect/commit
 shutdown:
   # Say phrase + code together, or phrase alone then code within the window.
   enabled: false

@@ -31,11 +31,18 @@ from walkietalk.grok_realtime import (
     resample_pcm16,
     run_offline_turn,
 )
+from walkietalk.wake import ListeningSession
 from walkietalk.voice_agent_tx import (
+    RealtimeTalkSession,
+    stream_pcm_frames_for_tests,
+    PTT_ENERGY_THRESHOLD_RMS,
     PttAction,
     SupervisedRealtimeTx,
     SupervisedTxResult,
+    pcm16_rms,
     run_supervised_turn,
+    speak_text_via_realtime,
+    supervised_text_turn,
     supervised_voice_check,
 )
 
@@ -84,38 +91,64 @@ def write_config(tmp_path, data):
     return path
 
 
+def loud_pcm(samples: int = 16, amplitude: int = 5000) -> bytes:
+    """Synthetic audible PCM16 LE mono for energy-gate tests."""
+    import struct
+
+    amp = max(-32768, min(32767, amplitude))
+    return struct.pack("<" + "h" * samples, *([amp] * samples))
+
+
+def silent_pcm(samples: int = 16) -> bytes:
+    return b"\x00\x00" * samples
+
+
 def realtime_config(**overrides) -> Config:
     base = replace(
         Config(),
-        voice_agent_backend="grok_realtime",
-        voice_agent_model="grok-voice-latest",
-        voice_agent_voice="eve",
-        voice_agent_api_key_env="XAI_API_KEY",
-        voice_agent_websocket_url="wss://api.x.ai/v1/realtime",
-        voice_agent_connect_timeout_seconds=2,
-        voice_agent_idle_timeout_seconds=2,
+        agent_backend="grok_realtime",
+        agent_realtime_model="grok-voice-latest",
+        agent_realtime_voice="eve",
+        agent_realtime_api_key_env="XAI_API_KEY",
+        agent_realtime_websocket_url="wss://api.x.ai/v1/realtime",
+        agent_realtime_connect_timeout_seconds=2,
+        agent_realtime_idle_timeout_seconds=2,
     )
     return replace(base, **overrides) if overrides else base
 
 
-def test_example_config_loads_voice_agent_off(tmp_path, config_data):
+def test_example_config_loads_realtime_defaults(tmp_path, config_data):
     config = load_config(write_config(tmp_path, config_data))
-    assert config.voice_agent_backend == "off"
-    assert config.voice_agent_model == "grok-voice-latest"
-    assert config.voice_agent_voice == "eve"
-    assert config.voice_agent_api_key_env == "XAI_API_KEY"
-    assert config.voice_agent_websocket_url == "wss://api.x.ai/v1/realtime"
-    assert config.voice_agent_connect_timeout_seconds == 10
-    assert config.voice_agent_idle_timeout_seconds == 60
+    assert config.agent_backend == "stub"
+    assert config.agent_realtime_model == "grok-voice-latest"
+    assert config.agent_realtime_voice == "eve"
+    assert config.agent_realtime_api_key_env == "XAI_API_KEY"
+    assert config.agent_realtime_websocket_url == "wss://api.x.ai/v1/realtime"
+    assert config.agent_realtime_connect_timeout_seconds == 10
+    assert config.agent_realtime_idle_timeout_seconds == 60
     assert open_voice_agent(config) is None
 
 
-def test_voice_agent_grok_realtime_validates(tmp_path, config_data):
-    config_data["voice_agent"]["backend"] = "grok_realtime"
-    config_data["voice_agent"]["model"] = "grok-voice-think-fast-2.0"
+def test_legacy_voice_agent_section_raises_migrate(tmp_path, config_data):
+    config_data["voice_agent"] = {
+        "backend": "grok_realtime",
+        "model": "grok-voice-latest",
+        "voice": "eve",
+        "api_key_env": "XAI_API_KEY",
+        "websocket_url": "wss://api.x.ai/v1/realtime",
+        "connect_timeout_seconds": 10,
+        "idle_timeout_seconds": 60,
+    }
+    with pytest.raises(WalkietalkError, match="voice_agent: is no longer supported"):
+        load_config(write_config(tmp_path, config_data))
+
+
+def test_agent_backend_grok_realtime_validates(tmp_path, config_data):
+    config_data["agent"]["backend"] = "grok_realtime"
+    config_data["agent"]["realtime"]["model"] = "grok-voice-think-fast-2.0"
     config = load_config(write_config(tmp_path, config_data))
-    assert config.voice_agent_backend == "grok_realtime"
-    assert config.voice_agent_model == "grok-voice-think-fast-2.0"
+    assert config.agent_backend == "grok_realtime"
+    assert config.agent_realtime_model == "grok-voice-think-fast-2.0"
     client = open_voice_agent(config, transport=FakeTransport())
     assert isinstance(client, GrokRealtimeClient)
     assert "grok_realtime" in client.label()
@@ -125,9 +158,6 @@ def test_voice_agent_grok_realtime_validates(tmp_path, config_data):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("backend", "grok"),
-        ("backend", "grok_api"),
-        ("backend", "stt"),
         ("model", "grok-4.6"),
         ("model", ""),
         ("voice", ""),
@@ -141,22 +171,23 @@ def test_voice_agent_grok_realtime_validates(tmp_path, config_data):
         ("idle_timeout_seconds", 0),
     ],
 )
-def test_invalid_voice_agent_fields_rejected(tmp_path, config_data, field, value):
-    config_data["voice_agent"][field] = value
+def test_invalid_realtime_fields_rejected(tmp_path, config_data, field, value):
+    config_data["agent"]["realtime"][field] = value
     with pytest.raises(WalkietalkError):
         load_config(write_config(tmp_path, config_data))
 
 
-def test_missing_voice_agent_section_rejected(tmp_path, config_data):
-    del config_data["voice_agent"]
-    with pytest.raises(WalkietalkError, match="voice_agent"):
+def test_missing_realtime_section_rejected(tmp_path, config_data):
+    del config_data["agent"]["realtime"]
+    with pytest.raises(WalkietalkError, match="realtime"):
         load_config(write_config(tmp_path, config_data))
 
 
-def test_open_voice_agent_never_aliases_stt_agent_tts():
-    for backend in ("grok", "grok_api", "faster-whisper", "stub", "piper"):
-        with pytest.raises(WalkietalkError, match="off or grok_realtime"):
-            open_voice_agent(replace(Config(), voice_agent_backend=backend))
+def test_open_voice_agent_only_for_grok_realtime():
+    assert open_voice_agent(replace(Config(), agent_backend="stub")) is None
+    assert open_voice_agent(replace(Config(), agent_backend="grok")) is None
+    client = open_voice_agent(realtime_config(), transport=FakeTransport())
+    assert isinstance(client, GrokRealtimeClient)
 
 
 def test_happy_path_fake_transport_event_sequence(monkeypatch):
@@ -510,7 +541,7 @@ def test_response_start_pings_only_fails_fast(monkeypatch, supervised, ping_dela
             event("ping"),
         ]
     )
-    config = realtime_config(voice_agent_idle_timeout_seconds=60)
+    config = realtime_config(agent_realtime_idle_timeout_seconds=60)
     client = GrokRealtimeClient(config, transport=transport, api_key="fake-key")
     ptt = FakePTT()
 
@@ -560,7 +591,7 @@ def test_response_started_can_finish_after_start_timeout(monkeypatch, supervised
             event(RESPONSE_DONE),
         ]
     )
-    config = realtime_config(voice_agent_idle_timeout_seconds=60)
+    config = realtime_config(agent_realtime_idle_timeout_seconds=60)
     kwargs = {"transport": transport, "api_key": "fake-key"}
     if supervised:
         result = supervised_voice_check(
@@ -581,12 +612,12 @@ def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, caps
     reply_pcm = b"\x05\x00" * 64
 
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["voice_agent"]["backend"] = "grok_realtime"
+    data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
 
     def fake_offline(config, pcm, rate, **kwargs):
-        assert config.voice_agent_backend == "grok_realtime"
+        assert config.agent_backend == "grok_realtime"
         assert rate == 24000
         assert pcm  # VAD may trim edges; must still deliver captured speech
         assert len(pcm) <= len(frames)
@@ -636,7 +667,7 @@ def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, caps
 def test_voice_agent_check_cli_rejects_backend_off(tmp_path):
     wav_path, _ = pcm_wav(tmp_path / "in.wav")
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    assert data["voice_agent"]["backend"] == "off"
+    assert data["agent"]["backend"] == "stub"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
     assert (
@@ -660,7 +691,7 @@ def test_voice_agent_check_cli_refuses_overwrite(tmp_path):
     out_path = tmp_path / "exists.wav"
     out_path.write_bytes(b"x")
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["voice_agent"]["backend"] = "grok_realtime"
+    data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
     assert (
@@ -731,7 +762,7 @@ def test_client_module_has_no_ptt_or_serial_imports():
         assert banned not in source, banned
 
 
-def test_supervised_keys_on_first_delta_unkeys_on_audio_done():
+def test_supervised_keys_on_audible_energy_unkeys_on_audio_done():
     config = realtime_config(max_tx_seconds=10, settle_seconds=0)
     ptt = FakePTT()
     played: list[bytes] = []
@@ -739,25 +770,65 @@ def test_supervised_keys_on_first_delta_unkeys_on_audio_done():
     def play(pcm, rate, deadline):
         played.append(pcm)
 
+    loud_a = loud_pcm(10, 5000)
+    loud_b = loud_pcm(10, 6000)
     tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=play, clock=lambda: 0.0)
-    tx.handle(_delta(b"\x01\x00" * 10, first=True))
+    tx.handle(_delta(loud_a, first=True))
     assert ptt.actions == ["open", "on"]
-    tx.handle(_delta(b"\x02\x00" * 10, first=False))
+    assert tx.actions[0].reason == "audible_audio_energy"
+    tx.handle(_delta(loud_b, first=False))
     assert ptt.keyed is True
     tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
     assert ptt.actions == ["open", "on", "off"]
-    assert played == [b"\x01\x00" * 10 + b"\x02\x00" * 10]
+    assert played == [loud_a + loud_b]
     tx.close()
     assert ptt.actions[-1] == "close"
 
 
-def test_supervised_unkeys_on_tool_gap_and_rekeys_on_next_first_delta():
+def test_supervised_silent_deltas_never_key():
     config = realtime_config(max_tx_seconds=10, settle_seconds=0)
     ptt = FakePTT()
     tx = SupervisedRealtimeTx(
         config, ptt, allow_key=True, play_segment=lambda *a: None, clock=lambda: 0.0
     )
-    tx.handle(_delta(b"\x01\x00" * 4, first=True))
+    quiet = silent_pcm(240)  # 10 ms of silence at 24 kHz
+    assert pcm16_rms(quiet) < PTT_ENERGY_THRESHOLD_RMS
+    tx.handle(_delta(quiet, first=True))
+    tx.handle(_delta(quiet, first=False))
+    tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
+    assert ptt.actions == []
+    assert tx.actions == []
+    tx.close()
+
+
+def test_supervised_pre_roll_then_energy_keys():
+    config = realtime_config(max_tx_seconds=10, settle_seconds=0)
+    ptt = FakePTT()
+    played: list[bytes] = []
+
+    def play(pcm, rate, deadline):
+        played.append(pcm)
+
+    quiet = silent_pcm(48)
+    loud = loud_pcm(48, 8000)
+    tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=play, clock=lambda: 0.0)
+    tx.handle(_delta(quiet, first=True))
+    assert ptt.actions == []
+    tx.handle(_delta(loud, first=False))
+    assert ptt.actions == ["open", "on"]
+    assert tx.actions[0].reason == "audible_audio_energy"
+    tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
+    assert played == [quiet + loud]
+    tx.close()
+
+
+def test_supervised_unkeys_on_tool_gap_and_rekeys_on_next_energy():
+    config = realtime_config(max_tx_seconds=10, settle_seconds=0)
+    ptt = FakePTT()
+    tx = SupervisedRealtimeTx(
+        config, ptt, allow_key=True, play_segment=lambda *a: None, clock=lambda: 0.0
+    )
+    tx.handle(_delta(loud_pcm(4), first=True))
     tx.handle(
         RealtimeEvent(
             type=FUNCTION_CALL_ARGUMENTS_DONE,
@@ -765,8 +836,9 @@ def test_supervised_unkeys_on_tool_gap_and_rekeys_on_next_first_delta():
         )
     )
     assert ptt.actions == ["open", "on", "off"]
-    tx.handle(_delta(b"\x03\x00" * 4, first=True))
+    tx.handle(_delta(loud_pcm(4, 7000), first=True))
     assert ptt.actions == ["open", "on", "off", "on"]
+    assert tx.actions[-1].reason == "audible_audio_energy"
     tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
     assert ptt.actions == ["open", "on", "off", "on", "off"]
     tx.close()
@@ -780,10 +852,11 @@ def test_supervised_tx_cap_truncates_and_unkeys():
     def play(pcm, rate, deadline):
         played.append(len(pcm))
 
-    # 0.2s * 24000 * 2 = 9600 bytes max
+    # 0.2s * 24000 * 2 = 9600 bytes max. Arm with a short loud burst, then overflow.
     tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=play, clock=lambda: 0.0)
-    huge = b"\x01\x00" * 20000
-    tx.handle(_delta(huge, first=True))
+    tx.handle(_delta(loud_pcm(100, 5000), first=True))
+    assert ptt.keyed is True
+    tx.handle(_delta(loud_pcm(20000, 5000), first=False))
     assert tx.truncated is True
     assert ptt.actions.count("on") == 1
     assert ptt.actions.count("off") == 1
@@ -795,7 +868,7 @@ def test_supervised_never_keys_without_allow_key():
     config = realtime_config()
     ptt = FakePTT()
     tx = SupervisedRealtimeTx(config, ptt, allow_key=False, play_segment=lambda *a: None)
-    tx.handle(_delta(b"\x01\x00" * 8, first=True))
+    tx.handle(_delta(loud_pcm(8), first=True))
     tx.handle(RealtimeEvent(type=OUTPUT_AUDIO_DONE, data={"type": OUTPUT_AUDIO_DONE}))
     tx.close()
     assert ptt.actions == []
@@ -806,7 +879,7 @@ def test_supervised_unkeys_on_fail():
     config = realtime_config(settle_seconds=0)
     ptt = FakePTT()
     tx = SupervisedRealtimeTx(config, ptt, allow_key=True, play_segment=lambda *a: None)
-    tx.handle(_delta(b"\x01\x00" * 4, first=True))
+    tx.handle(_delta(loud_pcm(4), first=True))
     tx.fail("boom")
     assert "off" in ptt.actions
     assert ptt.closed is True
@@ -820,11 +893,11 @@ def test_supervised_voice_check_fake_transport_ptt_sequence(monkeypatch):
             event("input_audio_buffer.committed"),
             event(
                 OUTPUT_AUDIO_DELTA,
-                delta=base64.b64encode(b"\x01\x00" * 16).decode("ascii"),
+                delta=base64.b64encode(loud_pcm(16)).decode("ascii"),
             ),
             event(
                 OUTPUT_AUDIO_DELTA,
-                delta=base64.b64encode(b"\x02\x00" * 16).decode("ascii"),
+                delta=base64.b64encode(loud_pcm(16, 6000)).decode("ascii"),
             ),
             event(OUTPUT_AUDIO_DONE),
             event(
@@ -835,7 +908,7 @@ def test_supervised_voice_check_fake_transport_ptt_sequence(monkeypatch):
             ),
             event(
                 OUTPUT_AUDIO_DELTA,
-                delta=base64.b64encode(b"\x03\x00" * 16).decode("ascii"),
+                delta=base64.b64encode(loud_pcm(16, 7000)).decode("ascii"),
             ),
             event(OUTPUT_AUDIO_DONE),
             event("response.done"),
@@ -854,9 +927,9 @@ def test_supervised_voice_check_fake_transport_ptt_sequence(monkeypatch):
     )
     kinds = [item.kind for item in result.ptt_actions]
     assert kinds == ["key", "unkey", "key", "unkey"]
-    assert result.ptt_actions[0].reason == "first_output_audio_delta"
+    assert result.ptt_actions[0].reason == "audible_audio_energy"
     assert result.ptt_actions[1].reason == "output_audio.done"
-    assert result.ptt_actions[2].reason == "first_output_audio_delta"
+    assert result.ptt_actions[2].reason == "audible_audio_energy"
     assert result.ptt_actions[3].reason in {"output_audio.done", "response.done"}
     assert ptt.closed is True
     assert result.reply_wav is not None
@@ -867,7 +940,7 @@ def test_supervised_cli_dry_ptt_without_transmit(monkeypatch, tmp_path, capsys):
     wav_path, frames = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
     out_path = tmp_path / "reply.wav"
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["voice_agent"]["backend"] = "grok_realtime"
+    data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
 
@@ -878,7 +951,7 @@ def test_supervised_cli_dry_ptt_without_transmit(monkeypatch, tmp_path, capsys):
             reply_wav=Wav(b"\x05\x00" * 32, REALTIME_PCM_RATE, 32 / REALTIME_PCM_RATE),
             output_transcript="dry reply",
             ptt_actions=(
-                PttAction("key", "first_output_audio_delta"),
+                PttAction("key", "audible_audio_energy"),
                 PttAction("unkey", "output_audio.done"),
             ),
         )
@@ -913,7 +986,7 @@ def test_supervised_cli_dry_ptt_without_transmit(monkeypatch, tmp_path, capsys):
 def test_supervised_cli_transmit_requires_supervised(tmp_path):
     wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["voice_agent"]["backend"] = "grok_realtime"
+    data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
     assert (
@@ -933,14 +1006,14 @@ def test_supervised_cli_transmit_requires_supervised(tmp_path):
     )
 
 
-# --- Talk routing: grok_realtime uses supervised TX; off keeps agent path ---
+# --- Talk routing: grok_realtime streams live audio; off keeps agent path ---
 
 
 def test_talk_routes_realtime_dry_ptt_without_agent(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["voice_agent"]["backend"] = "grok_realtime"
+    data["agent"]["backend"] = "grok_realtime"
     data["listening"]["mode"] = "wake_phrase"
     data["wake"]["primary"] = "charlotte"
     data["wake"]["aliases"] = []
@@ -951,23 +1024,42 @@ def test_talk_routes_realtime_dry_ptt_without_agent(monkeypatch, tmp_path, capsy
     listener.prepare = lambda self=None: None
     listener.transcribe = lambda pcm, rate: "charlotte what is rain"
 
-    called = {}
+    called = {"frames": 0}
 
-    def fake_supervised(config, pcm, rate, ptt, **kwargs):
-        called["ptt"] = type(ptt).__name__
-        called["allow_key"] = kwargs.get("allow_key")
-        called["instructions"] = kwargs.get("instructions")
-        assert pcm
-        assert rate == 24000
-        return SupervisedTxResult(
-            reply_wav=Wav(b"\x05\x00" * 32, REALTIME_PCM_RATE, 32 / REALTIME_PCM_RATE),
-            input_transcript="charlotte what is rain",
-            output_transcript="rain falls from clouds",
-            ptt_actions=(
-                PttAction("key", "first_output_audio_delta"),
-                PttAction("unkey", "output_audio.done"),
-            ),
-        )
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            called["config_backend"] = config.agent_backend
+
+        def warm(self, *, instructions=None):
+            called["warm_instructions"] = instructions
+
+        def on_frame(self, pcm, rate=None):
+            called["frames"] += 1
+            called["last_rate"] = rate
+
+        def on_reset(self):
+            called["reset"] = True
+
+        def clear_input(self):
+            called["cleared"] = True
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            called["ptt"] = type(ptt).__name__
+            called["allow_key"] = allow_key
+            called["committed"] = True
+            # Must not be driven by decision.traffic text.
+            return SupervisedTxResult(
+                reply_wav=Wav(b"\x05\x00" * 32, REALTIME_PCM_RATE, 32 / REALTIME_PCM_RATE),
+                input_transcript="charlotte what is rain",
+                output_transcript="rain falls from clouds",
+                ptt_actions=(
+                    PttAction("key", "audible_audio_energy"),
+                    PttAction("unkey", "output_audio.done"),
+                ),
+            )
+
+        def close(self):
+            called["closed"] = True
 
     monkeypatch.setattr(cli, "open_stt", lambda config: listener)
     monkeypatch.setattr(
@@ -976,7 +1068,18 @@ def test_talk_routes_realtime_dry_ptt_without_agent(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(
         cli, "open_tts", lambda *a, **k: pytest.fail("open_tts must not run without --transmit")
     )
-    monkeypatch.setattr(cli, "supervised_voice_check", fake_supervised)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(
+        cli,
+        "supervised_voice_check",
+        lambda *a, **k: pytest.fail("talk must not batch-upload utterance PCM for the question"),
+    )
+    if hasattr(cli, "supervised_text_turn"):
+        monkeypatch.setattr(
+            cli,
+            "supervised_text_turn",
+            lambda *a, **k: pytest.fail("talk must not send decision.traffic as input_text"),
+        )
     monkeypatch.setattr(
         cli,
         "SerialPTT",
@@ -1000,8 +1103,10 @@ def test_talk_routes_realtime_dry_ptt_without_agent(monkeypatch, tmp_path, capsy
     printed = capsys.readouterr().out
     assert called["ptt"] == "DryPTT"
     assert called["allow_key"] is True
-    assert called["instructions"]
-    assert "Voice agent: grok_realtime" in printed
+    assert called["committed"] is True
+    assert called["frames"] > 0
+    assert called.get("warm_instructions")
+    assert "Agent: grok_realtime" in printed
     assert "DryPTT" in printed
     assert "PTT actions:" in printed
     assert "Reply: rain falls from clouds" in printed
@@ -1010,7 +1115,7 @@ def test_talk_routes_realtime_dry_ptt_without_agent(monkeypatch, tmp_path, capsy
 def test_talk_backend_off_still_uses_agent(monkeypatch, tmp_path, capsys):
     wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    assert data["voice_agent"]["backend"] == "off"
+    assert data["agent"]["backend"] == "stub"
     data["listening"]["mode"] = "wake_phrase"
     data["wake"]["primary"] = "charlotte"
     data["wake"]["aliases"] = []
@@ -1027,6 +1132,11 @@ def test_talk_backend_off_still_uses_agent(monkeypatch, tmp_path, capsys):
         cli,
         "supervised_voice_check",
         lambda *a, **k: pytest.fail("supervised_voice_check must not run when backend off"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "RealtimeTalkSession",
+        lambda *a, **k: pytest.fail("RealtimeTalkSession must not run when backend off"),
     )
 
     assert (
@@ -1052,7 +1162,7 @@ def test_talk_realtime_transmit_uses_serial_ptt(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
     data = yaml.safe_load(Path("config.example.yaml").read_text())
-    data["voice_agent"]["backend"] = "grok_realtime"
+    data["agent"]["backend"] = "grok_realtime"
     data["listening"]["mode"] = "wake_phrase"
     data["wake"]["primary"] = "charlotte"
     data["wake"]["aliases"] = []
@@ -1074,24 +1184,49 @@ def test_talk_realtime_transmit_uses_serial_ptt(monkeypatch, tmp_path, capsys):
         def __init__(self, *a, **k):
             called["serial"] = True
 
-    def fake_supervised(config, pcm, rate, ptt, **kwargs):
-        called["ptt"] = type(ptt).__name__
-        assert kwargs.get("allow_key") is True
-        return SupervisedTxResult(
-            reply_wav=Wav(b"\x05\x00" * 16, REALTIME_PCM_RATE, 16 / REALTIME_PCM_RATE),
-            output_transcript="ok",
-            ptt_actions=(
-                PttAction("key", "first_output_audio_delta"),
-                PttAction("unkey", "output_audio.done"),
-            ),
-        )
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            pass
+
+        def warm(self, *, instructions=None):
+            pass
+
+        def on_frame(self, pcm, rate=None):
+            called["frames"] = called.get("frames", 0) + 1
+
+        def on_reset(self):
+            pass
+
+        def clear_input(self):
+            pass
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            called["ptt"] = type(ptt).__name__
+            assert allow_key is True
+            return SupervisedTxResult(
+                reply_wav=Wav(b"\x05\x00" * 16, REALTIME_PCM_RATE, 16 / REALTIME_PCM_RATE),
+                input_transcript="charlotte what is rain",
+                output_transcript="ok",
+                ptt_actions=(
+                    PttAction("key", "audible_audio_energy"),
+                    PttAction("unkey", "output_audio.done"),
+                ),
+            )
+
+        def close(self):
+            pass
 
     monkeypatch.setattr(cli, "open_stt", lambda config: listener)
     monkeypatch.setattr(cli, "open_tts", lambda config: voice)
     monkeypatch.setattr(
         cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run for realtime talk")
     )
-    monkeypatch.setattr(cli, "supervised_voice_check", fake_supervised)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(
+        cli,
+        "supervised_voice_check",
+        lambda *a, **k: pytest.fail("talk must not batch-upload utterance PCM for the question"),
+    )
     monkeypatch.setattr(cli, "SerialPTT", FakeSerial)
     monkeypatch.setattr(cli, "preflight", lambda *a, **k: None)
 
@@ -1111,5 +1246,749 @@ def test_talk_realtime_transmit_uses_serial_ptt(monkeypatch, tmp_path, capsys):
     )
     assert called.get("serial") is True
     assert called["ptt"] == "FakeSerial"
+    assert called.get("frames", 0) > 0
     printed = capsys.readouterr().out
     assert "Reply: ok" in printed
+
+
+def test_live_stream_appends_as_frames_arrive(monkeypatch):
+    """Appends happen during capture framing — not only after STT — and order is preserved."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    reply = loud_pcm(16)
+    transport = FakeTransport(
+        incoming=[
+            event("session.updated"),
+            event("input_audio_buffer.committed"),
+            event(OUTPUT_AUDIO_DELTA, delta=base64.b64encode(reply).decode("ascii")),
+            event(OUTPUT_AUDIO_DONE),
+            event(RESPONSE_DONE),
+        ]
+    )
+    session = RealtimeTalkSession(
+        realtime_config(settle_seconds=0), transport=transport, api_key="fake"
+    )
+    session.warm(instructions="brief")
+    pcm = b"\x10\x00" * 2400  # 100 ms at 24 kHz
+    counts = stream_pcm_frames_for_tests(session, pcm, REALTIME_PCM_RATE)
+    assert counts
+    assert counts[-1] > 0
+    assert all(counts[i] <= counts[i + 1] for i in range(len(counts) - 1))
+    # Mid-stream appends already happened before commit.
+    mid_types = [json.loads(item)["type"] for item in transport.sent]
+    assert mid_types.count("input_audio_buffer.append") >= 2
+    assert "input_audio_buffer.commit" not in mid_types
+    ptt = FakePTT()
+    result = session.commit_and_respond(ptt, allow_key=True, play_segment=lambda *a: None)
+    payloads = [json.loads(item) for item in transport.sent]
+    types = [item["type"] for item in payloads]
+    assert "input_audio_buffer.commit" in types
+    assert "response.create" in types
+    assert not any(
+        item["type"] == "conversation.item.create"
+        and item.get("item", {}).get("content", [{}])[0].get("type") == "input_text"
+        for item in payloads
+    )
+    assert result.ptt_actions[0].reason == "audible_audio_energy"
+    session.close()
+
+
+def test_live_stream_reject_clears_without_commit(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    transport = FakeTransport(
+        incoming=[
+            event("session.updated"),
+            event("input_audio_buffer.cleared"),
+        ]
+    )
+    session = RealtimeTalkSession(
+        realtime_config(settle_seconds=0), transport=transport, api_key="fake"
+    )
+    session.warm()
+    stream_pcm_frames_for_tests(session, b"\x10\x00" * 960, REALTIME_PCM_RATE)
+    session.clear_input()
+    types = [json.loads(item)["type"] for item in transport.sent]
+    assert "input_audio_buffer.append" in types
+    assert "input_audio_buffer.clear" in types
+    assert "input_audio_buffer.commit" not in types
+    assert "response.create" not in types
+    session.close()
+
+
+def test_collect_utterance_on_frame_orders_captured_audio():
+    from walkietalk.capture import collect_utterance, frames_from_pcm
+    from walkietalk.vad import frame_samples
+
+    rate = 16000
+    samples = frame_samples(rate)
+    silence = b"\x00\x00" * samples
+    speech = b"\x00\x40" * samples  # loud-ish
+    pcm = silence * 2 + speech * 20 + silence * 30
+    seen: list[bytes] = []
+    resets = []
+
+    utterance = collect_utterance(
+        frames_from_pcm(pcm, rate),
+        rate=rate,
+        energy_threshold=0.01,
+        hangover_ms=200,
+        max_utterance_seconds=12,
+        wait_deadline=None,
+        log=lambda _line: None,
+        on_frame=lambda chunk, r: seen.append(chunk),
+        on_reset=lambda: resets.append(1),
+    )
+    assert seen
+    assert b"".join(seen) == utterance.pcm
+    assert utterance.rate == rate
+
+
+
+
+def test_session_update_includes_web_search_tools_when_enabled(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", "test-key-not-real")
+    transport = FakeTransport(incoming=[event("session.updated")])
+    client = GrokRealtimeClient(
+        realtime_config(agent_web_search=True), transport=transport, api_key="test-key-not-real"
+    )
+
+    async def run():
+        await client.connect()
+        await client.session_update()
+        await client.close()
+
+    asyncio.run(run())
+    payload = json.loads(transport.sent[0])
+    assert payload["type"] == "session.update"
+    assert payload["session"]["tools"] == [{"type": "web_search"}]
+
+
+def test_session_update_omits_tools_when_web_search_false(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", "test-key-not-real")
+    transport = FakeTransport(incoming=[event("session.updated")])
+    client = GrokRealtimeClient(
+        realtime_config(agent_web_search=False), transport=transport, api_key="test-key-not-real"
+    )
+
+    async def run():
+        await client.connect()
+        await client.session_update()
+        await client.close()
+
+    asyncio.run(run())
+    payload = json.loads(transport.sent[0])
+    assert "tools" not in payload["session"]
+
+
+def test_speak_text_via_realtime_force_message(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    reply = loud_pcm(32)
+    transport = FakeTransport(
+        incoming=[
+            event("session.updated"),
+            event(OUTPUT_AUDIO_DELTA, delta=base64.b64encode(reply).decode("ascii")),
+            event(OUTPUT_AUDIO_DONE),
+            event(RESPONSE_DONE),
+        ]
+    )
+    ptt = FakePTT()
+    result = speak_text_via_realtime(
+        realtime_config(),
+        "Wake phrase received!",
+        ptt,
+        allow_key=True,
+        transport=transport,
+        api_key="test-key-not-real",
+        play_segment=lambda *a: None,
+    )
+    payloads = [json.loads(item) for item in transport.sent]
+    sent_types = [item["type"] for item in payloads]
+    assert "session.update" in sent_types
+    assert "conversation.item.create" in sent_types
+    assert "response.create" not in sent_types
+    force = next(item for item in payloads if item["type"] == "conversation.item.create")
+    assert force["item"]["type"] == "force_message"
+    assert force["item"]["content"][0]["text"] == "Wake phrase received!"
+    session = next(item["session"] for item in payloads if item["type"] == "session.update")
+    assert "tools" not in session
+    assert result.ptt_actions[0].reason == "audible_audio_energy"
+    assert ptt.actions.count("on") == 1
+
+
+def test_create_user_text_message_payload(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", "test-key-not-real")
+    transport = FakeTransport(incoming=[event("session.updated")])
+    client = GrokRealtimeClient(
+        realtime_config(), transport=transport, api_key="test-key-not-real"
+    )
+
+    async def run():
+        await client.connect()
+        await client.create_user_text_message("what is rain")
+        await client.close()
+
+    asyncio.run(run())
+    payloads = [json.loads(item) for item in transport.sent]
+    create = next(item for item in payloads if item["type"] == "conversation.item.create")
+    assert create["item"]["type"] == "message"
+    assert create["item"]["role"] == "user"
+    assert create["item"]["content"] == [{"type": "input_text", "text": "what is rain"}]
+
+
+def test_supervised_text_turn_sends_text_not_audio(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    reply = loud_pcm(32)
+    transport = FakeTransport(
+        incoming=[
+            event("session.updated"),
+            event(OUTPUT_AUDIO_DELTA, delta=base64.b64encode(reply).decode("ascii")),
+            event(OUTPUT_AUDIO_DONE),
+            event(RESPONSE_DONE),
+        ]
+    )
+    ptt = FakePTT()
+    result = supervised_text_turn(
+        realtime_config(settle_seconds=0),
+        "what is rain",
+        ptt,
+        allow_key=True,
+        transport=transport,
+        api_key="fake-key",
+        play_segment=lambda *a: None,
+        instructions="be brief",
+    )
+    payloads = [json.loads(item) for item in transport.sent]
+    sent_types = [item["type"] for item in payloads]
+    assert "session.update" in sent_types
+    assert "conversation.item.create" in sent_types
+    assert "response.create" in sent_types
+    assert "input_audio_buffer.append" not in sent_types
+    assert "input_audio_buffer.commit" not in sent_types
+    create = next(item for item in payloads if item["type"] == "conversation.item.create")
+    assert create["item"]["type"] == "message"
+    assert create["item"]["role"] == "user"
+    assert create["item"]["content"][0]["type"] == "input_text"
+    assert create["item"]["content"][0]["text"] == "what is rain"
+    assert result.input_transcript == "what is rain"
+    assert result.ptt_actions[0].reason == "audible_audio_energy"
+    assert result.reply_wav is not None
+
+
+def test_supervised_voice_check_still_uploads_audio(monkeypatch):
+    """voice-agent-check / offline WAV-in path keeps append+commit audio upload."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    transport = FakeTransport(
+        incoming=[
+            event("session.updated"),
+            event("input_audio_buffer.committed"),
+            event(
+                OUTPUT_AUDIO_DELTA,
+                delta=base64.b64encode(loud_pcm(16)).decode("ascii"),
+            ),
+            event(OUTPUT_AUDIO_DONE),
+            event(RESPONSE_DONE),
+        ]
+    )
+    ptt = FakePTT()
+    result = supervised_voice_check(
+        realtime_config(settle_seconds=0),
+        b"\x10\x00" * 2400,
+        24000,
+        ptt,
+        allow_key=True,
+        transport=transport,
+        api_key="fake-key",
+        play_segment=lambda *a: None,
+    )
+    payloads = [json.loads(item) for item in transport.sent]
+    sent_types = [item["type"] for item in payloads]
+    assert "input_audio_buffer.append" in sent_types
+    assert "input_audio_buffer.commit" in sent_types
+    assert not any(
+        item["type"] == "conversation.item.create"
+        and item.get("item", {}).get("content", [{}])[0].get("type") == "input_text"
+        for item in payloads
+    )
+    assert result.reply_wav is not None
+
+
+# --- In-window: shutdown gate before commit; armed never commits ---
+
+
+def test_talk_in_window_commits_after_shutdown_gate_stt(monkeypatch, tmp_path, capsys):
+    """In-window + not armed: await STT for shutdown.decide, then commit; STT text is not traffic."""
+    import time as time_mod
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "conversation"
+    data["listening"]["conversation_timeout_seconds"] = 60
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    data["shutdown"]["enabled"] = True
+    data["shutdown"]["phrase"] = "bird"
+    data["shutdown"]["code"] = "seven"
+    data["shutdown"]["arm_confirmation_phrase"] = "Armed."
+    data["shutdown"]["confirmation_phrase"] = "Shutting down."
+    config_path = write_config(tmp_path, data)
+
+    order: list[str] = []
+    called: dict = {"frames": 0}
+
+    def transcribe(pcm, rate):
+        order.append("stt")
+        return "what about rain"
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = transcribe
+
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            pass
+
+        def warm(self, *, instructions=None):
+            called["warm"] = True
+
+        def on_frame(self, pcm, rate=None):
+            called["frames"] += 1
+
+        def on_reset(self):
+            pass
+
+        def clear_input(self):
+            order.append("clear")
+            called["cleared"] = True
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            order.append("commit")
+            called["ptt"] = type(ptt).__name__
+            called["committed_after_stt"] = "stt" in order
+            return SupervisedTxResult(
+                reply_wav=Wav(b"\x05\x00" * 16, REALTIME_PCM_RATE, 16 / REALTIME_PCM_RATE),
+                input_transcript="(realtime)",
+                output_transcript="rain continues",
+                ptt_actions=(
+                    PttAction("key", "audible_audio_energy"),
+                    PttAction("unkey", "output_audio.done"),
+                ),
+            )
+
+        def close(self):
+            called["closed"] = True
+
+    gate = ListeningSession(load_config(config_path), clock=time_mod.monotonic)
+    gate.awake_until = time_mod.monotonic() + 3600
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run for realtime talk")
+    )
+    monkeypatch.setattr(
+        cli, "open_tts", lambda *a, **k: pytest.fail("open_tts must not run without --transmit")
+    )
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(cli, "ListeningSession", lambda config: gate)
+    monkeypatch.setattr(
+        cli,
+        "supervised_voice_check",
+        lambda *a, **k: pytest.fail("talk must not batch-upload utterance PCM"),
+    )
+    if hasattr(cli, "supervised_text_turn"):
+        monkeypatch.setattr(
+            cli,
+            "supervised_text_turn",
+            lambda *a, **k: pytest.fail("talk must not send traffic as input_text"),
+        )
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    assert order == ["stt", "commit"]
+    assert called.get("committed_after_stt") is True
+    assert called["ptt"] == "DryPTT"
+    assert called["frames"] > 0
+    printed = capsys.readouterr().out
+    assert "Accepted (follow-up)" in printed
+    assert "live-streamed; local STT used for shutdown gate only" in printed
+    # STT text may be logged as transcript, but must not be treated as agent traffic input.
+    assert "Traffic: what about rain" not in printed
+
+
+def test_talk_in_window_armed_code_confirms_without_commit(monkeypatch, tmp_path, capsys):
+    """Armed + follow-up open + code utterance → confirmed; zero commit_and_respond."""
+    import time as time_mod
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "code.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "conversation"
+    data["listening"]["conversation_timeout_seconds"] = 60
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    data["shutdown"]["enabled"] = True
+    data["shutdown"]["phrase"] = "bird"
+    data["shutdown"]["phrase_aliases"] = []
+    data["shutdown"]["code"] = "seven"
+    data["shutdown"]["code_aliases"] = ["7"]
+    data["shutdown"]["confirmation_seconds"] = 30
+    data["shutdown"]["arm_confirmation_phrase"] = "Armed."
+    data["shutdown"]["confirmation_phrase"] = "Shutting down."
+    config_path = write_config(tmp_path, data)
+    cfg = load_config(config_path)
+
+    order: list[str] = []
+    called: dict = {"commits": 0, "clears": 0}
+
+    def transcribe(pcm, rate):
+        order.append("stt")
+        return "seven"
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = transcribe
+
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            pass
+
+        def warm(self, *, instructions=None):
+            pass
+
+        def on_frame(self, pcm, rate=None):
+            pass
+
+        def on_reset(self):
+            pass
+
+        def clear_input(self):
+            order.append("clear")
+            called["clears"] += 1
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            order.append("commit")
+            called["commits"] += 1
+            pytest.fail("commit_and_respond must not run while shutdown is armed")
+
+        def close(self):
+            pass
+
+    gate = ListeningSession(cfg, clock=time_mod.monotonic)
+    gate.awake_until = time_mod.monotonic() + 3600
+
+    from walkietalk.shutdown import ShutdownSession
+
+    shutdown = ShutdownSession(cfg, clock=time_mod.monotonic)
+    assert shutdown.decide("bird", time_mod.monotonic()).kind == "armed"
+    assert shutdown.is_armed is True
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(cli, "ListeningSession", lambda config: gate)
+    monkeypatch.setattr(cli, "ShutdownSession", lambda config, clock=None: shutdown)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run")
+    )
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
+    if hasattr(cli, "supervised_text_turn"):
+        monkeypatch.setattr(
+            cli,
+            "supervised_text_turn",
+            lambda *a, **k: pytest.fail("must not send code as input_text"),
+        )
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    assert called["commits"] == 0
+    assert "commit" not in order
+    assert order == ["stt", "clear"]
+    assert called["clears"] >= 1
+    assert shutdown.is_armed is False
+    printed = capsys.readouterr().out
+    assert "Shutdown confirmed" in printed
+    assert "Accepted (follow-up)" not in printed
+
+
+def test_talk_in_window_phrase_arms_without_commit(monkeypatch, tmp_path, capsys):
+    """In-window shutdown phrase arms and clears input; never commit_and_respond."""
+    import time as time_mod
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "phrase.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "conversation"
+    data["listening"]["conversation_timeout_seconds"] = 60
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    data["shutdown"]["enabled"] = True
+    data["shutdown"]["phrase"] = "bird"
+    data["shutdown"]["phrase_aliases"] = []
+    data["shutdown"]["code"] = "seven"
+    data["shutdown"]["code_aliases"] = []
+    data["shutdown"]["confirmation_seconds"] = 30
+    data["shutdown"]["arm_confirmation_phrase"] = "Armed."
+    data["shutdown"]["confirmation_phrase"] = "Shutting down."
+    config_path = write_config(tmp_path, data)
+
+    order: list[str] = []
+    called: dict = {"commits": 0}
+
+    def transcribe(pcm, rate):
+        order.append("stt")
+        return "bird"
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = transcribe
+
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            pass
+
+        def warm(self, *, instructions=None):
+            pass
+
+        def on_frame(self, pcm, rate=None):
+            pass
+
+        def on_reset(self):
+            pass
+
+        def clear_input(self):
+            order.append("clear")
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            order.append("commit")
+            called["commits"] += 1
+            pytest.fail("commit_and_respond must not run for shutdown phrase")
+
+        def close(self):
+            pass
+
+    gate = ListeningSession(load_config(config_path), clock=time_mod.monotonic)
+    gate.awake_until = time_mod.monotonic() + 3600
+    shutdown_holder: dict = {}
+
+    real_shutdown = cli.ShutdownSession
+
+    def capture_shutdown(config, clock=None):
+        shutdown_holder["s"] = real_shutdown(config, clock=clock or time_mod.monotonic)
+        return shutdown_holder["s"]
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(cli, "ListeningSession", lambda config: gate)
+    monkeypatch.setattr(cli, "ShutdownSession", capture_shutdown)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run")
+    )
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    assert called["commits"] == 0
+    assert "commit" not in order
+    assert order == ["stt", "clear"]
+    assert shutdown_holder["s"].is_armed is True
+    printed = capsys.readouterr().out
+    assert "Shutdown armed" in printed
+    assert "Accepted (follow-up)" not in printed
+
+
+def test_talk_cold_wake_still_gates_on_stt(monkeypatch, tmp_path, capsys):
+    """Cold / waiting_for_wake: STT must finish before commit; reject without wake clears input."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "conversation"
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    data["shutdown"]["enabled"] = False
+    config_path = write_config(tmp_path, data)
+
+    order: list[str] = []
+    called: dict = {"frames": 0}
+
+    def transcribe(pcm, rate):
+        order.append("stt")
+        return "hello there"  # no wake phrase
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = transcribe
+
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            pass
+
+        def warm(self, *, instructions=None):
+            pass
+
+        def on_frame(self, pcm, rate=None):
+            called["frames"] += 1
+
+        def on_reset(self):
+            pass
+
+        def clear_input(self):
+            order.append("clear")
+            called["cleared"] = True
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            order.append("commit")
+            called["committed"] = True
+            return SupervisedTxResult(
+                reply_wav=Wav(b"\x05\x00" * 8, REALTIME_PCM_RATE, 8 / REALTIME_PCM_RATE),
+                input_transcript="x",
+                output_transcript="y",
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run for realtime talk")
+    )
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    assert "stt" in order
+    assert "commit" not in order
+    assert called.get("cleared") is True
+    assert order.index("stt") < order.index("clear")
+    printed = capsys.readouterr().out
+    assert "Transcribing..." in printed
+    assert "Ignored" in printed or "wake" in printed.lower()
+
+
+def test_talk_cold_wake_accept_commits_after_stt(monkeypatch, tmp_path, capsys):
+    """Cold wake with phrase: STT gates accept; then commit once (no second STT wait)."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
+    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data["agent"]["backend"] = "grok_realtime"
+    data["listening"]["mode"] = "wake_phrase"
+    data["wake"]["primary"] = "charlotte"
+    data["wake"]["aliases"] = []
+    data["shutdown"]["enabled"] = False
+    config_path = write_config(tmp_path, data)
+
+    order: list[str] = []
+    stt_calls = {"n": 0}
+
+    def transcribe(pcm, rate):
+        stt_calls["n"] += 1
+        order.append("stt")
+        return "charlotte what is rain"
+
+    listener = type("L", (), {})()
+    listener.label = lambda self=None: "fake-stt"
+    listener.prepare = lambda self=None: None
+    listener.transcribe = transcribe
+
+    class FakeSession:
+        def __init__(self, config, **kwargs):
+            pass
+
+        def warm(self, *, instructions=None):
+            pass
+
+        def on_frame(self, pcm, rate=None):
+            pass
+
+        def on_reset(self):
+            pass
+
+        def clear_input(self):
+            order.append("clear")
+
+        def commit_and_respond(self, ptt, *, allow_key, play_segment=None):
+            order.append("commit")
+            return SupervisedTxResult(
+                reply_wav=Wav(b"\x05\x00" * 8, REALTIME_PCM_RATE, 8 / REALTIME_PCM_RATE),
+                input_transcript="charlotte what is rain",
+                output_transcript="clouds",
+                ptt_actions=(PttAction("key", "audible_audio_energy"),),
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "open_stt", lambda config: listener)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
+    monkeypatch.setattr(
+        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run")
+    )
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
+
+    assert (
+        cli.main(
+            [
+                "-c",
+                str(config_path),
+                "--no-env-file",
+                "talk",
+                str(wav_path),
+                "--once",
+            ]
+        )
+        == 0
+    )
+    assert stt_calls["n"] == 1
+    assert order == ["stt", "commit"]
+    assert "Transcribing..." in capsys.readouterr().out

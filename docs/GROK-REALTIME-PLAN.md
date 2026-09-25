@@ -1,11 +1,11 @@
 # Grok Voice speech-to-speech plan
 
-**Status: Phases 1–3 + talk wiring** (`voice_agent.backend: grok_realtime` schema/
-client, offline `voice-agent-check`, parent-owned supervised TX with
-`--supervised` / `--transmit`, and live `talk` routing when backend is
-`grok_realtime`: STT still gates wake/shutdown; accepted turns use realtime
-instead of agent→TTS; DryPTT without `--transmit`). Live on-air `--transmit`
-demonstration is still pending until Brad/Boss greenlights SerialPTT.
+**Status: Phases 1–3 + live speech-to-speech talk** (`agent.backend: grok_realtime`
+schema/client, offline `voice-agent-check`, parent-owned supervised TX, and live
+`talk` that streams mic/WAV frames into a warm realtime session during capture;
+STT gates wake/shutdown only; accepted turns `commit`+`response.create` — not
+`decision.traffic` as `input_text` / TTS). DryPTT without `--transmit`. Live
+on-air `--transmit` demonstration still pending Brad/Boss SerialPTT greenlight.
 
 This optional path would **not** replace:
 
@@ -63,7 +63,7 @@ stays unchanged.
 
 ## Adapter shape
 
-The combined **voice agent** backend kind is **`voice_agent.backend:
+The combined **voice agent** backend kind is **`agent.backend:
 grok_realtime`** (default `off`). It is not a silent substitute stuffed into the
 existing `stt` / `agent` / `tts` slots.
 
@@ -82,7 +82,7 @@ configured.
 
 Expect explicit developer API credentials for Speech to Speech:
 
-- `XAI_API_KEY` via `voice_agent.api_key_env` (same billed console key as `grok_api`)
+- `XAI_API_KEY` via `agent.realtime.api_key_env` (same billed console key as `grok_api`)
 - Console API credits; Speech to Speech is billed separately from text models
   (about **$0.08 per minute** of audio at the published Voice pricing table —
   confirm against current docs before any live check)
@@ -141,7 +141,7 @@ This documentation change does **not**:
 
 Follow the existing one-phase-per-PR teaching workflow:
 
-- [x] **Schema + fake WebSocket tests** — `voice_agent.backend: grok_realtime`,
+- [x] **Schema + fake WebSocket tests** — `agent.backend: grok_realtime`,
       `XAI_API_KEY`, failure contract, and automated fake-transport coverage with
       no live credits (`tests/test_grok_realtime.py`)
 - [x] **Offline capture path** — `voice-agent-check` WAV/`--capture` in →
@@ -151,7 +151,7 @@ Follow the existing one-phase-per-PR teaching workflow:
       `voice-agent-check --supervised` (DryPTT) / `--transmit` (SerialPTT);
       fake-PTT tests cover key/unkey/tool-gap/TX cap. **Live demonstration
       checklist still pending** (no live API or on-air pass in this PR yet).
-- [x] **Talk routing** — when `voice_agent.backend: grok_realtime`, `talk`
+- [x] **Talk routing** — when `agent.backend: grok_realtime`, `talk`
       keeps STT wake/shutdown gates and routes accepted turns through
       `supervised_voice_check` (DryPTT without `--transmit`). Serial path
       unchanged when backend is `off`.
@@ -165,7 +165,7 @@ separately before claiming the integration is verified.
 Do **not** run until Brad/Boss greenlights and `XAI_API_KEY` is available on the
 operator machine. CI and agents must not burn credits.
 
-1. Config: `voice_agent.backend: grok_realtime`, devices/PTT set, credentials.env has `XAI_API_KEY`.
+1. Config: `agent.backend: grok_realtime`, devices/PTT set, credentials.env has `XAI_API_KEY`.
 2. Dry supervised (no SerialPTT):  
    `walkietalk -c CONFIG voice-agent-check UTTERANCE.wav --output dry-reply.wav --supervised`  
    Expect DryPTT ON/OFF around audio bursts; reply WAV written.

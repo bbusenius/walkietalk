@@ -1,6 +1,7 @@
 """The parent owns PTT and the deadline; a child handles blocking audio I/O."""
 
 import signal
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -21,6 +22,11 @@ def handle_stop_signals():
 
 @contextmanager
 def uninterrupted_cleanup():
+    # signal.signal only works on the main thread; live realtime talk may
+    # finish supervised PTT from the warm-session worker thread.
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
     previous = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         yield

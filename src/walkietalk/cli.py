@@ -22,7 +22,13 @@ from .shutdown import ShutdownSession
 from .stt import ensure_model, model_ready, model_size_bytes, open_stt
 from .term import capture_log, emit
 from .tts import open_tts, radio_wav, write_wav
-from .voice_agent_tx import play_segment_dry, play_segment_via_playback, supervised_voice_check
+from .voice_agent_tx import (
+    RealtimeTalkSession,
+    play_segment_dry,
+    play_segment_via_playback,
+    speak_text_via_realtime,
+    supervised_voice_check,
+)
 from .wake import ListeningSession
 
 
@@ -190,6 +196,103 @@ def listen_command(args: argparse.Namespace) -> None:
     emit("transcript", f"Transcript: {text}")
 
 
+
+def _handle_shutdown_control(
+    control,
+    *,
+    session: ListeningSession,
+    shutdown: ShutdownSession,
+    talk_realtime: RealtimeTalkSession | None,
+    config: Config,
+    voice,
+    realtime: bool,
+    transmit: bool,
+) -> str:
+    """Apply a non-none shutdown decision. Returns 'return', 'continue', or 'fallthrough'."""
+    session.close()
+    if talk_realtime is not None:
+        talk_realtime.clear_input()
+    # Never print the code or send control traffic into agent context.
+    emit("status", control.message)
+    if control.kind == "confirmed":
+        speak_shutdown_confirmation(config, voice, realtime=realtime, transmit=transmit)
+        return "return"
+    if control.kind == "armed":
+        spoken = acknowledge(
+            config,
+            voice,
+            config.shutdown_arm_confirmation_phrase,
+            preparing=(
+                "Speaking shutdown phrase confirmation; PTT off until speech is ready..."
+            ),
+            failed="Shutdown phrase confirmation failed",
+            finished="Shutdown phrase confirmation finished; PTT released.",
+            realtime=realtime,
+            transmit=transmit,
+        )
+        if spoken == "spoken":
+            wait_post_tx_mute(config)
+        elif spoken == "failed":
+            emit(
+                "status",
+                "Still armed; the phrase confirmation was not transmitted.",
+            )
+    return "continue"
+
+
+def _realtime_commit_reply(
+    *,
+    talk_realtime: RealtimeTalkSession,
+    config: Config,
+    args: argparse.Namespace,
+    session: ListeningSession,
+) -> bool:
+    """Commit already-streamed audio and emit result lines. False => recoverable fail."""
+    try:
+        emit(
+            "status",
+            "Realtime voice turn (live-streamed audio commit); parent owns PTT...",
+        )
+        if args.transmit:
+            ptt = SerialPTT(config.serial_port, config.line)
+
+            def play(pcm, rate, deadline):
+                play_segment_via_playback(config, pcm, rate, deadline)
+
+        else:
+            ptt = DryPTT()
+            play = play_segment_dry
+        # Audio was already streamed during capture. Commit + respond.
+        # Do NOT send decision.traffic as input_text; STT is gate-only.
+        result = talk_realtime.commit_and_respond(
+            ptt,
+            allow_key=True,
+            play_segment=play,
+        )
+    except (WalkietalkError, OSError) as exc:
+        if args.once or args.wav is not None:
+            raise
+        emit("error", f"Voice agent failed: {exc}", file=sys.stderr)
+        emit("status", "Still listening; say the wake phrase and try again.")
+        return False
+    if result.input_transcript:
+        emit("transcript", f"Heard: {result.input_transcript}")
+    if result.output_transcript:
+        emit("reply", f"Reply: {result.output_transcript}")
+    elif result.reply_wav is None:
+        emit("warn", "Voice agent returned no spoken audio; no stt/agent/tts fallback.")
+    if result.ptt_actions:
+        summary = ", ".join(f"{item.kind}:{item.reason}" for item in result.ptt_actions)
+        emit("status", f"PTT actions: {summary}")
+    if result.truncated_by_tx_cap:
+        emit("warn", "TX duration cap truncated supervised playback.")
+    if args.transmit:
+        wait_post_tx_mute(config)
+    session.complete_turn()
+    emit("status", session.status_line())
+    return True
+
+
 def talk_command(args: argparse.Namespace) -> None:
     if args.capture and args.wav is not None:
         raise WalkietalkError("Use either a WAV file or --capture, not both")
@@ -198,7 +301,7 @@ def talk_command(args: argparse.Namespace) -> None:
     if (args.capture or args.transmit) and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
-    realtime = config.voice_agent_backend == "grok_realtime"
+    realtime = config.agent_backend == "grok_realtime"
     session = ListeningSession(config)
     shutdown = ShutdownSession(config)
     callsigns = CallsignSession(config, time.monotonic)
@@ -222,23 +325,28 @@ def talk_command(args: argparse.Namespace) -> None:
     if realtime:
         emit(
             "status",
-            f"Voice agent: grok_realtime ({config.voice_agent_model}); "
-            "STT gates wake/shutdown; replies use realtime (not agent/tts)",
+            f"Agent: grok_realtime ({config.agent_realtime_model}); "
+            "STT gates wake/shutdown; replies and acks use realtime (not text agent/tts)",
         )
     else:
         emit("status", f"Agent: {agent.label()}")
     voice = None
     if args.transmit:
-        voice = open_tts(config)
-        voice.prepare()  # Missing engine/model fails before any agent request or serial open.
-        emit("status", f"Voice: {voice.label()}")
         if realtime:
             emit(
                 "status",
-                "Radio replies via parent-owned realtime TX; "
-                "PTT stays off until the first AI audio delta.",
+                "Radio replies and acks via parent-owned realtime TX; "
+                "PTT stays off until audible AI audio energy.",
+            )
+            emit(
+                "status",
+                f"Realtime voice: {config.agent_realtime_voice} "
+                f"({config.agent_realtime_model}); TTS not used.",
             )
         else:
+            voice = open_tts(config)
+            voice.prepare()  # Missing engine/model fails before any agent request or serial open.
+            emit("status", f"Voice: {voice.label()}")
             emit(
                 "status",
                 "Radio replies enabled; PTT stays off until speech and playback are ready.",
@@ -276,206 +384,266 @@ def talk_command(args: argparse.Namespace) -> None:
         if args.transmit and config.shutdown_confirmation_phrase:
             notice += " After the code, the confirmation phrase is spoken before exit."
         emit("status", notice)
-    while True:
-        emit("status", session.status_line())
+    talk_realtime: RealtimeTalkSession | None = None
+    if realtime:
+        talk_realtime = RealtimeTalkSession(config)
+        talk_realtime.warm(instructions=render_guidance(config, spoken=True))
+        emit(
+            "status",
+            "Realtime session warm; capture streams into the voice agent live "
+            "(STT gates wake/shutdown only).",
+        )
+    try:
+        while True:
+            emit("status", session.status_line())
 
-        def on_wait() -> None:
-            shutdown_message = shutdown.expire_if_needed()
-            if shutdown_message:
-                emit("warn", shutdown_message)
-            message = session.expire_if_needed()
-            if message:
-                emit("warn", message)
-                emit("status", session.status_line())
+            def on_wait() -> None:
+                shutdown_message = shutdown.expire_if_needed()
+                if shutdown_message:
+                    emit("warn", shutdown_message)
+                message = session.expire_if_needed()
+                if message:
+                    emit("warn", message)
+                    emit("status", session.status_line())
 
-        if args.capture:
-            utterance = capture_from_device(
-                config.input_device, config, wait, log=capture_log, on_wait=on_wait
-            )
-        else:
-            utterance = capture_from_wav(args.wav, config, log=capture_log)
-            emit("meter", f"Preparing {listener.label()}...")
-            listener.prepare()
-        emit("meter", "Transcribing...")
-        try:
-            text = listener.transcribe(utterance.pcm, utterance.rate)
-        except (WalkietalkError, OSError) as exc:
-            if once:
-                raise
-            session.close()
-            shutdown.close()
-            emit("error", f"Transcription failed: {exc}", file=sys.stderr)
-            emit(
-                "status", "Still listening; shutdown cancelled. Say the wake phrase and try again."
-            )
-            continue
-        started = utterance.started_at if utterance.started_at is not None else time.monotonic()
-        control = shutdown.decide(text, started)
-        if control.kind != "none":
-            session.close()
-            # Never print the code or send control traffic into agent context.
-            emit("status", control.message)
-            if control.kind == "confirmed":
-                speak_shutdown_confirmation(config, voice)
-                return
-            if control.kind == "armed":
+            stream_frame = talk_realtime.on_frame if talk_realtime is not None else None
+            stream_reset = talk_realtime.on_reset if talk_realtime is not None else None
+            if args.capture:
+                utterance = capture_from_device(
+                    config.input_device,
+                    config,
+                    wait,
+                    log=capture_log,
+                    on_wait=on_wait,
+                    on_frame=stream_frame,
+                    on_reset=stream_reset,
+                )
+            else:
+                utterance = capture_from_wav(
+                    args.wav,
+                    config,
+                    log=capture_log,
+                    on_frame=stream_frame,
+                    on_reset=stream_reset,
+                )
+                emit("meter", f"Preparing {listener.label()}...")
+                listener.prepare()
+            started = utterance.started_at if utterance.started_at is not None else time.monotonic()
+            # In-window grok_realtime: live audio is already on the warm WS, but shutdown
+            # must be decided from local STT *before* any commit. While armed, never commit.
+            if realtime and session.follow_up_open_at(started):
+                assert talk_realtime is not None
+                if shutdown.is_armed:
+                    emit(
+                        "status",
+                        "Shutdown armed; awaiting local STT for confirmation "
+                        "(no live-audio commit while armed).",
+                    )
+                else:
+                    emit(
+                        "status",
+                        "Follow-up window open; local STT for shutdown gate, "
+                        "then commit live audio if clear.",
+                    )
+                try:
+                    text = listener.transcribe(utterance.pcm, utterance.rate)
+                except (WalkietalkError, OSError) as exc:
+                    if once:
+                        raise
+                    session.close()
+                    shutdown.close()
+                    talk_realtime.clear_input()
+                    emit("error", f"Transcription failed: {exc}", file=sys.stderr)
+                    emit(
+                        "status",
+                        "Still listening; shutdown cancelled. Say the wake phrase and try again.",
+                    )
+                    continue
+                control = shutdown.decide(text, started)
+                if control.kind != "none":
+                    action = _handle_shutdown_control(
+                        control,
+                        session=session,
+                        shutdown=shutdown,
+                        talk_realtime=talk_realtime,
+                        config=config,
+                        voice=voice,
+                        realtime=realtime,
+                        transmit=args.transmit,
+                    )
+                    if action == "return":
+                        return
+                    if once:
+                        return
+                    continue
+                # decide() returned none: not a shutdown phrase/code. Commit live audio.
+                # Do not send local STT text as input_text / agent traffic.
+                emit("accepted", "Accepted (follow-up).")
+                emit(
+                    "accepted",
+                    "Traffic: (live-streamed; local STT used for shutdown gate only)",
+                )
+                if text:
+                    emit("transcript", f"Transcript: {text}")
+                # Eligibility uses speech start time. Close the old window while working.
+                session.close()
+                if not _realtime_commit_reply(
+                    talk_realtime=talk_realtime,
+                    config=config,
+                    args=args,
+                    session=session,
+                ):
+                    continue
+                if once:
+                    return
+                continue
+            # Cold wake / non-realtime: STT still required before accept.
+            emit("meter", "Transcribing...")
+            try:
+                text = listener.transcribe(utterance.pcm, utterance.rate)
+            except (WalkietalkError, OSError) as exc:
+                if once:
+                    raise
+                session.close()
+                shutdown.close()
+                emit("error", f"Transcription failed: {exc}", file=sys.stderr)
+                emit(
+                    "status", "Still listening; shutdown cancelled. Say the wake phrase and try again."
+                )
+                continue
+            control = shutdown.decide(text, started)
+            if control.kind != "none":
+                action = _handle_shutdown_control(
+                    control,
+                    session=session,
+                    shutdown=shutdown,
+                    talk_realtime=talk_realtime,
+                    config=config,
+                    voice=voice,
+                    realtime=realtime,
+                    transmit=args.transmit,
+                )
+                if action == "return":
+                    return
+                if once:
+                    return
+                continue
+            if not text:
+                emit("ignored", "Ignored (empty transcript). Window unchanged.")
+                if talk_realtime is not None:
+                    talk_realtime.clear_input()
+                if once:
+                    return
+                continue
+            emit("transcript", f"Transcript: {text}")
+            decision = session.decide(text, started)
+            if decision.kind == "wake_only":
+                emit("status", decision.message)
+                if talk_realtime is not None:
+                    talk_realtime.clear_input()
                 spoken = acknowledge(
                     config,
                     voice,
-                    config.shutdown_arm_confirmation_phrase,
-                    preparing=(
-                        "Speaking shutdown phrase confirmation; PTT off until speech is ready..."
-                    ),
-                    failed="Shutdown phrase confirmation failed",
-                    finished="Shutdown phrase confirmation finished; PTT released.",
+                    config.wake_confirmation_phrase,
+                    preparing="Speaking wake confirmation; PTT off until speech is ready...",
+                    failed="Wake confirmation failed",
+                    finished="Wake confirmation finished; PTT released.",
+                    realtime=realtime,
+                    transmit=args.transmit,
                 )
                 if spoken == "spoken":
                     wait_post_tx_mute(config)
                 elif spoken == "failed":
-                    emit(
-                        "status",
-                        "Still armed; the phrase confirmation was not transmitted.",
-                    )
-            if once:
-                return
-            continue
-        if not text:
-            emit("ignored", "Ignored (empty transcript). Window unchanged.")
-            if once:
-                return
-            continue
-        emit("transcript", f"Transcript: {text}")
-        decision = session.decide(text, started)
-        if decision.kind == "wake_only":
-            emit("status", decision.message)
-            spoken = acknowledge(
-                config,
-                voice,
-                config.wake_confirmation_phrase,
-                preparing="Speaking wake confirmation; PTT off until speech is ready...",
-                failed="Wake confirmation failed",
-                finished="Wake confirmation finished; PTT released.",
-            )
-            if spoken == "spoken":
-                wait_post_tx_mute(config)
-            elif spoken == "failed":
-                emit("status", "Wake was received; the confirmation was not transmitted.")
-            session.complete_turn()
-            emit("status", session.status_line())
-        elif decision.accepted:
-            emit("accepted", decision.message)
-            emit("accepted", f"Traffic: {decision.traffic}")
-            # Eligibility is already decided using speech start time. Close the
-            # old window while working; failure/interruption must not reopen it.
-            session.close()
-            if realtime:
-                try:
-                    emit("status", "Realtime voice turn; parent owns PTT...")
-                    if args.transmit:
-                        ptt = SerialPTT(config.serial_port, config.line)
-
-                        def play(pcm, rate, deadline):
-                            play_segment_via_playback(config, pcm, rate, deadline)
-
-                    else:
-                        ptt = DryPTT()
-                        play = play_segment_dry
-                    result = supervised_voice_check(
-                        config,
-                        utterance.pcm,
-                        utterance.rate,
-                        ptt,
-                        allow_key=True,
-                        play_segment=play,
-                        instructions=render_guidance(config, spoken=True),
-                    )
-                except (WalkietalkError, OSError) as exc:
-                    if once:
-                        raise
-                    emit("error", f"Voice agent failed: {exc}", file=sys.stderr)
-                    emit("status", "Still listening; say the wake phrase and try again.")
-                    continue
-                if result.input_transcript:
-                    emit("transcript", f"Heard: {result.input_transcript}")
-                if result.output_transcript:
-                    emit("reply", f"Reply: {result.output_transcript}")
-                elif result.reply_wav is None:
-                    emit("warn", "Voice agent returned no spoken audio; no stt/agent/tts fallback.")
-                if result.ptt_actions:
-                    summary = ", ".join(f"{item.kind}:{item.reason}" for item in result.ptt_actions)
-                    emit("status", f"PTT actions: {summary}")
-                if result.truncated_by_tx_cap:
-                    emit("warn", "TX duration cap truncated supervised playback.")
-                if args.transmit:
-                    wait_post_tx_mute(config)
+                    emit("status", "Wake was received; the confirmation was not transmitted.")
                 session.complete_turn()
                 emit("status", session.status_line())
-            else:
-                previous_history = conversation.history
-                try:
-                    answer = conversation.reply(decision.traffic)
-                except (WalkietalkError, OSError) as exc:
-                    if once:
-                        raise
-                    emit("error", f"Agent failed: {exc}", file=sys.stderr)
-                    # Keep completed pairs, but never resume a failed remote turn.
-                    history = conversation.history
-                    conversation = new_conversation(open_agent(config))
-                    conversation.history = history
-                    emit("status", "Still listening; say the wake phrase and try again.")
-                    continue
-                if voice is not None:
+            elif decision.accepted:
+                emit("accepted", decision.message)
+                emit("accepted", f"Traffic: {decision.traffic}")
+                # Eligibility is already decided using speech start time. Close the
+                # old window while working; failure/interruption must not reopen it.
+                session.close()
+                if realtime:
+                    assert talk_realtime is not None
+                    if not _realtime_commit_reply(
+                        talk_realtime=talk_realtime,
+                        config=config,
+                        args=args,
+                        session=session,
+                    ):
+                        continue
+                else:
+                    previous_history = conversation.history
                     try:
-                        emit("status", "Generating speech; PTT off...")
-                        speech = radio_wav(voice.synthesize(answer), spoken_seconds, truncate=True)
+                        answer = conversation.reply(decision.traffic)
                     except (WalkietalkError, OSError) as exc:
-                        # A completed model reply that was never spoken is not radio history.
-                        conversation = new_conversation(open_agent(config))
-                        conversation.history = previous_history
                         if once:
                             raise
-                        emit("error", f"Speech failed: {exc}", file=sys.stderr)
+                        emit("error", f"Agent failed: {exc}", file=sys.stderr)
+                        # Keep completed pairs, but never resume a failed remote turn.
+                        history = conversation.history
+                        conversation = new_conversation(open_agent(config))
+                        conversation.history = history
                         emit("status", "Still listening; say the wake phrase and try again.")
                         continue
-                    transmissions = (speech,)
-                    ident = None
-                    if callsigns.due():
+                    if voice is not None:
                         try:
-                            emit("status", "Generating station ID; PTT off...")
-                            ident = radio_wav(
-                                voice.synthesize(config.callsign, truncate=False), spoken_seconds
-                            )
-                            transmissions = identification_transmissions(
-                                speech, ident, spoken_seconds
-                            )
+                            emit("status", "Generating speech; PTT off...")
+                            speech = radio_wav(voice.synthesize(answer), spoken_seconds, truncate=True)
                         except (WalkietalkError, OSError) as exc:
-                            ident = None
-                            emit("error", f"Station ID failed: {exc}", file=sys.stderr)
-                            emit("status", "Sending the answer without a station ID.")
-                    # Capture has closed before STT. It stays closed throughout synthesis/TX.
-                    # Hardware errors stop the loop after cleanup instead of retrying hardware.
-                    transmit_speech(transmissions[0], config)
-                    if len(transmissions) == 2:
-                        emit(
-                            "status",
-                            "Station ID needs a separate burst; PTT released between bursts.",
-                        )
-                        time.sleep(IDENT_GAP_SECONDS)
-                        transmit_speech(
-                            transmissions[1],
-                            config,
-                            finished="Station ID finished; PTT released.",
-                        )
-                    if ident is not None:
-                        callsigns.mark()
-                    wait_post_tx_mute(config)
-                emit("reply", f"Reply: {answer}")
-                session.complete_turn()
-                emit("status", session.status_line())
-        else:
-            emit("ignored", decision.message)
-        if once:
-            return
+                            # A completed model reply that was never spoken is not radio history.
+                            conversation = new_conversation(open_agent(config))
+                            conversation.history = previous_history
+                            if once:
+                                raise
+                            emit("error", f"Speech failed: {exc}", file=sys.stderr)
+                            emit("status", "Still listening; say the wake phrase and try again.")
+                            continue
+                        transmissions = (speech,)
+                        ident = None
+                        if callsigns.due():
+                            try:
+                                emit("status", "Generating station ID; PTT off...")
+                                ident = radio_wav(
+                                    voice.synthesize(config.callsign, truncate=False), spoken_seconds
+                                )
+                                transmissions = identification_transmissions(
+                                    speech, ident, spoken_seconds
+                                )
+                            except (WalkietalkError, OSError) as exc:
+                                ident = None
+                                emit("error", f"Station ID failed: {exc}", file=sys.stderr)
+                                emit("status", "Sending the answer without a station ID.")
+                        # Capture has closed before STT. It stays closed throughout synthesis/TX.
+                        # Hardware errors stop the loop after cleanup instead of retrying hardware.
+                        transmit_speech(transmissions[0], config)
+                        if len(transmissions) == 2:
+                            emit(
+                                "status",
+                                "Station ID needs a separate burst; PTT released between bursts.",
+                            )
+                            time.sleep(IDENT_GAP_SECONDS)
+                            transmit_speech(
+                                transmissions[1],
+                                config,
+                                finished="Station ID finished; PTT released.",
+                            )
+                        if ident is not None:
+                            callsigns.mark()
+                        wait_post_tx_mute(config)
+                    emit("reply", f"Reply: {answer}")
+                    session.complete_turn()
+                    emit("status", session.status_line())
+            else:
+                emit("ignored", decision.message)
+                if talk_realtime is not None:
+                    talk_realtime.clear_input()
+            if once:
+                return
+
+    finally:
+        if talk_realtime is not None:
+            talk_realtime.close()
 
 
 def wait_post_tx_mute(config: Config) -> None:
@@ -488,10 +656,41 @@ def wait_post_tx_mute(config: Config) -> None:
 
 
 def acknowledge(
-    config: Config, voice, text: str, *, preparing: str, failed: str, finished: str
+    config: Config,
+    voice,
+    text: str,
+    *,
+    preparing: str,
+    failed: str,
+    finished: str,
+    realtime: bool = False,
+    transmit: bool = False,
 ) -> str:
     """Return spoken, silent, or failed for speech generation; transmission errors raise."""
-    if voice is None or not text:
+    if not text:
+        return "silent"
+    if not transmit:
+        return "silent"
+    if realtime:
+        try:
+            emit("status", preparing)
+            ptt = SerialPTT(config.serial_port, config.line)
+
+            def play(pcm, rate, deadline):
+                play_segment_via_playback(config, pcm, rate, deadline)
+
+            result = speak_text_via_realtime(
+                config, text, ptt, allow_key=True, play_segment=play
+            )
+        except (WalkietalkError, OSError) as exc:
+            emit("error", f"{failed}: {exc}", file=sys.stderr)
+            return "failed"
+        if result.ptt_actions:
+            summary = ", ".join(f"{item.kind}:{item.reason}" for item in result.ptt_actions)
+            emit("status", f"PTT actions: {summary}")
+        emit("status", finished)
+        return "spoken"
+    if voice is None:
         return "silent"
     try:
         emit("status", preparing)
@@ -508,7 +707,9 @@ def acknowledge(
     return "spoken"
 
 
-def speak_shutdown_confirmation(config: Config, voice) -> None:
+def speak_shutdown_confirmation(
+    config: Config, voice, *, realtime: bool = False, transmit: bool = False
+) -> None:
     """Speak the code confirmation, then stop; transmission errors exit through main."""
     if (
         acknowledge(
@@ -518,6 +719,8 @@ def speak_shutdown_confirmation(config: Config, voice) -> None:
             preparing="Speaking shutdown confirmation; PTT off until speech is ready...",
             failed="Shutdown confirmation failed",
             finished="Shutdown confirmation finished; PTT released.",
+            realtime=realtime,
+            transmit=transmit,
         )
         == "failed"
     ):
@@ -573,18 +776,18 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
     if args.output.exists():
         raise WalkietalkError("Output file already exists; choose a new --output path")
     config = load_config(args.config) if args.config else Config()
-    if config.voice_agent_backend != "grok_realtime":
+    if config.agent_backend != "grok_realtime":
         raise WalkietalkError(
-            "voice-agent-check requires voice_agent.backend: grok_realtime; "
+            "voice-agent-check requires agent.backend: grok_realtime; "
             "it never falls back to stt/agent/tts"
         )
     wait = seconds(args.timeout, "timeout", maximum=600)
     if args.capture:
-        emit("meter", "Capturing one utterance for voice_agent...")
+        emit("meter", "Capturing one utterance for grok_realtime...")
         utterance = capture_from_device(config.input_device, config, wait, log=capture_log)
     else:
         utterance = capture_from_wav(args.wav, config, log=capture_log)
-    emit("status", f"Voice agent: grok_realtime ({config.voice_agent_model})")
+    emit("status", f"Agent: grok_realtime ({config.agent_realtime_model})")
     if not args.supervised:
         emit("status", "Offline voice-agent check: no PTT and no transmission.")
         result = offline_voice_check(config, utterance.pcm, utterance.rate)
@@ -656,7 +859,7 @@ def run(args: argparse.Namespace) -> None:
         print("Config OK. No hardware, network, or login checks performed.")
         print(
             f"Agent: {config.agent_backend}; STT: {config.stt_backend}; "
-            f"voice: {config.tts_backend}; voice_agent: {config.voice_agent_backend}"
+            f"TTS: {config.tts_backend}"
         )
         print(
             f"Listening: {config.listening_mode}; "
