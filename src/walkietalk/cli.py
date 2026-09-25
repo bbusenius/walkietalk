@@ -196,7 +196,6 @@ def listen_command(args: argparse.Namespace) -> None:
     emit("transcript", f"Transcript: {text}")
 
 
-
 def _handle_shutdown_control(
     control,
     *,
@@ -222,9 +221,7 @@ def _handle_shutdown_control(
             config,
             voice,
             config.shutdown_arm_confirmation_phrase,
-            preparing=(
-                "Speaking shutdown phrase confirmation; PTT off until speech is ready..."
-            ),
+            preparing=("Speaking shutdown phrase confirmation; PTT off until speech is ready..."),
             failed="Shutdown phrase confirmation failed",
             finished="Shutdown phrase confirmation finished; PTT released.",
             realtime=realtime,
@@ -508,7 +505,8 @@ def talk_command(args: argparse.Namespace) -> None:
                 shutdown.close()
                 emit("error", f"Transcription failed: {exc}", file=sys.stderr)
                 emit(
-                    "status", "Still listening; shutdown cancelled. Say the wake phrase and try again."
+                    "status",
+                    "Still listening; shutdown cancelled. Say the wake phrase and try again.",
                 )
                 continue
             control = shutdown.decide(text, started)
@@ -589,7 +587,9 @@ def talk_command(args: argparse.Namespace) -> None:
                     if voice is not None:
                         try:
                             emit("status", "Generating speech; PTT off...")
-                            speech = radio_wav(voice.synthesize(answer), spoken_seconds, truncate=True)
+                            speech = radio_wav(
+                                voice.synthesize(answer), spoken_seconds, truncate=True
+                            )
                         except (WalkietalkError, OSError) as exc:
                             # A completed model reply that was never spoken is not radio history.
                             conversation = new_conversation(open_agent(config))
@@ -605,7 +605,8 @@ def talk_command(args: argparse.Namespace) -> None:
                             try:
                                 emit("status", "Generating station ID; PTT off...")
                                 ident = radio_wav(
-                                    voice.synthesize(config.callsign, truncate=False), spoken_seconds
+                                    voice.synthesize(config.callsign, truncate=False),
+                                    spoken_seconds,
                                 )
                                 transmissions = identification_transmissions(
                                     speech, ident, spoken_seconds
@@ -679,9 +680,7 @@ def acknowledge(
             def play(pcm, rate, deadline):
                 play_segment_via_playback(config, pcm, rate, deadline)
 
-            result = speak_text_via_realtime(
-                config, text, ptt, allow_key=True, play_segment=play
-            )
+            result = speak_text_via_realtime(config, text, ptt, allow_key=True, play_segment=play)
         except (WalkietalkError, OSError) as exc:
             emit("error", f"{failed}: {exc}", file=sys.stderr)
             return "failed"
@@ -858,8 +857,7 @@ def run(args: argparse.Namespace) -> None:
         config = load_config(args.config)
         print("Config OK. No hardware, network, or login checks performed.")
         print(
-            f"Agent: {config.agent_backend}; STT: {config.stt_backend}; "
-            f"TTS: {config.tts_backend}"
+            f"Agent: {config.agent_backend}; STT: {config.stt_backend}; TTS: {config.tts_backend}"
         )
         print(
             f"Listening: {config.listening_mode}; "

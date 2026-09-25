@@ -230,9 +230,7 @@ def load_config(path: Path) -> Config:
             raise WalkietalkError(f"{section} requires these fields: {', '.join(sorted(fields))}")
     realtime = data["agent"]["realtime"]
     if not isinstance(realtime, dict) or set(realtime) != set(REALTIME_FIELDS):
-        raise WalkietalkError(
-            "agent.realtime requires these fields: " + ", ".join(REALTIME_FIELDS)
-        )
+        raise WalkietalkError("agent.realtime requires these fields: " + ", ".join(REALTIME_FIELDS))
     max_response_bytes = data["stt"].get("max_response_bytes", DEFAULT_STT_MAX_RESPONSE_BYTES)
     if (
         isinstance(max_response_bytes, bool)

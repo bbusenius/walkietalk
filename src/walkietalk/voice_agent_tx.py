@@ -40,14 +40,14 @@ from .grok_realtime import (
     wait_for_event,
     wait_for_session_updated,
 )
+from .session import uninterrupted_cleanup
+from .tts import radio_wav, write_wav
 
 # Energy-gate: key closer to audible speech than first_output_audio_delta.
 # RMS of PCM16 LE mono; silence ~0, soft noise tens, speech typically >> threshold.
 PTT_ENERGY_THRESHOLD_RMS = 200.0
 PTT_ENERGY_PRE_ROLL_MS = 150
 PTT_ENERGY_PRE_ROLL_BYTES = int(REALTIME_PCM_RATE * PTT_ENERGY_PRE_ROLL_MS / 1000) * 2
-from .session import uninterrupted_cleanup
-from .tts import radio_wav, write_wav
 
 PlaySegment = Callable[[bytes, int, float], None]
 
@@ -614,8 +614,7 @@ async def run_supervised_text_speak(
                     except (ValueError, TypeError) as exc:
                         tx.fail("invalid_audio_delta")
                         raise WalkietalkError(
-                            "Grok realtime returned invalid audio delta during ack; "
-                            "no tts fallback"
+                            "Grok realtime returned invalid audio delta during ack; no tts fallback"
                         ) from exc
                 _in_update, out_update = _transcript_from_event(event)
                 if out_update is not None:
@@ -958,8 +957,7 @@ class RealtimeTalkSession:
                 self._appended_bytes += len(chunk)
         if self._appended_bytes <= 0:
             raise WalkietalkError(
-                "Realtime talk accepted a turn with no streamed audio; "
-                "no stt/agent/tts fallback"
+                "Realtime talk accepted a turn with no streamed audio; no stt/agent/tts fallback"
             )
         result = await run_committed_supervised_response(
             self._client,

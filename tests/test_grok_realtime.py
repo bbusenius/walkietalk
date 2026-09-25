@@ -31,20 +31,20 @@ from walkietalk.grok_realtime import (
     resample_pcm16,
     run_offline_turn,
 )
-from walkietalk.wake import ListeningSession
 from walkietalk.voice_agent_tx import (
-    RealtimeTalkSession,
-    stream_pcm_frames_for_tests,
     PTT_ENERGY_THRESHOLD_RMS,
     PttAction,
+    RealtimeTalkSession,
     SupervisedRealtimeTx,
     SupervisedTxResult,
     pcm16_rms,
     run_supervised_turn,
     speak_text_via_realtime,
+    stream_pcm_frames_for_tests,
     supervised_text_turn,
     supervised_voice_check,
 )
+from walkietalk.wake import ListeningSession
 
 
 @dataclass
@@ -1342,8 +1342,6 @@ def test_collect_utterance_on_frame_orders_captured_audio():
     assert utterance.rate == rate
 
 
-
-
 def test_session_update_includes_web_search_tools_when_enabled(monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "test-key-not-real")
     transport = FakeTransport(incoming=[event("session.updated")])
@@ -1417,9 +1415,7 @@ def test_speak_text_via_realtime_force_message(monkeypatch):
 def test_create_user_text_message_payload(monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "test-key-not-real")
     transport = FakeTransport(incoming=[event("session.updated")])
-    client = GrokRealtimeClient(
-        realtime_config(), transport=transport, api_key="test-key-not-real"
-    )
+    client = GrokRealtimeClient(realtime_config(), transport=transport, api_key="test-key-not-real")
 
     async def run():
         await client.connect()
@@ -1515,7 +1511,7 @@ def test_supervised_voice_check_still_uploads_audio(monkeypatch):
 
 
 def test_talk_in_window_commits_after_shutdown_gate_stt(monkeypatch, tmp_path, capsys):
-    """In-window + not armed: await STT for shutdown.decide, then commit; STT text is not traffic."""
+    """In-window not armed: STT shutdown gate, then commit; STT text is not traffic."""
     import time as time_mod
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
@@ -1701,9 +1697,7 @@ def test_talk_in_window_armed_code_confirms_without_commit(monkeypatch, tmp_path
     monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
     monkeypatch.setattr(cli, "ListeningSession", lambda config: gate)
     monkeypatch.setattr(cli, "ShutdownSession", lambda config, clock=None: shutdown)
-    monkeypatch.setattr(
-        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run")
-    )
+    monkeypatch.setattr(cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run"))
     monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
     if hasattr(cli, "supervised_text_turn"):
         monkeypatch.setattr(
@@ -1807,9 +1801,7 @@ def test_talk_in_window_phrase_arms_without_commit(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
     monkeypatch.setattr(cli, "ListeningSession", lambda config: gate)
     monkeypatch.setattr(cli, "ShutdownSession", capture_shutdown)
-    monkeypatch.setattr(
-        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run")
-    )
+    monkeypatch.setattr(cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run"))
     monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
 
     assert (
@@ -1971,9 +1963,7 @@ def test_talk_cold_wake_accept_commits_after_stt(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(cli, "open_stt", lambda config: listener)
     monkeypatch.setattr(cli, "RealtimeTalkSession", FakeSession)
-    monkeypatch.setattr(
-        cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run")
-    )
+    monkeypatch.setattr(cli, "open_agent", lambda *a, **k: pytest.fail("open_agent must not run"))
     monkeypatch.setattr(cli, "preflight", lambda *a, **k: pytest.fail("preflight unexpected"))
 
     assert (

@@ -44,6 +44,7 @@ OUTPUT_AUDIO_DONE = "response.output_audio.done"
 FUNCTION_CALL_ARGUMENTS_DONE = "response.function_call_arguments.done"
 ERROR_EVENT = "error"
 
+
 class RealtimeTransport(Protocol):
     """Minimal WebSocket surface for injectable fakes and the live client."""
 
@@ -218,9 +219,7 @@ class GrokRealtimeClient:
             # Manual commit fits half-duplex unkey; parent commits after RX ends.
             session["turn_detection"] = None
         use_search = (
-            self.config.agent_web_search
-            if include_web_search is None
-            else include_web_search
+            self.config.agent_web_search if include_web_search is None else include_web_search
         )
         if use_search:
             session["tools"] = [dict(REALTIME_WEB_SEARCH_TOOL)]
