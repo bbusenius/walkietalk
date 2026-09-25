@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
+from .agent import render_guidance
 from .audio import Wav
 from .config import Config, WalkietalkError
 from .grok_realtime import (
@@ -35,6 +37,7 @@ from .grok_realtime import (
     pcm16_to_wav,
     resample_pcm16,
     response_events,
+    validate_response_done,
     wait_for_event,
     wait_for_session_updated,
 )
@@ -53,6 +56,28 @@ INPUT_TRANSCRIPT_TIMEOUT_SECONDS = 5.0
 EMPTY_TRANSCRIPT_GRACE_SECONDS = 0.4
 
 PlaySegment = Callable[[bytes, int, float], None]
+
+
+def _talk_instructions(config: Config, instructions: str | None) -> str:
+    """Explain the wake audio retained in native turns, using the gate's own config."""
+    guidance = instructions if instructions is not None else render_guidance(config, spoken=True)
+    prefixes = json.dumps(list(dict.fromkeys((config.wake_primary, *config.wake_aliases))))
+    return (
+        guidance
+        + "\n\n## Radio routing\n"
+        + "The radio bridge has already accepted this request. "
+        + f"The bridge uses these wake phrases as routing prefixes: {prefixes}. "
+        + "They do not define your name, identity, or persona. "
+        + "When one occurs at the start of the audio, interpret the request as if that "
+        + "routing prefix had been removed. "
+        + "Answer the request that follows directly. Do not repeat, acknowledge, explain, "
+        + "or correct the wake phrase merely because it was used as a prefix. "
+        + "Do not add a greeting merely because a wake phrase was used. "
+        + "Answer follow-ups without a wake phrase normally. "
+        + "For questions such as 'Who are you?', use your established model identity or "
+        + "explicitly configured persona; never infer an identity from the wake configuration. "
+        + "Discuss a wake phrase when the user explicitly asks about it."
+    )
 
 
 def _remembered_transcript(partials: dict[str, str], item_id: str | None) -> str:
@@ -203,25 +228,31 @@ class SupervisedRealtimeTx:
             self.close()
 
     def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        try:
-            if self.keyed:
-                self._unkey("close")
-        finally:
+        # Serialize with open/key, including a worker abandoned by cancellation.
+        # Once close returns, that worker must never assert PTT or open the port.
+        with self._state_lock:
+            if self.closed:
+                return
+            self.closed = True
             try:
-                close = getattr(self.play_segment, "close", None)
-                if close is not None:
-                    close()
+                if self.keyed:
+                    self._unkey("close")
             finally:
-                if self.opened:
-                    with uninterrupted_cleanup():
-                        try:
-                            self.ptt.close()
-                        except Exception as exc:
-                            raise RealtimeHardwareError(f"PTT close failed: {exc}") from exc
-                    self.opened = False
+                try:
+                    self._close_ptt()
+                finally:
+                    close = getattr(self.play_segment, "close", None)
+                    if close is not None:
+                        close()
+
+    def _close_ptt(self) -> None:
+        if self.opened:
+            with uninterrupted_cleanup():
+                try:
+                    self.ptt.close()
+                except Exception as exc:
+                    raise RealtimeHardwareError(f"PTT close failed: {exc}") from exc
+            self.opened = False
 
     def _reset_energy_gate(self) -> None:
         self._energy_armed = False
@@ -448,9 +479,7 @@ async def _receive_supervised_response(
                 if not tx.truncated:
                     raise
             if event.type == RESPONSE_DONE:
-                status = event.data.get("response", {}).get("status", "completed")
-                if status != "completed":
-                    raise WalkietalkError(f"Grok realtime response ended with status {status}")
+                validate_response_done(event)
                 completed = True
                 break
             if tx.truncated:
@@ -745,25 +774,55 @@ class RealtimeTalkSession:
         self._lock = threading.Lock()
         self._input_committed = False
         self._committed_item_id: str | None = None
+        self._history: list[tuple[str, ...]] = []
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _call(self, coro, *, timeout: float = 120.0):
+    def _call(self, coro, *, timeout: float | None = None):
         if not self._thread.is_alive():
+            coro.close()
             raise WalkietalkError("Realtime talk session loop is not running")
-        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        if timeout is None:
+            timeout = max(
+                120.0,
+                2 * self.config.agent_realtime_idle_timeout_seconds
+                + self.config.agent_realtime_connect_timeout_seconds
+                + 30,
+            )
+        finished = threading.Event()
+
+        async def run():
+            try:
+                # The deadline cancels and awaits cleanup on the owning loop.
+                # Future.result(timeout) would let the next capture race cleanup.
+                async with asyncio.timeout(timeout):
+                    return await coro
+            except TimeoutError as exc:
+                raise WalkietalkError(
+                    f"Realtime operation timed out after {timeout:g}s; turn discarded"
+                ) from exc
+            finally:
+                finished.set()
+
+        fut = asyncio.run_coroutine_threadsafe(run(), self._loop)
         try:
-            return fut.result(timeout=timeout)
+            return fut.result()
         except BaseException:
-            fut.cancel()
+            if not finished.is_set():
+                fut.cancel()
+                # Ctrl+C must also allow the turn's PTT/network finally blocks.
+                with uninterrupted_cleanup():
+                    finished.wait(10)
             raise
 
     def warm(self, *, instructions: str | None = None) -> None:
         """Connect early and apply session.update; reuse across follow-up turns."""
         self._instructions = instructions
         try:
+            if self._client is not None and not self.warm_connected:
+                self.reset()
             self._call(self._async_warm(instructions=instructions))
         except BaseException:
             self.reset()
@@ -786,9 +845,11 @@ class RealtimeTalkSession:
         assert self._client is not None
         if not self._warm:
             await self._client.connect()
+            self._client.start_reader()
             terms = (self.config.wake_primary, *self.config.wake_aliases)
             await self._client.session_update(
-                instructions=instructions, transcription_keyterms=terms
+                instructions=_talk_instructions(self.config, instructions),
+                transcription_keyterms=terms,
             )
             await wait_for_session_updated(self._client)
             self._warm = True
@@ -796,13 +857,15 @@ class RealtimeTalkSession:
 
     def ensure_warm(self) -> None:
         """Connect before capture so the handshake is not inside the audio read."""
-        if self._warm:
+        if self.warm_connected:
             return
+        if self._client is not None:
+            self.reset()
         self.warm(instructions=self._instructions)
 
     @property
     def warm_connected(self) -> bool:
-        return self._warm
+        return self._warm and self._client is not None and self._client.connected
 
     def discard_turn(self) -> None:
         """Delete a rejected empty turn and drop the socket that produced it.
@@ -893,6 +956,7 @@ class RealtimeTalkSession:
                 self._client,
                 "conversation.item.deleted",
                 timeout=self.config.agent_realtime_idle_timeout_seconds,
+                item_id=self._committed_item_id,
             )
         else:
             await self._client.clear_audio()
@@ -998,6 +1062,7 @@ class RealtimeTalkSession:
             self._committed_item_id = None
             self._appended_bytes = 0
             self._pending.clear()
+            self._history.clear()
 
     def commit_and_respond(
         self,
@@ -1048,12 +1113,45 @@ class RealtimeTalkSession:
         except BaseException:
             await self._async_reset()
             raise
-        if result.truncated_by_tx_cap:
+        if result.truncated_by_tx_cap or not any(a.kind == "key" for a in result.ptt_actions):
             await self._async_reset()
+        else:
+            await self._retain_history()
         self._input_committed = False
         self._committed_item_id = None
         self._appended_bytes = 0
         return result
+
+    async def _retain_history(self) -> None:
+        assert self._client is not None
+        retained = {item for turn in self._history for item in turn}
+        current = tuple(item for item in self._client.conversation_items if item not in retained)
+        # Without server IDs we cannot safely remove a complete user/assistant pair.
+        # Start fresh rather than silently retain unbounded remote history.
+        roles = {self._client.conversation_items[item] for item in current}
+        if not {"user", "assistant"}.issubset(roles):
+            await self._async_reset()
+            return
+        self._history.append(current)
+        try:
+            async with asyncio.timeout(self.config.agent_realtime_connect_timeout_seconds):
+                while len(self._history) > self.config.agent_history_turns:
+                    for item_id in self._history[0]:
+                        await self._client.delete_item(item_id)
+                        await wait_for_event(
+                            self._client,
+                            "conversation.item.deleted",
+                            timeout=self.config.agent_realtime_connect_timeout_seconds,
+                            item_id=item_id,
+                        )
+                    self._history.pop(0)
+        except (WalkietalkError, OSError):
+            # The reply already aired successfully. Reset history on maintenance
+            # failure without pretending that the radio reply failed.
+            await self._async_reset()
+        except BaseException:
+            await self._async_reset()
+            raise
 
     @property
     def appended_bytes(self) -> int:

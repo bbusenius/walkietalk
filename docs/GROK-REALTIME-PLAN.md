@@ -12,14 +12,14 @@ The original PR review and its regression evidence are recorded in
 ## Turn flow
 
 1. Capture/VAD sends audio frames into a warm WebSocket as they arrive.
-2. At the end of capture, Walkietalk commits the audio. For cold wake detection
-   or enabled shutdown controls, it waits for this same session's final input
+2. At the end of capture, Walkietalk commits the audio. On every turn, including
+   conversation follow-ups, it waits for this same session's input
    transcript before deciding whether to request a reply. It never sends that
    transcript back as a substitute text question.
 3. A rejected, wake-only, or shutdown-control item is deleted before any
    `response.create`. Failed/missing transcripts discard the session and fail
-   closed. In an open conversation with shutdown disabled, no transcript gate
-   is needed: the committed audio immediately requests a response.
+   closed. Empty follow-ups are ignored, and a wake phrase alone receives only
+   the configured acknowledgement, even when shutdown controls are disabled.
 4. Output PCM chunks feed an isolated audio worker incrementally. Device
    preparation happens with PTT off; the first audible chunk keys PTT, waits the
    configured radio settle interval, and enters the playback stream. Only
@@ -30,10 +30,18 @@ The original PR review and its regression evidence are recorded in
 6. A configured station ID uses a separate bounded realtime voice burst after
    the reply. Interval IDs are marked only after successful transmission.
 
-The fastest path is an accepted follow-up with shutdown disabled. Wake and
-shutdown detection still require native transcript completion; they do not
+Wake, shutdown, and empty-input detection require a native transcript; they do not
 invoke a separate transcription service or local speech model. VAD hangover,
 model processing, network delay, and radio settle time still affect latency.
+
+Accepted audio retains the spoken wake phrase. Realtime `talk` automatically
+adds response guidance using `wake.primary` and `wake.aliases`: treat a leading
+wake phrase as a bridge routing prefix and answer as if the prefix were removed.
+The wake configuration does not assign the model a name, identity, or persona.
+Identity questions use the model's established identity or an explicitly
+configured persona. Explicit questions about wake phrases remain ordinary
+questions. This guidance accompanies both default and
+custom `agent.instructions`; no duplicate wake-name configuration is needed.
 
 Silent carriers and radio noise can pass the energy detector without yielding
 words. The input transcript gate has a separate five-second deadline (or the
@@ -42,7 +50,7 @@ Pings do not extend it. On expiry the turn is discarded without a reply and
 continuous mode resumes listening with its existing window deadline unchanged,
 using the same `Ignored (empty transcript). Window unchanged.` message as other
 modes. An explicitly empty transcript is
-also ignored, including in an open conversation with shutdown controls enabled.
+also ignored in an open conversation, regardless of shutdown settings.
 
 ## Recovery and conversation state
 
@@ -52,11 +60,37 @@ the socket. It deliberately discards that conversation rather than retaining
 unheard speech or accidentally processing leftover response events. The next
 utterance reconnects with the configured instructions and starts fresh.
 
+Completed turns are bounded by `agent.history_turns`. Older user, assistant,
+and tool items are deleted together with acknowledgements matched by item ID.
+If IDs are unavailable or pruning fails, the next turn starts a fresh session.
+Replies that never produce audible output do not open a follow-up window or
+trigger a station ID. Truncated replies also leave the follow-up window closed.
+Offline checks require a successful `response.done` before saving reply audio.
+
 Upload and transcript failures discard all partial input. A network failure
 while capturing abandons that recording and returns to wake listening. PTT
 control failures stop the command after cleanup rather than retrying hardware.
-A healthy socket stays open while `talk` is running; the conversation follow-up
-window controls acceptance, not the lifetime of the billed connection.
+A healthy socket stays open while `talk` is running. A background reader drains
+events between turns, ignores application pings, and detects disconnects. Its
+queue is bounded; overflow discards the session rather than losing events silently.
+Continuous mode retries failed connections with a one-second delay. Failed
+cleanup of rejected input resets the session and permits the next listen.
+The conversation follow-up window controls acceptance, not socket lifetime.
+
+## Billing
+
+xAI's [Speech to Speech model page](https://docs.x.ai/developers/models/speech-to-speech),
+checked September 25, 2026, specifies $0.08 per minute of audio sent or received.
+It also specifies $0.004 per client `conversation.item.create` event, except
+tool results and audio-content items. `response.create` itself has no event fee;
+generated audio is metered. Fixed phrases use `force_message` via
+`conversation.item.create`, so they incur the text-event fee plus output audio.
+
+The documented meter is audio duration, not idle WebSocket connection time.
+The earlier review's $115/day idle-connection scenario is therefore unsupported
+by the published billing model. VAD-selected chatter uploaded before wake
+validation can still count as sent audio, even when the turn is rejected.
+These are documented rates, not a measurement of this account's invoice.
 
 ## Configuration
 

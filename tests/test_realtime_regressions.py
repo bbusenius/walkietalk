@@ -121,7 +121,13 @@ class Voice:
             self.emit("response.output_audio.delta", delta=base64.b64encode(self.reply).decode())
             if not self.stall:
                 self.emit("response.output_audio.done")
-                self.emit("response.done", response={"status": "completed"})
+                self.emit(
+                    "response.done",
+                    response={
+                        "status": "completed",
+                        "output": [{"id": f"assistant-{len(self.commits)}", "role": "assistant"}],
+                    },
+                )
 
     def emit_transcript(self, item: str, text: str) -> None:
         self.emit(
@@ -254,7 +260,11 @@ def test_failed_or_truncated_turn_reconnects_with_clean_input(failure):
     [
         (False, "charlotte hello", False, True),
         (False, "not addressed", False, False),
-        (False, None, True, True),  # No gate transcript is needed on this path.
+        (False, None, True, False),
+        (False, "", True, False),
+        (False, "charlotte", True, False),
+        (True, "charlotte", True, False),
+        (False, "what about tomorrow", True, True),
         (True, "bird seven", True, False),
         (True, "bird", True, False),
         (True, "what about tomorrow", True, True),
@@ -290,7 +300,7 @@ def test_cli_uses_native_controls_without_opening_stt(
     monkeypatch.setattr(cli, "capture_from_device", capture)
     assert cli.main(["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture", "--once"]) == 0
     assert ("response.create" in remote.types()) == should_reply
-    if not should_reply:
+    if not should_reply and transcript is not None:
         assert "conversation.item.delete" in remote.types()
 
 
@@ -567,7 +577,7 @@ def test_empty_transcript_reconnects_before_the_next_capture(monkeypatch, capsys
     assert "response.create" in spoken.types()
     output = capsys.readouterr().out
     assert "Ignored (empty transcript). Window unchanged." in output
-    assert "Reconnecting voice session before the next listen." in output
+    assert "Connecting voice session before the next listen." in output
     assert "Accepted (wake name)." in output
 
 
@@ -615,5 +625,445 @@ def test_streaming_transcript_counts_when_completed_is_empty_or_missing(monkeypa
         session.warm()
         session.on_frame(PCM, 24000)
         assert session.gate_transcript() == "charlotte hello"
+    finally:
+        session.close()
+
+
+def test_close_serializes_with_in_progress_ptt_open():
+    entered, release, closed = (threading.Event() for _ in range(3))
+
+    class SlowPTT(PTT):
+        def open(self):
+            entered.set()
+            assert release.wait(2)
+            super().open()
+
+    ptt = SlowPTT()
+    tx = SupervisedRealtimeTx(config(max_tx_seconds=10), ptt, True)
+    worker = threading.Thread(target=lambda: tx.handle(delta()))
+
+    def close():
+        tx.close()
+        closed.set()
+
+    closer = threading.Thread(target=close)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        closer.start()
+        assert not closed.wait(0.03)  # Cleanup must wait for the in-flight open/key.
+        release.set()
+        closer.join(1)
+        worker.join(1)
+        assert closed.is_set()
+        assert not ptt.keyed
+        assert ptt.actions[-2:] == ["off", "close"]
+        actions = ptt.actions[:]
+        tx.handle(delta())
+        assert ptt.actions == actions
+    finally:
+        release.set()
+        worker.join(1)
+        closer.join(1)
+        tx.close()
+
+
+def test_sync_deadline_waits_for_reset_before_next_capture():
+    remotes = deque([Voice(), Voice()])
+
+    async def factory(*_):
+        return remotes.popleft()
+
+    session = RealtimeTalkSession(config(), transport_factory=factory, api_key="fake")
+    cleaned = threading.Event()
+
+    async def slow_turn():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.03)
+            await session._async_reset()
+            cleaned.set()
+
+    try:
+        session.warm()
+        with pytest.raises(WalkietalkError, match="timed out after 0.01s"):
+            session._call(slow_turn(), timeout=0.01)
+        assert cleaned.is_set()
+        session.ensure_warm()
+        session.on_frame(PCM, 24000)
+        assert session.gate_transcript() == "charlotte hello"
+    finally:
+        session.close()
+
+
+def test_warm_reader_drains_idle_events_and_does_not_expire_idle_session():
+    remote = Voice()
+    session = RealtimeTalkSession(config(), transport=remote, api_key="fake")
+
+    async def idle_events():
+        for _ in range(100):
+            remote.emit("ping")
+        for _ in range(40):
+            remote.emit("rate_limits.updated")
+        await asyncio.sleep(0.25)  # Longer than the per-operation idle timeout.
+        assert remote.incoming.empty()
+
+    try:
+        session.warm()
+        session._call(idle_events())
+        assert session.warm_connected
+        session.on_frame(PCM, 24000)
+        assert session.gate_transcript() == "charlotte hello"
+        result = session.commit_and_respond(PTT(), allow_key=True)
+        assert result.ptt_actions
+    finally:
+        session.close()
+
+
+def test_warm_reader_overflow_discards_session_without_unbounded_queue():
+    remote = Voice()
+    session = RealtimeTalkSession(config(), transport=remote, api_key="fake")
+
+    async def flood():
+        for _ in range(200):
+            remote.emit("rate_limits.updated")
+        await asyncio.sleep(0.01)
+        assert session._client._inbox.qsize() <= 128
+
+    try:
+        session.warm()
+        session._call(flood())
+        assert not session.warm_connected
+        assert remote.closed
+        assert "response.create" not in remote.types()
+    finally:
+        session.close()
+
+
+def test_remote_history_prunes_complete_turns_including_tools():
+    class ToolVoice(Voice):
+        async def send(self, raw):
+            if json.loads(raw)["type"] == "response.create":
+                self.emit(
+                    "conversation.item.added",
+                    item={"id": f"tool-{len(self.commits)}", "type": "function_call"},
+                )
+            await super().send(raw)
+
+    remote = ToolVoice(transcripts=("charlotte hello",) * 3)
+    session = RealtimeTalkSession(config(agent_history_turns=2), transport=remote, api_key="fake")
+    try:
+        session.warm()
+        for _ in range(3):
+            session.on_frame(PCM, 24000)
+            session.gate_transcript()
+            session.commit_and_respond(PTT(), allow_key=True)
+        deleted = [
+            msg["item_id"] for msg in remote.sent if msg["type"] == "conversation.item.delete"
+        ]
+        assert deleted == ["user-1", "tool-1", "assistant-1"]
+        assert session.warm_connected
+        assert len(session._client.conversation_items) == 6
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("reply", [b"", b"\0\0" * 2400])
+def test_silent_reply_does_not_open_followup_or_send_station_id(monkeypatch, capsys, reply):
+    cfg = config(listening_mode="conversation", callsign="TEST123", callsign_mode="end_of_reply")
+    remote = Voice(reply=reply)
+    realtime = RealtimeTalkSession(cfg, transport=remote, api_key="fake")
+    gate = ListeningSession(cfg)
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: realtime)
+    monkeypatch.setattr(cli, "ListeningSession", lambda _: gate)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    monkeypatch.setattr(
+        cli, "speak_text_via_realtime", lambda *_, **__: pytest.fail("station ID without reply")
+    )
+
+    def capture(*_, on_frame, **__):
+        on_frame(PCM, 24000)
+        return SimpleNamespace(pcm=PCM, rate=24000, started_at=time.monotonic())
+
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    assert (
+        cli.main(
+            ["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture", "--once", "--transmit"]
+        )
+        == 1
+    )
+    assert gate.awake_until is None
+    assert remote.closed
+    assert "no audible reply" in capsys.readouterr().err
+
+
+def test_check_realtime_reports_native_backend_without_opening_unused_backends(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_config", lambda _: config())
+    monkeypatch.setattr(cli, "preflight", lambda *_: None)
+    for name in ("open_stt", "open_agent", "open_tts"):
+        monkeypatch.setattr(cli, name, lambda *_: pytest.fail("unused backend opened"))
+    assert cli.main(["-c", "/tmp/fake.yaml", "--no-env-file", "check"]) == 0
+    assert "Voice agent: grok_realtime" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("supervised", [True, False])
+@pytest.mark.parametrize("ending", ["eof", "null", "failed"])
+def test_response_requires_valid_successful_completion(supervised, ending):
+    from walkietalk.grok_realtime import run_offline_turn
+
+    class BrokenVoice(Voice):
+        def emit(self, type_, **data):
+            if type_ == "response.done":
+                if ending == "eof":
+                    self.incoming.put_nowait(ConnectionError("server closed"))
+                    return
+                data["response"] = None if ending == "null" else {"status": "failed"}
+            super().emit(type_, **data)
+
+        async def recv(self):
+            item = await super().recv()
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    async def run():
+        remote = BrokenVoice()
+        client = GrokRealtimeClient(config(), transport=remote, api_key="fake")
+        ptt = PTT()
+        with pytest.raises(WalkietalkError):
+            if supervised:
+                await client.connect()
+                await run_committed_supervised_response(client, config(), ptt, allow_key=True)
+            else:
+                await run_offline_turn(client, PCM, 24000)
+        assert not ptt.keyed
+        assert remote.closed
+
+    asyncio.run(run())
+
+
+def test_event_deadline_bounds_silent_transport_and_matches_delete_id():
+    from walkietalk.grok_realtime import wait_for_event
+
+    async def run():
+        remote = Voice()
+        client = GrokRealtimeClient(config(), transport=remote, api_key="fake")
+        await client.connect()
+        try:
+            remote.emit("conversation.item.deleted", item_id="old")
+            with pytest.raises(WalkietalkError, match="timed out waiting"):
+                await asyncio.wait_for(
+                    wait_for_event(
+                        client, "conversation.item.deleted", timeout=0.01, item_id="new"
+                    ),
+                    0.1,
+                )
+            remote.emit("conversation.item.deleted", item_id="new")
+            await wait_for_event(client, "conversation.item.deleted", timeout=0.01, item_id="new")
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_continuous_retries_connection_and_failed_rejected_item_cleanup(monkeypatch, capsys):
+    class FailedDelete(Voice):
+        async def send(self, raw):
+            if json.loads(raw)["type"] == "conversation.item.delete":
+                raise OSError("connection lost during deletion")
+            await super().send(raw)
+
+    bad = FailedDelete(transcripts=("not addressed",))
+    good = Voice()
+    attempts = [OSError("temporary DNS failure"), bad, good]
+
+    async def factory(*_):
+        value = attempts.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    cfg = config()
+    session = RealtimeTalkSession(cfg, transport_factory=factory, api_key="fake")
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: session)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda _: None)
+    captures = []
+
+    def capture(*_, on_frame, **__):
+        if len(captures) == 2:
+            raise KeyboardInterrupt
+        captures.append(1)
+        on_frame(PCM, 24000)
+        return SimpleNamespace(pcm=PCM, rate=24000, started_at=time.monotonic())
+
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    cli.main(["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture"])
+    assert len(captures) == 2
+    assert "response.create" not in bad.types()
+    assert "response.create" in good.types()
+    err = capsys.readouterr().err
+    assert "temporary DNS failure" in err
+    assert "connection lost during deletion" in err
+
+
+def test_idle_disconnect_reconnects_before_uploading_next_wake(monkeypatch):
+    class DisconnectingVoice(Voice):
+        async def recv(self):
+            item = await super().recv()
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    old, good = DisconnectingVoice(), Voice()
+    remotes = deque([old, good])
+
+    async def factory(*_):
+        return remotes.popleft()
+
+    cfg = config()
+    session = RealtimeTalkSession(cfg, transport_factory=factory, api_key="fake")
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: session)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+    captures = []
+
+    async def disconnect():
+        old.incoming.put_nowait(ConnectionError("idle socket expired"))
+        await asyncio.sleep(0.01)
+
+    def capture(*_, on_frame, on_wait, **__):
+        captures.append(1)
+        if len(captures) == 1:
+            session._call(disconnect())
+            on_wait()  # Must abandon idle capture, without waiting for a speech frame.
+            pytest.fail("idle disconnect was not detected")
+        if len(captures) == 3:
+            raise KeyboardInterrupt
+        assert "session.update" in good.types()
+        on_frame(PCM, 24000)
+        return SimpleNamespace(pcm=PCM, rate=24000, started_at=time.monotonic())
+
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    cli.main(["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture"])
+    assert "input_audio_buffer.append" not in old.types()
+    assert good.commits == [PCM]
+    assert "response.create" in good.types()
+
+
+def test_failed_history_pruning_resets_without_failing_delivered_reply():
+    class LostDelete(Voice):
+        async def send(self, raw):
+            if json.loads(raw)["type"] == "conversation.item.delete":
+                raise OSError("delete unavailable")
+            await super().send(raw)
+
+    remote = LostDelete(transcripts=("charlotte hello",) * 2)
+    session = RealtimeTalkSession(config(agent_history_turns=1), transport=remote, api_key="fake")
+    try:
+        session.warm()
+        for _ in range(2):
+            session.on_frame(PCM, 24000)
+            session.gate_transcript()
+            result = session.commit_and_respond(PTT(), allow_key=True)
+            assert any(action.kind == "key" for action in result.ptt_actions)
+        assert not session.warm_connected
+        assert remote.closed
+    finally:
+        session.close()
+
+
+def test_continuous_authentication_failure_stops_instead_of_retrying(monkeypatch, capsys):
+    from walkietalk.grok_realtime import RealtimeAuthenticationError
+
+    cfg = config()
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+
+    class Unauthorized:
+        warm_connected = False
+
+        def warm(self, **_):
+            raise RealtimeAuthenticationError("Grok realtime authentication failed")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: Unauthorized())
+    monkeypatch.setattr(cli.time, "sleep", lambda _: pytest.fail("retrying invalid credentials"))
+    assert cli.main(["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture"]) == 1
+    assert "authentication failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_talk_supplies_wake_routing_guidance_without_assigning_identity(monkeypatch, custom):
+    from walkietalk.agent import render_guidance
+
+    cfg = config(
+        wake_primary="Maple",
+        wake_aliases=("May pull",),
+        agent_instructions=(
+            "Your name is Atlas. Answer in French, using {max_words} words." if custom else ""
+        ),
+        shutdown_code="private-code-not-for-prompts",
+    )
+    remote = Voice(transcripts=("May pull who are you?",))
+    session = RealtimeTalkSession(cfg, transport=remote, api_key="fake")
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: session)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+
+    def capture(*_, on_frame, **__):
+        on_frame(PCM, 24000)
+        return SimpleNamespace(pcm=PCM, rate=24000, started_at=time.monotonic())
+
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    assert cli.main(["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture", "--once"]) == 0
+    settings = next(msg["session"] for msg in remote.sent if msg["type"] == "session.update")
+    prompt = settings["instructions"]
+    assert prompt.startswith(render_guidance(cfg, spoken=True))
+    assert json.dumps([cfg.wake_primary, *cfg.wake_aliases]) in prompt
+    assert "Answer the request that follows directly" in prompt
+    assert "Do not repeat, acknowledge, explain, or correct the wake phrase" in prompt
+    assert "They do not define your name, identity, or persona" in prompt
+    assert "interpret the request as if that routing prefix had been removed" in prompt
+    assert "never infer an identity from the wake configuration" in prompt
+    assert "'Who are you?'" in prompt
+    assert "wake phrases address you" not in prompt
+    assert "when the user explicitly asks about it" in prompt
+    assert cfg.shutdown_code not in prompt
+    assert settings["audio"]["input"]["transcription"]["keyterms"] == ["Maple", "May pull"]
+    assert remote.commits == [PCM]  # Preserve native audio, including the spoken wake.
+    assert "response.create" in remote.types()
+    assert "conversation.item.create" not in remote.types()
+
+
+def test_reconnect_preserves_wake_guidance_without_accumulating_it():
+    first, second = Voice(), Voice()
+    remotes = deque([first, second])
+
+    async def factory(*_):
+        return remotes.popleft()
+
+    session = RealtimeTalkSession(config(), transport_factory=factory, api_key="fake")
+    try:
+        session.warm(instructions="Keep answers brief.")
+        session.reset()
+        session.ensure_warm()
+        prompts = [
+            next(
+                msg["session"]["instructions"]
+                for msg in remote.sent
+                if msg["type"] == "session.update"
+            )
+            for remote in (first, second)
+        ]
+        assert prompts[0] == prompts[1]
+        assert prompts[1].count("## Radio routing") == 1
     finally:
         session.close()

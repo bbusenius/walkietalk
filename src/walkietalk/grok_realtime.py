@@ -47,6 +47,10 @@ _MAX_TRANSCRIPTION_KEYTERMS = 100
 _MAX_KEYTERM_CHARS = 50
 
 
+class RealtimeAuthenticationError(WalkietalkError):
+    """Credentials need operator attention; retrying the connection cannot fix them."""
+
+
 class RealtimeTransport(Protocol):
     """Minimal WebSocket surface for injectable fakes and the live client."""
 
@@ -143,6 +147,61 @@ class GrokRealtimeClient:
         self._connected = False
         self._saw_output_audio_delta = False
         self._closed = False
+        self._reader: asyncio.Task | None = None
+        self._inbox: asyncio.Queue = asyncio.Queue(maxsize=128)
+        self._reader_error: Exception | None = None
+        self.conversation_items: dict[str, str] = {}
+
+    @property
+    def connected(self) -> bool:
+        return self._connected and not self._closed and self._reader_error is None
+
+    def start_reader(self) -> None:
+        """Drain a warm socket even between turns; only events() consumes the inbox."""
+        self._require_open()
+        if self._reader is None:
+            self._reader = asyncio.create_task(self._read_background())
+
+    async def _read_background(self) -> None:
+        assert self._transport is not None
+        try:
+            while True:
+                raw = await self._transport.recv()
+                event = self._parse_event(raw)
+                if event.type == "ping":
+                    continue
+                # Never replace socket backpressure with unlimited application memory.
+                # Overflow invalidates the turn rather than silently losing events.
+                try:
+                    self._inbox.put_nowait(event)
+                except asyncio.QueueFull as exc:
+                    raise WalkietalkError(
+                        "Grok realtime event queue overflow; turn discarded"
+                    ) from exc
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._reader_error = exc
+            self._connected = False
+            if self._inbox.full():
+                while not self._inbox.empty():
+                    self._inbox.get_nowait()
+            self._inbox.put_nowait(exc)
+            try:
+                await asyncio.wait_for(self._transport.close(), timeout=2)
+            except Exception:
+                pass
+
+    async def _next_event(self) -> RealtimeEvent:
+        if self._reader is None:
+            assert self._transport is not None
+            return self._parse_event(await self._transport.recv())
+        if self._inbox.empty() and self._reader_error is not None:
+            raise self._reader_error
+        item = await self._inbox.get()
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     def label(self) -> str:
         return (
@@ -155,7 +214,7 @@ class GrokRealtimeClient:
         """Read billed API key; never SuperGrok login. Raises WalkietalkError."""
         if self._api_key is not None:
             if not valid_api_key(self._api_key):
-                raise WalkietalkError(
+                raise RealtimeAuthenticationError(
                     f"agent.backend grok_realtime requires a valid "
                     f"{self.config.agent_realtime_api_key_env} for billed xAI Speech to Speech "
                     "API access; no SuperGrok login fallback"
@@ -163,7 +222,7 @@ class GrokRealtimeClient:
             return self._api_key
         token = os.environ.get(self.config.agent_realtime_api_key_env)
         if not valid_api_key(token):
-            raise WalkietalkError(
+            raise RealtimeAuthenticationError(
                 f"agent.backend grok_realtime requires "
                 f"{self.config.agent_realtime_api_key_env} for billed xAI Speech to Speech "
                 "API access; no SuperGrok login fallback"
@@ -202,7 +261,7 @@ class GrokRealtimeClient:
             message = str(exc).strip() or exc.__class__.__name__
             lowered = message.lower()
             if any(token in lowered for token in ("401", "403", "unauthorized", "forbidden")):
-                raise WalkietalkError(
+                raise RealtimeAuthenticationError(
                     "Grok realtime authentication failed; check billed "
                     f"{self.config.agent_realtime_api_key_env}; no SuperGrok login fallback"
                 ) from exc
@@ -325,17 +384,20 @@ class GrokRealtimeClient:
 
     async def events(self) -> AsyncIterator[RealtimeEvent]:
         """Iterate parsed server events until the transport closes or idle timeout."""
-        self._require_open()
+        if self._reader is None:
+            self._require_open()
         assert self._transport is not None
         idle = self.config.agent_realtime_idle_timeout_seconds
         while not self._closed:
             try:
-                raw = await asyncio.wait_for(self._transport.recv(), timeout=idle)
+                event = await asyncio.wait_for(self._next_event(), timeout=idle)
             except TimeoutError as exc:
                 raise WalkietalkError(
                     "Grok realtime idle timeout waiting for server events; "
                     "no stt/agent/tts fallback"
                 ) from exc
+            except WalkietalkError:
+                raise
             except Exception as exc:
                 if self._closed:
                     return
@@ -348,7 +410,6 @@ class GrokRealtimeClient:
                 raise WalkietalkError(
                     f"Grok realtime transport error: {message}; no stt/agent/tts fallback"
                 ) from exc
-            event = self._parse_event(raw)
             if event.type == ERROR_EVENT:
                 detail = event.error_message or "unknown error"
                 lowered = detail.lower()
@@ -356,7 +417,7 @@ class GrokRealtimeClient:
                     token in lowered
                     for token in ("auth", "unauthorized", "forbidden", "api key", "invalid key")
                 ):
-                    raise WalkietalkError(
+                    raise RealtimeAuthenticationError(
                         f"Grok realtime authentication failed: {detail}; "
                         f"check billed {self.config.agent_realtime_api_key_env}; "
                         "no SuperGrok login fallback"
@@ -364,9 +425,41 @@ class GrokRealtimeClient:
                 raise WalkietalkError(
                     f"Grok realtime protocol error: {detail}; no stt/agent/tts fallback"
                 )
+            self._remember_items(event)
             yield event
 
+    def _remember_items(self, event: RealtimeEvent) -> None:
+        """Track server IDs so completed audio/tool turns can be pruned as units."""
+        if event.type == "input_audio_buffer.committed":
+            item_id = event.data.get("item_id")
+            if isinstance(item_id, str) and item_id:
+                self.conversation_items[item_id] = "user"
+        elif event.type == "conversation.item.deleted":
+            item_id = event.data.get("item_id")
+            if isinstance(item_id, str):
+                self.conversation_items.pop(item_id, None)
+        elif event.type in {
+            "conversation.item.added",
+            "response.output_item.added",
+            "response.output_item.done",
+        }:
+            self._remember_item(event.data.get("item"))
+        elif event.type == RESPONSE_DONE:
+            response = event.data.get("response")
+            if isinstance(response, dict) and isinstance(response.get("output"), list):
+                for item in response["output"]:
+                    self._remember_item(item)
+
+    def _remember_item(self, item: object) -> None:
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
+            role = item.get("role", item.get("type"))
+            if isinstance(role, str):
+                self.conversation_items[item["id"]] = role
+
     async def close(self) -> None:
+        if self._reader is not None:
+            self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
         if self._transport is None or self._closed:
             self._closed = True
             self._connected = False
@@ -519,26 +612,38 @@ async def wait_for_event(
     *,
     timeout: float,
     ignore_pings: bool = True,
+    item_id: str | None = None,
 ) -> list[str]:
     """Drain events until ``event_type`` or timeout (pings ignored optionally)."""
     seen: list[str] = []
-    deadline = time.monotonic() + timeout
-    async for event in client.events():
-        seen.append(event.type)
-        if ignore_pings and event.type == "ping":
-            if time.monotonic() >= deadline:
-                raise WalkietalkError(
-                    f"Grok realtime timed out waiting for {event_type} (pings only); "
-                    "no stt/agent/tts fallback"
-                )
-            continue
-        if event.type == event_type:
-            return seen
-        if time.monotonic() >= deadline:
-            raise WalkietalkError(
-                f"Grok realtime timed out waiting for {event_type}; no stt/agent/tts fallback"
-            )
+    events = client.events()
+    try:
+        async with asyncio.timeout(timeout):
+            async for event in events:
+                seen.append(event.type)
+                if ignore_pings and event.type == "ping":
+                    continue
+                if event.type == event_type and (
+                    item_id is None or event.data.get("item_id") == item_id
+                ):
+                    return seen
+    except TimeoutError as exc:
+        raise WalkietalkError(
+            f"Grok realtime timed out waiting for {event_type}; no stt/agent/tts fallback"
+        ) from exc
+    finally:
+        await events.aclose()
     raise WalkietalkError(f"Grok realtime closed before {event_type}; no stt/agent/tts fallback")
+
+
+def validate_response_done(event: RealtimeEvent) -> None:
+    """Accept a successful completion; malformed/failed responses are recoverable."""
+    response = event.data.get("response", {})
+    if not isinstance(response, dict):
+        raise WalkietalkError("Grok realtime returned a malformed response.done")
+    status = response.get("status", "completed")
+    if status != "completed":
+        raise WalkietalkError(f"Grok realtime response ended with status {status}")
 
 
 async def wait_for_session_updated(client: GrokRealtimeClient) -> list[str]:
@@ -604,42 +709,44 @@ async def run_offline_turn(
         input_transcript = ""
         output_parts: list[str] = []
         output_final = ""
-        turn_deadline = None
-        async for event in response_events(client):
-            if event.type == "ping":
-                seen.append(event.type)
-                if turn_deadline is not None and time.monotonic() >= turn_deadline:
-                    raise WalkietalkError(
-                        "Grok realtime turn timed out (pings only); no stt/agent/tts fallback"
-                    )
-                continue
-            if turn_deadline is None:
-                turn_deadline = time.monotonic() + max(
-                    15.0, float(client.config.agent_realtime_idle_timeout_seconds)
-                )
-            seen.append(event.type)
-            if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
-                try:
-                    audio_chunks.append(base64.b64decode(event.audio_delta_b64, validate=True))
-                except (ValueError, TypeError) as exc:
-                    raise WalkietalkError(
-                        "Grok realtime returned invalid audio delta; no stt/agent/tts fallback"
-                    ) from exc
-            in_update, out_update = _transcript_from_event(event)
-            if in_update is not None:
-                input_transcript = in_update
-            if out_update is not None:
-                if event.type == OUTPUT_TRANSCRIPT_DELTA:
-                    output_parts.append(out_update)
-                else:
-                    output_final = out_update
-            if event.type == RESPONSE_DONE:
-                break
-            if time.monotonic() >= turn_deadline:
-                raise WalkietalkError(
-                    "Grok realtime turn timed out waiting for response.done; "
-                    "no stt/agent/tts fallback"
-                )
+        events = response_events(client)
+        completed = False
+        try:
+            async with asyncio.timeout(
+                max(15.0, client.config.agent_realtime_idle_timeout_seconds)
+            ):
+                async for event in events:
+                    seen.append(event.type)
+                    if event.type == OUTPUT_AUDIO_DELTA and event.audio_delta_b64:
+                        try:
+                            chunk = base64.b64decode(event.audio_delta_b64, validate=True)
+                        except (ValueError, TypeError) as exc:
+                            raise WalkietalkError(
+                                "Grok realtime returned invalid audio delta"
+                            ) from exc
+                        if len(chunk) % 2:
+                            raise WalkietalkError(
+                                "Grok realtime returned an incomplete PCM16 sample"
+                            )
+                        audio_chunks.append(chunk)
+                    in_update, out_update = _transcript_from_event(event)
+                    if in_update is not None:
+                        input_transcript = in_update
+                    if out_update is not None:
+                        if event.type == OUTPUT_TRANSCRIPT_DELTA:
+                            output_parts.append(out_update)
+                        else:
+                            output_final = out_update
+                    if event.type == RESPONSE_DONE:
+                        validate_response_done(event)
+                        completed = True
+                        break
+        except TimeoutError as exc:
+            raise WalkietalkError("Grok realtime timed out waiting for response.done") from exc
+        finally:
+            await events.aclose()
+        if not completed:
+            raise WalkietalkError("Grok realtime closed before response.done")
 
         output_transcript = output_final or "".join(output_parts)
         reply = pcm16_to_wav(b"".join(audio_chunks), REALTIME_PCM_RATE)

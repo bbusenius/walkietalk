@@ -55,6 +55,7 @@ class FakeTransport:
     closed: bool = False
     headers: dict[str, str] | None = None
     url: str | None = None
+    keep_open: bool = False
 
     async def send(self, data: str) -> None:
         if self.closed:
@@ -65,6 +66,8 @@ class FakeTransport:
         if self.closed:
             raise RuntimeError("transport closed")
         if not self.incoming:
+            if self.keep_open:
+                await asyncio.Event().wait()
             raise ConnectionError("fake transport closed")
         item = self.incoming.pop(0)
         if isinstance(item, BaseException):
@@ -1060,13 +1063,14 @@ def test_live_stream_appends_as_frames_arrive(monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     reply = loud_pcm(16)
     transport = FakeTransport(
+        keep_open=True,
         incoming=[
             event("session.updated"),
             event("input_audio_buffer.committed"),
             event(OUTPUT_AUDIO_DELTA, delta=base64.b64encode(reply).decode("ascii")),
             event(OUTPUT_AUDIO_DONE),
             event(RESPONSE_DONE),
-        ]
+        ],
     )
     session = RealtimeTalkSession(
         realtime_config(settle_seconds=0), transport=transport, api_key="fake"
@@ -1099,10 +1103,11 @@ def test_live_stream_appends_as_frames_arrive(monkeypatch):
 def test_live_stream_reject_clears_without_commit(monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     transport = FakeTransport(
+        keep_open=True,
         incoming=[
             event("session.updated"),
             event("input_audio_buffer.cleared"),
-        ]
+        ],
     )
     session = RealtimeTalkSession(
         realtime_config(settle_seconds=0), transport=transport, api_key="fake"

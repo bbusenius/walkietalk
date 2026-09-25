@@ -113,9 +113,10 @@ Capture gain comes from the radio/interface; `audio.gain` only changes output.
 
 Selecting `grok_realtime` routes `talk` through the live voice session. The
 `agent.realtime` section and individual fields may be omitted to use defaults.
-Open follow-ups with shutdown disabled do not wait for a transcript. Other
-turns use native input transcripts before requesting a reply; rejected/control
-items are deleted. Output is played incrementally with a separate PTT watchdog.
+All turns, including open follow-ups, wait for a native transcript so empty
+input and wake-only phrases are handled consistently. Rejected/control items
+are deleted before requesting a reply. Output is played incrementally with a
+separate PTT watchdog. Completed audio turns are bounded by `agent.history_turns`.
 Interrupted responses discard the remote conversation before reconnecting.
 See [realtime behavior and verification](GROK-REALTIME-PLAN.md).
 
