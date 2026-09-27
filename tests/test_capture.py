@@ -20,7 +20,7 @@ from walkietalk.vad import EnergyVad, frame_samples, rms
 
 @pytest.fixture
 def config_data():
-    return yaml.safe_load(Path("config.example.yaml").read_text())
+    return yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
 
 
 def write_config(tmp_path, data):
@@ -99,7 +99,7 @@ def test_invalid_vad_stt_rejected(tmp_path, config_data, section, field, value):
         load_config(write_config(tmp_path, config_data))
 
 
-def test_phase1_config_without_vad_or_stt_rejected(tmp_path, config_data):
+def test_config_without_vad_or_stt_rejected(tmp_path, config_data):
     for section in ("vad", "stt"):
         data = copy.deepcopy(config_data)
         del data[section]

@@ -20,7 +20,7 @@ class FakeClock:
 
 @pytest.fixture
 def config_data():
-    return yaml.safe_load(Path("config.example.yaml").read_text())
+    return yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
 
 
 def write_config(tmp_path, data):
@@ -56,8 +56,8 @@ class FakeListener:
 
 def test_valid_wake_and_listening_config(tmp_path, config_data):
     config = load_config(write_config(tmp_path, config_data))
-    assert config.listening_mode == "wake_phrase"
-    assert config.conversation_timeout_seconds == 60
+    assert config.listening_mode == "conversation"
+    assert config.conversation_timeout_seconds == 30
     assert config.wake_primary == "charlotte"
     assert config.wake_aliases == ("charlot", "sharlot")
 

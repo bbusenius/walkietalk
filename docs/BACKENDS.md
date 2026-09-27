@@ -23,16 +23,12 @@ own stores. Run the CLIs and Walkietalk as the same normal Linux user.
 | xAI developer API | `grok_api` | No direct chat adapter | `grok_api` | Explicit `XAI_API_KEY`; separate API billing |
 | Claude Code CLI | No adapter | `claude` | No adapter | Official Claude CLI saved account login |
 | Anthropic Messages API | No adapter | `claude_api` | No adapter | Explicit `ANTHROPIC_API_KEY`; separate API billing |
-| Grok Voice realtime | Combined via `agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; live audio in/out through `talk`; native wake/control transcripts; on-air validation pending |
+| Grok Voice realtime | Combined via `agent.backend: grok_realtime` | Combined | Combined | Explicit `XAI_API_KEY`; native audio and control transcripts |
 
-These are implemented adapters, not a promise that every provider model, account
-tier, CLI release, or upstream configuration works. The recorded family checks
-cover local Whisper/Piper, Hermes agent and voice, Codex, Grok account speech and
-agent, and both Claude agent routes. Live xAI API-key STT/TTS checks remain
-explicitly skipped; their transport/auth/failure paths have automated coverage.
-Hermes speech has live coverage for the demonstrated profile, with fake-provider
-tests for other selections. See [phase records](PHASES.md),
-[Hermes speech](HERMES-TTS.md), and [STT capability limits](STT-CAPABILITIES.md).
+The table describes adapters implemented in Walkietalk. Available models and
+account access depend on the provider. Hermes, Codex, and Claude are not valid
+`stt.backend` selections; use `faster-whisper`, `grok`, or `grok_api` with those
+text agents. Realtime is a combined voice path selected through `agent.backend`.
 
 ## Local speech and the offline stub
 
@@ -56,9 +52,8 @@ gain are independent of the selected agent.
 Hermes is an agent environment with its own instructions, skills, memory, model,
 and provider credentials. A direct model API call does not reproduce that context.
 Enable the intended profile's Runs API, using its documented bearer authentication.
-For Charlotte, follow [Charlotte's Walkietalk setup](https://github.com/bbusenius/charlotte/blob/master/runtime/hermes/README.md#walkietalk).
-Other deployments should follow the [Hermes API documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
-and confirm the supported Runs endpoints. The initial agent check used Hermes 0.19.0.
+Follow the [Hermes API documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
+and confirm the supported Runs endpoints.
 
 Edit these fields in the complete config:
 
@@ -127,8 +122,11 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" agent-check \
   'In one sentence, why does ice float?'
 ```
 
-Expect `Reply:` followed by text. The original verification used Codex 0.155.1;
-after upgrading a CLI, repeat the connection check. See [adapter details](CODEX.md).
+Expect `Reply:` followed by text. Repeat the connection check after CLI upgrades.
+Walkietalk ignores desktop Codex configuration, including its default model and
+reasoning settings. Requests run in an empty temporary directory with a read-only
+sandbox; shell tools, hooks, connectors, and delegation are disabled. Incompatible
+CLI versions fail locally. Codex retains its own session files.
 
 ## Grok account: separate agent, STT, and voice
 
@@ -144,12 +142,25 @@ The agent uses the supported `grok -p` interface. STT uses Voice Transcribe
 `POST /v1/stt`; it does not send audio to Grok Build. Voice uses `POST /v1/tts`.
 All three account adapters reuse the saved Grok session under `$GROK_HOME` or
 `~/.grok`; Walkietalk does not implement OAuth or acquire a replacement API key.
-The speech account checks used SuperGrok Plus. Eligibility and quotas depend on
-the account and upstream service; a saved login alone cannot guarantee access.
+Eligibility and quotas depend on the account and upstream service; a saved login
+alone cannot guarantee access.
 
 Select `agent.backend: grok`, `stt.backend: grok`, and/or `tts.backend: grok` as
 needed. The agent's `grok_model` and `grok_reasoning_effort` affect answers only.
 Voice uses `tts.grok_voice` (example `eve`), `grok_language`, and `grok_speed`.
+
+The text agent requires a standard first-party Grok profile. Its `grok inspect
+--json` preflight rejects active hooks, MCP servers, plugins, LSP servers, custom
+model/provider definitions, or an unverifiable login policy. It uses a temporary
+home and working directory while retaining the original `GROK_HOME` for saved
+login and sessions. Only web search is permitted when `agent.web_search` is true.
+
+Speech adapters read `auth.json` from the Grok home, refresh expired grants, and
+retry a rejected login once on HTTP 401. HTTP 403 remains an access error. STT
+reloads the shared login before use to pick up token refreshes by TTS or the CLI.
+TTS voice, language (`en` or `auto`, for example), and speed (0.7–1.5) are
+independent of the agent model and playback gain. An unavailable voice is an
+error; the adapter does not substitute another voice.
 
 ```bash
 walkietalk -c "$HOME/.config/walkietalk/config.yaml" agent-check \
@@ -164,12 +175,7 @@ For selected Grok STT, run:
 walkietalk -c "$HOME/.config/walkietalk/config.yaml" listen --capture
 ```
 
-It records one utterance; expect `Transcript:` and TX off. See
-[Grok agent](GROK.md) and [Grok voice](GROK-TTS.md) for adapter specifics.
-Select `agent.backend: grok_realtime` for live speech-to-speech in `talk`.
-Captured audio streams directly to xAI; replies play incrementally, and native
-input transcripts handle wake/shutdown controls. Separate STT and TTS backends
-are not opened. See [realtime setup](GROK-REALTIME-PLAN.md).
+It records one utterance; expect `Transcript:` and TX off.
 
 ## Explicit billed APIs
 
@@ -181,7 +187,8 @@ Use the same transcription/WAV checks above. SuperGrok subscriptions and xAI
 developer API billing are separate; these adapters never borrow the CLI login.
 Speech to Speech realtime (`agent.backend: grok_realtime`) also requires
 explicit API credits via `XAI_API_KEY` (`agent.realtime.api_key_env`); see the
-[realtime setup](GROK-REALTIME-PLAN.md). Radio output requires `--transmit`.
+[realtime configuration](CONFIGURATION.md#combined-voice-agent-optional-realtime).
+Radio output requires `--transmit`.
 
 For Anthropic's [Messages API](https://platform.claude.com/docs/en/api/messages),
 select `agent.backend: claude_api` and set `ANTHROPIC_API_KEY="your-key"` in the
@@ -189,7 +196,8 @@ private file. YAML contains only its name in `claude_api_key_env`.
 Choose an available model with `claude_api_model`; `claude_api_reasoning_effort`
 is independent of CLI effort. This is explicitly billed API usage, not a Claude
 subscription. Run the same typed `agent-check` as above. No CLI or Hermes
-fallback occurs. See [Claude setup](CLAUDE.md) for both routes and account limits.
+fallback occurs. Only completed final text is accepted; truncated responses and
+thinking blocks do not become radio answers. Web search follows `agent.web_search`.
 
 ## Claude CLI agent
 
@@ -206,12 +214,51 @@ Select `agent.backend: claude`, set `claude_model` to an available model, and
 use `claude_reasoning_effort: low` or a model-supported value. Walkietalk invokes
 the official noninteractive `claude -p` interface; it does not implement login,
 read Claude credential stores, or accept API-key-only login for this route.
-Account eligibility and permitted use remain governed by the provider; see
-[Claude notes](CLAUDE.md). The original verification used CLI 2.1.277.
+Set `claude_executable` to its executable name or an absolute path. The CLI must
+support `--safe-mode`, `--restricted`, `--permission-prompts`, and
+`--no-session-persistence`; missing flags produce an update error before inference.
+Requests run in an empty temporary directory without user/project settings,
+hooks, MCP tools, or permission prompts. Only `WebSearch` is offered when enabled.
+The adapter supplies bounded radio history on each request and disables session
+persistence. Desktop chats are not resumed.
 
 Run `agent-check` with a short question. Expect a short `Reply:`; failures remain
 local and never become radio speech. This adapter and `claude_api` supply text
 only. Neither provides a Walkietalk STT or TTS backend.
+
+## Grok realtime voice
+
+Select `agent.backend: grok_realtime` and supply the billed key named by
+`agent.realtime.api_key_env` (default `XAI_API_KEY`). This route uses no SuperGrok
+login. See [realtime settings](CONFIGURATION.md#combined-voice-agent-optional-realtime)
+for model, voice, and timeout configuration.
+
+Test a recorded utterance and save a reply without playback or PTT:
+
+```bash
+walkietalk -c "$HOME/.config/walkietalk/config.yaml" voice-agent-check \
+  utterance.wav --output realtime-check.wav
+```
+
+This sends audio to xAI and uses API credits. Choose a new output filename.
+Use `talk --capture` to test continuous wake/control handling with printed replies,
+or add `--transmit` for radio playback. Captured audio streams directly to xAI;
+native transcripts gate replies and controls. Separate STT and TTS backends are
+unused. Audio uploaded before wake validation can include unaddressed traffic.
+
+## CLI compatibility and conversation history
+
+Codex, Grok, and Claude adapters accept only successful final answers; intermediate
+output and CLI diagnostics are not replies. They check required isolation features
+and reject unexpected tools or configuration. Repeat `agent-check` after upgrades
+before starting the radio loop.
+
+Each Walkietalk invocation has its own bounded radio conversation. Codex and Grok
+resume explicit sessions and rotate them when the history limit is reached;
+Claude replays bounded history without saving a desktop session. Restarting
+Walkietalk starts fresh. The text-agent timeout includes login/profile checks
+and generation. Cleanup of a stopped CLI process group can add about one second;
+late output is discarded.
 
 ## Check a combined setup
 

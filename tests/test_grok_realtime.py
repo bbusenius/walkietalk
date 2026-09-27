@@ -1,4 +1,4 @@
-"""Grok realtime Phase 1–2: schema, fake transport, offline capture (no live network)."""
+"""Grok realtime configuration, transport, capture, and transmission with fakes."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def event(type_: str, **extra) -> str:
 
 @pytest.fixture
 def config_data():
-    return yaml.safe_load(Path("config.example.yaml").read_text())
+    return yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
 
 
 def write_config(tmp_path, data):
@@ -359,7 +359,7 @@ def test_connect_does_not_use_live_network_when_transport_injected(monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "injected-presence-only")
 
     def forbid_websockets(*a, **k):
-        pytest.fail("live websockets.connect must not run in Phase 1 tests")
+        pytest.fail("An injected transport must not open a live WebSocket")
 
     import walkietalk.grok_realtime as mod
 
@@ -402,7 +402,7 @@ def test_happy_path_runs_without_xai_api_key_in_environment(monkeypatch):
     asyncio.run(run())
 
 
-# --- Phase 2: offline capture path (WAV in → deltas → WAV out; no TX) ---
+# WAV capture and reply assembly without transmission.
 
 
 def pcm_wav(path: Path, *, rate=48000, samples=4800, amplitude=8000):
@@ -464,7 +464,7 @@ def test_offline_wav_in_assembles_reply_wav_without_tx(monkeypatch, tmp_path):
     config = realtime_config()
     input_pcm = b"\x10\x00" * 4800  # 0.2s at 24 kHz
 
-    # Hardware / radio paths must never be touched in Phase 2 offline tests.
+    # Saving a reply WAV must not open playback or PTT.
     def forbid_tx(*a, **k):
         pytest.fail("TX path must not run during offline voice-agent check")
 
@@ -613,7 +613,7 @@ def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, caps
     out_path = tmp_path / "reply.wav"
     reply_pcm = b"\x05\x00" * 64
 
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
@@ -668,7 +668,7 @@ def test_voice_agent_check_cli_writes_wav_and_prints(monkeypatch, tmp_path, caps
 
 def test_voice_agent_check_cli_rejects_backend_off(tmp_path):
     wav_path, _ = pcm_wav(tmp_path / "in.wav")
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     assert data["agent"]["backend"] == "stub"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
@@ -692,7 +692,7 @@ def test_voice_agent_check_cli_refuses_overwrite(tmp_path):
     wav_path, _ = pcm_wav(tmp_path / "in.wav")
     out_path = tmp_path / "exists.wav"
     out_path.write_bytes(b"x")
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
@@ -712,7 +712,7 @@ def test_voice_agent_check_cli_refuses_overwrite(tmp_path):
     )
 
 
-# --- Phase 3: parent-owned supervised TX (fake PTT; no live radio) ---
+# Parent-owned supervised transmission with fake PTT.
 
 
 @dataclass
@@ -942,7 +942,7 @@ def test_supervised_cli_dry_ptt_without_transmit(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     wav_path, frames = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
     out_path = tmp_path / "reply.wav"
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
@@ -988,7 +988,7 @@ def test_supervised_cli_dry_ptt_without_transmit(monkeypatch, tmp_path, capsys):
 
 def test_supervised_cli_transmit_requires_supervised(tmp_path):
     wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["backend"] = "grok_realtime"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data))
@@ -1014,7 +1014,7 @@ def test_supervised_cli_transmit_requires_supervised(tmp_path):
 
 def test_talk_backend_off_still_uses_agent(monkeypatch, tmp_path, capsys):
     wav_path, _ = pcm_wav(tmp_path / "in.wav", rate=24000, samples=12000)
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     assert data["agent"]["backend"] == "stub"
     data["listening"]["mode"] = "wake_phrase"
     data["wake"]["primary"] = "charlotte"

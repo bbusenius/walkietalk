@@ -78,7 +78,7 @@ def parser() -> argparse.ArgumentParser:
     tts_check.add_argument("--output", required=True, type=Path, help="New WAV file to create")
     voice_agent_check = commands.add_parser(
         "voice-agent-check",
-        help="Offline Grok realtime turn from WAV or --capture; never transmits",
+        help="Grok realtime network request; saves a WAV, transmits only with explicit flags",
     )
     voice_agent_check.add_argument(
         "wav", nargs="?", type=Path, help="WAV utterance to send (no radio)"
@@ -821,7 +821,7 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
         utterance = capture_from_wav(args.wav, config, log=capture_log)
     emit("status", f"Agent: grok_realtime ({config.agent_realtime_model})")
     if not args.supervised:
-        emit("status", "Offline voice-agent check: no PTT and no transmission.")
+        emit("status", "Voice-agent check: network request; no PTT or transmission.")
         result = offline_voice_check(config, utterance.pcm, utterance.rate)
         ptt_actions = ()
         truncated = False

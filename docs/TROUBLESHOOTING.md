@@ -14,7 +14,7 @@ problem; never post credentials, CLI login files, or an unredacted private confi
 | Python installation is externally managed | Create a virtual environment; do not install into the system Python with sudo. |
 | PortAudio cannot load | Install Ubuntu's `libportaudio2`; then restart the command. |
 | `init` says the directory already exists | This protects existing settings. Edit them, or select a new `--directory`. |
-| Missing/unknown config field | Compare with the complete example shipped with this version. All fields remain required even for unselected backends. |
+| Missing/unknown config field | Compare with the complete example shipped with this version. Required fields apply even to unselected backends; see [optional fields](CONFIGURATION.md). |
 | Credentials file rejected | Use a regular file owned by your user and `chmod 600`. No symlinks, duplicate names, or multiline values. Error messages intentionally withhold contents. |
 | New token appears to be ignored | An exported variable wins over the credentials file, even if empty. Unset that variable in the shell or correct it, then restart. |
 | No automatic credentials loading | The default file is named exactly `credentials.env`, beside the explicitly selected config. For an old `.env.hermes.local`, use `--env-file` if it contains only literal assignments. See [format and precedence](CONFIGURATION.md#credentials). |
@@ -52,15 +52,19 @@ window expiring requires the name again; it does not end continuous listening.
 Use `agent-check 'a short question'` to isolate the agent from capture/STT, and
 `tts-check 'a short sentence' --output new-name.wav` to isolate the voice from
 playback. Both need the appropriate `-c` before the command. They do not key PTT.
+For `agent.backend: grok_realtime`, use `voice-agent-check utterance.wav --output
+new-name.wav` instead; it makes a billed network request and saves audio without
+transmitting. Separate agent/STT/TTS checks do not test the realtime path.
 
 | Symptom | Action |
 | --- | --- |
 | Missing CLI executable | Install the official CLI, check `command -v codex` (or `grok`/`claude`), and set the corresponding `*_executable` to its name or absolute path. Do not put shell arguments in that field. |
 | Expired/rejected account login | Use that CLI's official login as the same Linux user: `codex login`, `grok login`, or `claude auth login`; repeat `agent-check`. No API-key fallback occurs. |
 | Missing/rejected API key | Confirm the explicitly selected `*_api` backend and matching private variable. Subscription login does not supply billed API access. |
-| Hermes unavailable | Check the intended profile, service process, URL, and bearer token. Agent and speech use distinct services/ports. Follow [Charlotte setup](https://github.com/bbusenius/charlotte/blob/master/runtime/hermes/README.md#walkietalk) or the [native speech guide](HERMES-TTS.md). |
-| Agent timeout | Increase `agent.timeout_seconds` within its 300-second limit or choose supported lower reasoning effort. This does not change the reply cap or radio transmit cap. |
-| Oversized reply | The bridge rejects it instead of speaking a long answer. Ask for a shorter answer or deliberately adjust `agent.max_reply_chars` (maximum 2000). |
+| Hermes unavailable | Check the intended profile, service process, URL, and bearer token. Agent and speech use distinct services/ports. See [agent setup](BACKENDS.md#hermes-an-agent-environment-and-an-optional-voice) and [speech service setup](HERMES-TTS.md). |
+| Text-agent timeout | Increase `agent.timeout_seconds` within its 300-second limit or choose supported lower reasoning effort. This does not change the reply cap or radio transmit cap. |
+| Realtime timeout | Check the connection and `agent.realtime.connect_timeout_seconds` / `idle_timeout_seconds`; `agent.timeout_seconds` does not control this path. |
+| Oversized text-agent reply | The bridge rejects it instead of speaking a long answer. Ask for a shorter answer or deliberately adjust `agent.max_reply_chars` (maximum 2000). |
 | Local Whisper model missing | Run `models` with your config to explicitly download the selected `tiny`/`base` model. |
 | Piper unavailable/model missing | Install the `[piper]` extra and the selected voice's `.onnx` plus `.onnx.json`; check the configured path. |
 | Hermes speech provider mismatch | Correct the provider and its dependencies in Hermes. The companion discards a silent provider fallback. |
@@ -84,7 +88,7 @@ answer is cut off at the end, it may exceed the remaining transmit budget:
 ask for shorter replies or deliberately adjust `radio.max_tx_seconds`.
 
 After unkeying, `radio.post_tx_mute_seconds` suppresses immediate recapture.
-If station ID is unwanted, select `callsign_mode: off`; if needed, set your own
+If station ID is unwanted, select `callsign_mode: "off"`; if needed, set your own
 callsign and mode. The bridge does not infer your station ID.
 
 Ctrl+C or SIGTERM triggers cleanup. If the gateway remains keyed, turn off the

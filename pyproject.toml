@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "walkietalk"
 version = "0.1.0"
-description = "A Linux radio bridge, built one verified phase at a time"
+description = "A Linux radio bridge"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

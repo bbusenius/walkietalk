@@ -24,7 +24,7 @@ from walkietalk.session import transmit
 
 @pytest.fixture
 def config_data():
-    return yaml.safe_load(Path("config.example.yaml").read_text())
+    return yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
 
 
 @pytest.fixture

@@ -24,16 +24,16 @@ stt:
   timeout_seconds: 30       # Grok: total deadline, including login refresh
   max_response_bytes: 1048576 # Grok: per-response limit (1 MiB); optional
 listening:
-  mode: "wake_phrase"       # or conversation
-  conversation_timeout_seconds: 60
+  mode: "conversation"      # wake_phrase to require the phrase every time
+  conversation_timeout_seconds: 30
 tts:
   hermes_url: "http://127.0.0.1:8643" # separate Hermes speech service; see docs/HERMES-TTS.md
   hermes_token_env: "WALKIETALK_HERMES_TOKEN" # service bearer token env var name
-  backend: "piper"         # piper, grok (saved login), grok_api (billed key), or hermes
+  backend: "piper"          # piper, grok (saved login), grok_api (billed key), or hermes
   piper_executable: "piper" # CLI from the environment running walkietalk, or an absolute path
   piper_model: "~/.cache/walkietalk/piper/en_US-amy-medium.onnx"
   timeout_seconds: 30       # synthesis deadline; independent of the hard transmit limit
-  grok_voice: "eve"        # built-in or custom xAI voice ID
+  grok_voice: "eve"         # built-in or custom xAI voice ID
   grok_language: "en"
   grok_speed: 1.0           # 0.7 to 1.5; independent of playback gain
   grok_api_key_env: "XAI_API_KEY" # only used by tts.backend: grok_api
@@ -51,14 +51,14 @@ agent:
   max_reply_chars: 600     # reject oversized replies; 1–2000 characters
   history_turns: 8         # completed traffic/reply pairs to retain; 1–32
   timeout_seconds: 60      # overall agent deadline; >0 to 300 seconds
-  web_search: false        # true allows web lookup (text agents) or realtime session tools
+  web_search: true         # false prevents web lookup (text agents) or realtime session tools
   instructions: ""         # empty keeps the default guidance; {max_reply_chars}, {spoken_seconds}, {max_words}
   hermes_url: "http://127.0.0.1:8642" # API base URL without /v1; use reachable Docker IP if needed
   hermes_token_env: "WALKIETALK_HERMES_TOKEN" # environment variable name, never the token
   codex_executable: "codex" # executable name on PATH or absolute path; no shell arguments
   codex_model: ""           # empty = CLI default, or an explicit model ID
   grok_executable: "grok"   # executable name on PATH or absolute path; no shell arguments
-  grok_model: "grok-4.6"    # first-party model from your Grok CLI catalog
+  grok_model: "grok-4.7"    # first-party model from your Grok CLI catalog
   codex_reasoning_effort: "low" # default = model default; desktop config is ignored
   grok_reasoning_effort: "low"  # default = Grok profile/model default
   claude_executable: "claude" # official CLI; saved login; no API-key fallback
@@ -77,10 +77,10 @@ agent:
 shutdown:
   # Say phrase + code together, or phrase alone then code within the window.
   enabled: false
-  phrase: ""
-  phrase_aliases: []
-  code: ""
-  code_aliases: []
+  phrase: "initiate self-destruct"
+  phrase_aliases: ["initiate self destruct"]
+  code: "alpha 7"
+  code_aliases: ["alpha seven"]
   confirmation_seconds: 30
-  arm_confirmation_phrase: ""  # spoken when the phrase alone arms shutdown; requires talk --transmit
-  confirmation_phrase: ""   # spoken on the radio after the code; requires talk --transmit
+  arm_confirmation_phrase: "Self-destruct sequence armed! What is the self-destruct code?" # spoken when the phrase alone arms shutdown; requires talk --transmit
+  confirmation_phrase: "Initiating self-destruct in 5 seconds! 5, 4, 3, 2, 1!" # spoken on the radio after the code; requires talk --transmit

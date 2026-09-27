@@ -54,13 +54,13 @@ def test_speech_sends_final_text_only_to_independent_environment(config, monkeyp
         assert str(request.url) == "http://voice.test/profile/v1/audio/speech"
         assert request.headers["authorization"] == "Bearer local-service-token"
         assert json.loads(request.content) == dict(
-            text="Charlotte remembers our lesson.", timeout_seconds=1, max_audio_seconds=9.8
+            text="The service returns synthesized speech.", timeout_seconds=1, max_audio_seconds=9.8
         )
         return httpx.Response(200, content=audio_bytes(), headers={"content-type": "audio/wav"})
 
     fake_http(monkeypatch, handler)
     voice = tts.open_tts(replace(config, hermes_tts_url="http://voice.test/profile"))
-    result = voice._synthesize_direct("Charlotte remembers our lesson.")
+    result = voice._synthesize_direct("The service returns synthesized speech.")
     assert result.rate == 48000 and result.duration == 0.1
 
 
@@ -149,7 +149,7 @@ raise SystemExit(hermes_tts.main())
 
 @pytest.mark.parametrize("url", ["https://voice.test/p/one", "http://127.0.0.1:8643"])
 def test_config_keeps_agent_and_voice_targets_independent(tmp_path, url):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["tts"].update(backend="hermes", hermes_url=url, hermes_token_env="VOICE_TOKEN")
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -169,7 +169,7 @@ def test_config_keeps_agent_and_voice_targets_independent(tmp_path, url):
     ],
 )
 def test_bad_config(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["tts"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

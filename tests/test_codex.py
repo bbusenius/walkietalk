@@ -226,7 +226,7 @@ def test_missing_executable_has_clear_local_error(tmp_path):
     ],
 )
 def test_bad_config_rejected(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

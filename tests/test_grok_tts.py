@@ -339,7 +339,7 @@ def test_invalid_text_never_leaves_machine(config, monkeypatch, text):
     ],
 )
 def test_config_fields_validated(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["tts"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

@@ -73,7 +73,7 @@ def write_config(tmp_path, data):
 
 
 def test_sleep_configuration_and_legacy_compatibility(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     config = load_config(write_config(tmp_path, data))
     assert config.sleep_primary == "go to sleep"
     assert config.sleep_aliases == ("stop listening",)
@@ -107,7 +107,7 @@ def test_sleep_configuration_and_legacy_compatibility(tmp_path):
     ],
 )
 def test_invalid_sleep_config_rejected(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["sleep"][field] = value
     with pytest.raises(WalkietalkError, match="[Ss]leep"):
         load_config(write_config(tmp_path, data))
@@ -115,14 +115,14 @@ def test_invalid_sleep_config_rejected(tmp_path, field, value):
 
 @pytest.mark.parametrize("value", [None, [], {}, {"primary": "sleep"}])
 def test_malformed_sleep_section_rejected(tmp_path, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["sleep"] = value
     with pytest.raises(WalkietalkError, match="sleep"):
         load_config(write_config(tmp_path, data))
 
 
 def test_sleep_cannot_collide_with_enabled_shutdown(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["shutdown"].update(
         enabled=True,
         phrase="go to sleep",

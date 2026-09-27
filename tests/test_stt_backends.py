@@ -29,7 +29,7 @@ def direct_grok_requests(monkeypatch):
 
 @pytest.fixture
 def config_data():
-    return yaml.safe_load(Path("config.example.yaml").read_text())
+    return yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
 
 
 def write_config(tmp_path, data):

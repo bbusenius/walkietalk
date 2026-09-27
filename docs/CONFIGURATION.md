@@ -5,10 +5,26 @@ Create the complete example with `walkietalk init`, then edit
 command. Walkietalk does not silently select a config for hardware access.
 `--transmit` and an explicit config are both required to transmit.
 
-All sections and fields in [config.example.yaml](../config.example.yaml) are
-required. Unknown or missing fields are errors, including fields for backends
-you are not using. The snippets in other guides show changes to an existing
-complete config, not replacement files. Restart the command after editing it.
+Use the packaged [config.example.yaml](../src/walkietalk/data/config.example.yaml)
+as the schema reference. All its sections and fields are required, including
+fields for unused backends, except:
+
+- `sleep` may be omitted to disable sleep; if present, all three fields are required.
+- `stt.max_response_bytes` may be omitted to use 1048576 (1 MiB).
+- `agent.realtime` and any of its fields may be omitted to use the defaults below.
+
+Unknown fields and missing required fields are errors. The snippets in other
+guides show changes to an existing complete config, not replacement files.
+Restart the command after editing it. Validate changes without opening hardware:
+
+```bash
+walkietalk -c ~/.config/walkietalk/config.yaml config-check
+```
+
+The generated config selects local Whisper, the stub agent, and Piper, with
+conversation mode and a 30-second follow-up window. It enables web search for
+agents that support it and includes active sleep phrases; remote shutdown is
+disabled. `init` requires a new directory, even if an existing one is empty.
 
 ## Credentials
 
@@ -27,9 +43,10 @@ If you configure a custom variable name, use that same name in this file.
 
 When the selected config file exists, Walkietalk reads `credentials.env` in
 that file's directory if present. A missing config does not select a credentials
-file. The directory comes from the config path, not the current working directory. There is no search through
-parent directories or automatic loading of a repository `.env`. An already
-exported environment variable wins, even if empty. Missing optional files are
+file. The directory comes from the config path, not the current working
+directory. There is no search through parent directories or automatic loading
+of a repository `.env`. An already exported environment variable wins, even if
+empty. Missing optional files are
 fine when your chosen backends need no credentials or use exported variables.
 
 ```bash
@@ -65,9 +82,9 @@ Global options (`-c`, `--env-file`, `--no-env-file`) go **before** the command.
 | `devices` | List exact audio names and stable serial paths | Enumerates devices; no PTT |
 | `check` | Check selected devices, permissions, and local readiness | Requires `-c`; no PTT or capture/playback stream; not a remote connectivity test |
 | `models` | Download/verify configured local Whisper weights | Explicit download; network if missing |
-| `agent-check 'text'` | Ask the selected agent without a wake phrase | No STT, audio, or PTT; remote request for a real agent |
-| `tts-check 'text' --output NEW.wav` | Synthesize and save a WAV | No radio/playback; selected voice may use network; refuses overwrite |
-| `voice-agent-check WAV|--capture --output NEW.wav [--supervised] [--transmit]` | Grok realtime turn (`agent.backend: grok_realtime`) | Default offline (no PTT). `--supervised` uses DryPTT; `--transmit` requires `--supervised` + `-c` for SerialPTT |
+| `agent-check 'text'` | Ask the selected text agent without a wake phrase | No STT, audio, or PTT; remote request for a real agent; use `voice-agent-check` for `grok_realtime` |
+| `tts-check 'text' --output NEW.wav` | Synthesize and save a WAV cropped to the speech transmit budget | No radio/playback; selected voice may use network; refuses overwrite |
+| `voice-agent-check [WAV or --capture] --output NEW.wav [--supervised] [--transmit]` | Grok realtime turn (`agent.backend: grok_realtime`); refuses overwrite | Billed network request; no playback/PTT by default. `--capture` requires `-c`; `--supervised` uses DryPTT; `--transmit` requires `--supervised` + `-c` for SerialPTT and playback |
 | `ptt --seconds 1` | Simulate key/unkey | Add `--transmit` with `-c` for actual PTT |
 | `play speech.wav` | Validate/simulate a mono PCM16 WAV | Add `--transmit` with `-c` for actual playback and PTT |
 | `listen speech.wav` | Transcribe one utterance from a file | No radio; selected STT may use network |
@@ -87,9 +104,9 @@ colored logs.
 | --- | --- |
 | `audio.input_device`, `audio.output_device` | Exact names from `devices`; no default-device fallback |
 | `audio.gain` | Outgoing amplitude multiplier, any positive finite value; above 1 can clip and degrade sound |
-| `vad.energy_threshold` | RMS level that begins speech; compare with the live meter |
-| `vad.hangover_ms` | Silence interval that ends the utterance |
-| `vad.max_utterance_seconds` | Cap on one incoming recording |
+| `vad.energy_threshold` | RMS level that begins speech; greater than 0 through 1; compare with the live meter |
+| `vad.hangover_ms` | Silence interval that ends the utterance; integer from 1 through 5000 milliseconds |
+| `vad.max_utterance_seconds` | Cap on one incoming recording; greater than 0 through 30 seconds |
 | `stt.backend` | `faster-whisper`, `grok`, or `grok_api` |
 | `stt.model` | Local `tiny` or `base`; remains required for remote backends |
 | `stt.timeout_seconds` | Transcription deadline (greater than zero, up to 120 seconds), independent of wait-for-speech and agent time. Grok includes worker startup, login refresh, upload, response reading, and authentication retry in one budget. |
@@ -104,11 +121,11 @@ Capture gain comes from the radio/interface; `audio.gain` only changes output.
 | --- | --- |
 | `agent.backend: grok_realtime` | Combined Speech to Speech agent backend (alongside stub/hermes/codex/grok/claude/claude_api). Native realtime transcripts gate wake/shutdown; input and output audio stream without separate STT, text-agent, or TTS backends |
 | `agent.realtime.model` | `grok-voice-latest` (default) or a versioned ID such as `grok-voice-think-fast-2.0` |
-| `agent.realtime.voice` | Built-in or custom xAI voice ID (example `eve`) |
+| `agent.realtime.voice` | Built-in or custom xAI voice ID; default `eve` |
 | `agent.realtime.api_key_env` | Environment variable **name** for the billed console key; default `XAI_API_KEY` (same as `grok_api`). SuperGrok login is never used |
 | `agent.realtime.websocket_url` | Default `wss://api.x.ai/v1/realtime` |
-| `agent.realtime.connect_timeout_seconds` | WebSocket connect deadline |
-| `agent.realtime.idle_timeout_seconds` | Wait for server events after connect/commit |
+| `agent.realtime.connect_timeout_seconds` | WebSocket connect/session setup deadline; default 10, greater than 0 through 120 seconds |
+| `agent.realtime.idle_timeout_seconds` | Wait for server events after connect/commit; default 60, greater than 0 through 600 seconds |
 | `agent.web_search` (with grok_realtime) | When true, realtime `session.update` includes `tools: [{type: web_search}]` |
 
 Selecting `grok_realtime` routes `talk` through the live voice session. The
@@ -118,7 +135,11 @@ input and wake-only phrases are handled consistently. Rejected/control items
 are deleted before requesting a reply. Output is played incrementally with a
 separate PTT watchdog. Completed audio turns are bounded by `agent.history_turns`.
 Interrupted responses discard the remote conversation before reconnecting.
-See [realtime behavior and verification](GROK-REALTIME-PLAN.md).
+Realtime uses its own connect/idle deadlines instead of `agent.timeout_seconds`.
+The text reply character cap is guidance for realtime speech, not a check that
+rejects already-streamed audio; `radio.max_tx_seconds` still caps transmission.
+The older top-level `voice_agent` section is rejected: move its settings to
+`agent.realtime` and select `agent.backend: grok_realtime`.
 
 ## Wake and conversations
 
@@ -134,12 +155,15 @@ Choose your own names; no agent identity is hardcoded.
   Empty leaves that step silent. With `talk --transmit`, it is spoken before the
   follow-up window starts. Receive-only mode prints the wake status and does not key.
 - `listening.conversation_timeout_seconds`: determines when addressing is needed
-  again. It does not end the program. After a successful reply, the window is
-  refreshed after printing in receive-only mode, or after playback/unkey and the
-  post-transmit mute in transmit mode. Restarting clears agent conversation history.
+  again (greater than 0 through 600 seconds). It does not end the program.
+  After a successful reply, the window is refreshed after printing in receive-only
+  mode, or after playback/unkey and the post-transmit mute in transmit mode.
+  Restarting clears agent conversation history.
 
-Only the traffic after the wake phrase goes to the agent. A follow-up uses the
-same bounded radio context; this is not a resumed desktop CLI conversation.
+Text agents receive only the traffic after the wake phrase. Realtime retains
+the original audio and instructs the agent to treat the wake phrase as a routing
+prefix. A follow-up uses the same bounded radio context; this is not a resumed
+desktop CLI conversation.
 
 To end the follow-up window immediately, configure a sleep phrase:
 
@@ -173,19 +197,22 @@ capture failures stop with a local error.
 
 ## Agent and voice
 
-`agent.backend` selects `stub`, `hermes`, `codex`, `grok`, `claude`, or `claude_api`.
-`agent.max_reply_chars` caps final text (1–2000); `agent.history_turns` bounds
-completed context pairs (1–32); `agent.timeout_seconds` caps the overall request.
-Traffic is also bounded to 4000 characters.
+`agent.backend` selects `stub`, `hermes`, `codex`, `grok`, `claude`, `claude_api`,
+or `grok_realtime` (see the combined voice agent section above).
+For text agents, `agent.max_reply_chars` rejects oversized final text (1–2000);
+`agent.history_turns` bounds completed context pairs (1–32);
+`agent.timeout_seconds` caps the overall request (greater than 0 through 300
+seconds). Text traffic is also bounded to 4000 characters.
 
-`agent.web_search` defaults to `false`. Set it to `true` to let the selected
-agent look up public web information before answering. Commands, local file
-changes, and messages to other people stay unavailable. The lookup uses the
-same `agent.timeout_seconds` deadline, so raise that (up to 300 seconds) when a
-search needs longer than the default minute. The radio stays quiet until the
-answer is ready, and that answer still has to fit `max_reply_chars` and the
-transmit window. Hermes receives this as an instruction; the Hermes profile
-still decides which tools exist. Pages found on the web are untrusted text.
+The generated config sets `agent.web_search: true`, letting the selected
+agent look up public web information before answering. Set it to `false` to
+disable lookup. Commands, local file changes, and messages to other people stay
+unavailable. For text agents, lookup uses the same `agent.timeout_seconds`
+deadline, so raise that (up to 300 seconds) when a search needs longer than the
+template's minute. The radio stays quiet until the text answer is ready, and
+that answer still has to fit `max_reply_chars` and the transmit window.
+Hermes receives this as an instruction; the Hermes profile still decides which
+tools exist. Pages found on the web are untrusted text.
 
 `agent.instructions` replaces the guidance paragraph sent to every agent.
 Leave it empty for the built-in default: short, plain, spoken-style sentences
@@ -196,20 +223,21 @@ session:
 
 - `{max_reply_chars}`
 - `{spoken_seconds}` from `radio.max_tx_seconds` minus `radio.settle_seconds`
-- `{max_words}`, twice that window
+- `{max_words}`, twice that window rounded down to an integer, with a minimum of 1
 
 Write `{{` and `}}` for a literal brace. Any other placeholder is a config
-error. The text must be printable and at most 2000 characters. After the
-guidance, the bridge still adds the web-search rule and tells the agent to
-return only the final answer. A custom paragraph that never mentions
-`{max_reply_chars}` is allowed; a longer reply is still discarded. Spoken
+error. The text must be printable and at most 2000 characters. For text agents,
+the bridge still adds the web-search rule after the guidance and tells the agent
+to return only the final answer. A custom paragraph that never mentions
+`{max_reply_chars}` is allowed; a longer text-agent reply is still discarded. Spoken
 audio is still cut at the transmit window.
 
 The `hermes_url` and `hermes_token_env` fields point to the selected environment.
 The Codex/Grok/Claude `*_executable`, `*_model`, and `*_reasoning_effort` fields
 configure those adapters. Executables are names on PATH or absolute paths, not
-shell command strings. `claude_api_key_env` and `claude_api_model` are the direct
-Messages API settings. See [backend setup](BACKENDS.md) for precise auth routes.
+shell command strings. `claude_api_key_env`, `claude_api_model`, and
+`claude_api_reasoning_effort` are the direct Messages API settings.
+See [backend setup](BACKENDS.md) for precise auth routes.
 
 CLI reasoning defaults to `low` for quick radio answers. `default` omits the
 explicit override and uses the adapter's documented model/profile default.
@@ -218,8 +246,9 @@ fails without substitution. Reasoning effort, answer length, and timeout are
 separate controls. Hermes uses its environment's reasoning configuration.
 
 `tts.backend` selects `piper`, `grok`, `grok_api`, or `hermes`.
-`tts.timeout_seconds` limits synthesis, independent of the agent timeout.
-`tts.normalize: off` preserves the engine's level; `peak` fills the PCM headroom
+`tts.timeout_seconds` limits synthesis (greater than 0 through 120 seconds),
+independent of the agent timeout.
+`tts.normalize: "off"` preserves the engine's level; `peak` fills the PCM headroom
 before applying `audio.gain` during playback. With peak normalization, gain above
 1 will clip peaks. Normalization does not change `play` of an existing WAV.
 
@@ -242,19 +271,27 @@ an initial key-up delay, so speech fits in `max_tx_seconds - settle_seconds`.
 Overlong speech is cropped. Increase settle if the first word is clipped;
 increase `audio.gain` if outgoing audio is quiet, accepting possible clipping.
 `radio.post_tx_mute_seconds` delays listening after unkey (0 disables it).
+The transmit cap must be positive and finite; settle must be greater than 0,
+at most 2 seconds, and less than the cap. Post-transmit mute accepts 0–30 seconds.
 
 `radio.callsign` is your station ID, or empty for no spoken ID. Walkietalk does
-not invent one. `callsign_mode` is `off`, `end_of_reply`, or `interval`;
-`callsign_interval_seconds` sets the interval. If enabled, ID uses the selected
-voice and normally shares the reply's transmit budget, shortening the answer
-audio to reserve space for the complete ID. If the ID and its gap leave no room
+not invent one. `callsign_mode` is `"off"`, `end_of_reply`, or `interval`;
+`callsign_interval_seconds` sets the interval (greater than 0 through 1800 seconds).
+Quote `"off"` in YAML for both callsign mode and TTS normalization so the parser
+reads a string. With a text agent, ID uses the selected TTS voice and normally
+shares the reply's transmit budget, shortening the answer audio to reserve space
+for the complete ID. If the ID and its gap leave no room
 for answer audio, Walkietalk sends the answer first and then the ID in a separate
 burst, with PTT released for 0.2 seconds between them. Each burst has its own
 transmit cap. Listening stays paused through both bursts, and post-transmit mute
 starts after the last one. The ID interval starts only after the transmission
 containing the ID succeeds. Any hardware failure stops the sequence.
 
-A failed ID synthesis or an ID too long for its own burst is reported locally;
+With `grok_realtime`, the station ID always uses a separate bounded voice burst
+after the reply, with PTT released between them. Its interval advances only after
+the complete ID is transmitted successfully.
+
+For TTS replies, a failed ID synthesis or an ID too long for its own burst is reported locally;
 the answer is sent without the ID, and identification remains due. The CLI does
 not crop station-ID audio to make it fit.
 
@@ -266,9 +303,11 @@ line levels when opening a port; see [pySerial's documented behavior](https://py
 
 ## Remote program shutdown
 
-Optional `shutdown.enabled` enables your `phrase`, separate `code`, aliases for
-each, and `confirmation_seconds`. Say phrase + code in one transmission, or the
-phrase then the code within the confirmation window. The ordinary wake phrase
+Set `shutdown.enabled: true` to enable your `phrase`, separate `code`, aliases for
+each, and `confirmation_seconds` (greater than 0 through 300 seconds).
+The `shutdown` section and all its fields are required even when disabled.
+Say phrase + code in one transmission, or the phrase then the code within the
+confirmation window. The ordinary wake phrase
 is optional. The code alone does not stop an unarmed bridge; a wrong next
 utterance or expiry cancels arming. STT mistakes require explicit aliases.
 

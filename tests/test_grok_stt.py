@@ -30,7 +30,7 @@ def login(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "1024", None])
 def test_response_limit_rejects_invalid_config(tmp_path, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["stt"]["max_response_bytes"] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -41,7 +41,7 @@ def test_response_limit_rejects_invalid_config(tmp_path, value):
 @pytest.mark.parametrize("backend", ["grok", "grok_api"])
 @pytest.mark.parametrize("limit", [None, 2048, 2 * 1024 * 1024])
 def test_response_limit_defaults_and_reaches_both_backends(tmp_path, backend, limit):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["stt"]["backend"] = backend
     if limit is None:
         del data["stt"]["max_response_bytes"]

@@ -1,7 +1,5 @@
 import os
 import stat
-from importlib.resources import files
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -18,7 +16,10 @@ def private_file(path, contents):
     return path
 
 
-def test_init_from_packaged_resources_is_complete_private_and_never_overwrites(tmp_path):
+def test_init_from_packaged_resources_is_complete_private_and_never_overwrites(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
     directory = tmp_path / "settings"
     initialize(directory)
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700
@@ -31,11 +32,6 @@ def test_init_from_packaged_resources_is_complete_private_and_never_overwrites(t
     with pytest.raises(WalkietalkError, match="nothing overwritten"):
         initialize(directory)
     assert (directory / "credentials.env").read_text() == "TOKEN=my-existing-private-token"
-
-
-def test_packaged_example_matches_documented_schema():
-    template = files("walkietalk").joinpath("data/config.example.yaml").read_text()
-    assert template == Path("config.example.yaml").read_text()
 
 
 def test_automatic_credentials_are_config_adjacent_and_environment_wins(tmp_path, monkeypatch):

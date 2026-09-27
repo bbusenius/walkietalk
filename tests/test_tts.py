@@ -200,7 +200,7 @@ def test_duration_and_amplitude_preserved_when_resampling():
     ],
 )
 def test_invalid_tts_configuration(tmp_path, key, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["tts"][key] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -209,7 +209,7 @@ def test_invalid_tts_configuration(tmp_path, key, value):
 
 
 def test_required_tts_fields_and_config_relative_model(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["tts"]["piper_model"] = "voices/amy.onnx"
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

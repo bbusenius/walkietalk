@@ -1,4 +1,4 @@
-"""Parent-owned supervised TX for Grok realtime (Phase 3).
+"""Parent-owned supervised transmission for Grok realtime.
 
 Radio glue lives here — not in ``grok_realtime.py``. PTT keys when decoded PCM
 crosses an audible energy threshold (with a short pre-roll), unkeys on

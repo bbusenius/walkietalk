@@ -22,7 +22,8 @@ AGENT_BACKEND_ERROR = (
 VOICE_AGENT_MIGRATE_ERROR = (
     "voice_agent: is no longer supported. Migrate to agent.backend: grok_realtime and "
     "agent.realtime: {model, voice, api_key_env, websocket_url, connect_timeout_seconds, "
-    "idle_timeout_seconds}. Remove the top-level voice_agent section. See config.example.yaml"
+    "idle_timeout_seconds}. Remove the top-level voice_agent section. "
+    "Run `walkietalk init --directory NEW_PATH` for a complete config example."
 )
 REALTIME_FIELDS = (
     "model",
@@ -223,7 +224,7 @@ def load_config(path: Path) -> Config:
         raise WalkietalkError(
             "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, tts, "
             "vad, and wake sections, with an optional sleep section. "
-            "See config.example.yaml for required fields."
+            "Run `walkietalk init --directory NEW_PATH` for a complete config example."
         )
     if "sleep" in data:
         expected["sleep"] = {"primary", "aliases", "confirmation_phrase"}

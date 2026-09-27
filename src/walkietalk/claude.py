@@ -153,8 +153,8 @@ class ClaudeCodeAgent:
             code, help_text, _ = run(["--help"])
             if code or any(flag.encode() not in help_text for flag in REQUIRED_FLAGS):
                 raise WalkietalkError(
-                    "Claude Code CLI lacks required isolation options; update the official CLI "
-                    "(verified with 2.1.277). No answer requested"
+                    "Claude Code CLI lacks required isolation options; update the official CLI. "
+                    "No answer requested"
                 )
             isolation = [
                 "--safe-mode",

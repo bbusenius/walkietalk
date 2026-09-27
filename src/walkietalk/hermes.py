@@ -1,4 +1,4 @@
-"""Charlotte's Hermes Runs API: bounded requests, final text, explicit stop."""
+"""Hermes Runs API: bounded requests, final text, explicit stop."""
 
 import asyncio
 import json
@@ -116,7 +116,7 @@ class HermesAgent:
                             terminal = True
                             if status != "completed":
                                 raise WalkietalkError(
-                                    f"Hermes run {status}; check Charlotte's local service and "
+                                    f"Hermes run {status}; check the configured Hermes service and "
                                     "provider login. Server diagnostics were withheld"
                                 )
                             answer = result.get("output")

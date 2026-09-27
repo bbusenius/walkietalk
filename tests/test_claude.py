@@ -316,7 +316,7 @@ def test_real_subprocess_deadline_kills_fake_cli(tmp_path, config):
     ],
 )
 def test_claude_configuration_is_exact_and_validated(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"][field] = value
     path = tmp_path / "bad.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -325,7 +325,7 @@ def test_claude_configuration_is_exact_and_validated(tmp_path, field, value):
 
 
 def test_claude_config_selects_official_cli(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["backend"] = "claude"
     path = tmp_path / "claude.yaml"
     path.write_text(yaml.safe_dump(data))

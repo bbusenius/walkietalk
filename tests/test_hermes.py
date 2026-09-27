@@ -234,7 +234,7 @@ def test_capability_check_prevents_unsupported_submission(monkeypatch, config):
     ],
 )
 def test_invalid_hermes_configuration_rejected(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -346,15 +346,34 @@ with (
     assert SECRET not in result.stderr
 
 
-def test_failure_demo_script():
-    result = subprocess.run(
-        [sys.executable, "scripts/demo_agent_failures.py"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.count("Expected error received") == 3
-    assert "Reply:" not in result.stdout
-    assert "Private diagnostic" not in result.stdout + result.stderr
-    assert "stop request" in result.stdout
+@pytest.mark.parametrize(
+    "scenario,expected_error",
+    [("oversized", "exceeds"), ("timeout", "timed out"), ("login", "authentication denied")],
+)
+def test_cli_failures_never_touch_hardware_or_print_answers(
+    monkeypatch, config, capsys, scenario, expected_error
+):
+    if scenario == "login":
+        install_transport(monkeypatch, lambda request: httpx.Response(401, text=SECRET))
+        requests = []
+    else:
+        requests = mock_service(
+            monkeypatch,
+            status="running" if scenario == "timeout" else "completed",
+            output="A" * (config.agent_max_reply_chars + 1),
+        )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Hermes agent-check accessed hardware or STT")
+
+    for name in ("SerialPTT", "DryPTT", "Playback", "transmit", "preflight", "open_stt"):
+        monkeypatch.setattr(cli, name, forbidden)
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+
+    assert cli.main(["--no-env-file", "-c", "unused", "agent-check", "What is rain?"]) == 1
+    output = capsys.readouterr()
+    assert expected_error in output.err
+    assert "Reply:" not in output.out
+    assert SECRET not in output.out + output.err
+    if scenario == "timeout":
+        assert requests[-1].url.path.endswith("/stop")

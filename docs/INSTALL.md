@@ -2,8 +2,11 @@
 
 Walkietalk runs on Linux with Python 3.11 or later. Automated CI covers Python
 3.11–3.13. The hardware reference is an AIOC connected to the gateway radio;
-computer-only checks also work without that hardware. Pi/Omarchy packaging and
-automatic start-on-login are deferred.
+computer-only checks also work without that hardware. The package does not
+install an autostart service or include platform-specific Raspberry Pi packaging.
+
+Windows/WSL and macOS are untested. Other platforms may require changes to device
+discovery, audio routing, and process management.
 
 ## 1. Install the application
 
@@ -37,6 +40,12 @@ within that environment; the project does not change the system Python.
 
 ## 2. Create your configuration
 
+For a new setup, `walkietalk init` creates `~/.config/walkietalk/config.yaml`
+and a private `credentials.env` beside it. If you already use `config.local.yaml`
+in the project directory, skip `init` and substitute `-c config.local.yaml` in
+the examples below when running from that directory. Each command uses the file
+passed with `-c`; neither location is automatically searched.
+
 ```bash
 walkietalk init
 walkietalk -c "$HOME/.config/walkietalk/config.yaml" config-check
@@ -61,8 +70,10 @@ settings. Existing users can keep `config.local.yaml` and add a private
 `credentials.env` in the same directory. See [credentials](CONFIGURATION.md#credentials)
 for the format, environment precedence, and alternatives.
 
-The packaged template and repository `config.example.yaml` use the same exact
-schema. Every field must be present, including fields for unselected backends.
+The single configuration template is
+[src/walkietalk/data/config.example.yaml](../src/walkietalk/data/config.example.yaml).
+It is included in installed packages and copied by `init`. Every required field
+must be present, including fields for unselected backends.
 Start from the complete template rather than combining partial YAML snippets.
 
 ## 3. Select the three backends
@@ -96,8 +107,7 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" tts-check \
 Select `tts.backend: piper` first. Keep the `.onnx` and matching `.onnx.json`
 files together at the configured location. Expect a mono PCM16 WAV at 48 kHz
 and `No hardware opened`. Use a new output filename for a repeat check.
-Piper's engine and voice licenses are separate from Walkietalk's MIT license;
-see [the Piper setup reference](PHASE6-DEMO.md).
+Piper's engine and voice licenses are separate from Walkietalk's MIT license.
 
 ## 4. Configure the AIOC
 
@@ -163,8 +173,8 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" talk --capture --transmit
 ```
 
 Run a supervised test using your appropriate licensed radio setup. Confirm the
-first word is audible and the radio unkeys afterward. Follow the existing
-[voice](PHASE6-DEMO.md) and [radio protection](PHASE7-DEMO.md) checks when bringing
+first word is audible and the radio unkeys afterward. Review
+[radio behavior and limits](CONFIGURATION.md#radio-and-playback) when bringing
 up new hardware. These checks are separate from a computer-only installation test.
 
 ## Run again, upgrade, or remove
@@ -191,8 +201,8 @@ walkietalk -c "$HOME/.config/walkietalk/config.yaml" config-check
 Include `[piper]` if you use that extra. Compare the new example config with
 your existing file and add required fields; never overwrite device names,
 credentials, gain, wake settings, or station ID with template values. Version
-`0.1.0` covers multiple project checkpoints, so record the Git commit or keep
-the wheel when you need a precise rollback. Reinstall the prior wheel/checkpoint
+`0.1.0` covers multiple revisions, so record the Git commit or keep
+the wheel when you need a precise rollback. Reinstall the prior wheel or revision
 and its matching saved config to roll back.
 
 `python -m pip uninstall walkietalk` removes the installed package from the
@@ -201,4 +211,4 @@ CLI logins remain; delete those separately only when you intend to remove them.
 No system service, autostart entry, or hardware permission is installed by the
 Python package. An optional external service should use the same Linux user,
 absolute executable/config paths, login environment, and audio access as the
-validated manual command; it is not included in phase 8.
+validated manual command; service setup is not included in the package.

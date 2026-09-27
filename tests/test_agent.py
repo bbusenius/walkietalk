@@ -71,7 +71,7 @@ def test_unimplemented_agents_never_fall_back(backend):
     ],
 )
 def test_invalid_agent_config_rejected(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -81,7 +81,7 @@ def test_invalid_agent_config_rejected(tmp_path, field, value):
 
 @pytest.mark.parametrize("change", ["missing_section", "missing_field", "secret_field"])
 def test_agent_config_requires_exact_fields(tmp_path, change):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     if change == "missing_section":
         del data["agent"]
     elif change == "missing_field":
@@ -95,11 +95,11 @@ def test_agent_config_requires_exact_fields(tmp_path, change):
 
 
 def test_example_agent_config_and_offline_stub():
-    config = load_config(Path("config.example.yaml"))
+    config = load_config(Path("src/walkietalk/data/config.example.yaml"))
     assert config.agent_backend == "stub"
     assert config.agent_max_reply_chars == 600
     assert config.agent_history_turns == 8
-    assert config.agent_web_search is False
+    assert config.agent_web_search is True
     assert config.agent_instructions == ""
     assert AgentSession(config, open_agent(config)).reply("Hello") == STUB_REPLY
 
@@ -125,7 +125,7 @@ def test_history_is_bounded_in_complete_pairs_and_sessions_are_distinct():
 
 
 def test_known_instruction_placeholders_load(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["instructions"] = "Use {max_reply_chars}, {spoken_seconds}, and {max_words}."
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -362,7 +362,7 @@ def test_followup_context_and_window_start_after_print_and_survive_expiry(monkey
 @pytest.mark.parametrize("field", ["codex_reasoning_effort", "grok_reasoning_effort"])
 @pytest.mark.parametrize("value", ["", None, True, 1, [], "hgh", "LOW", "low\n--always-approve"])
 def test_invalid_reasoning_configuration_rejected(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"][field] = value
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -371,7 +371,7 @@ def test_invalid_reasoning_configuration_rejected(tmp_path, field, value):
 
 
 def test_reasoning_fields_are_required_and_independent(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["agent"]["codex_reasoning_effort"] = "high"
     data["agent"]["grok_reasoning_effort"] = "low"
     path = tmp_path / "config.yaml"

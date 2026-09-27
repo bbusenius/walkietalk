@@ -337,7 +337,7 @@ def test_realtime_station_id_policy(monkeypatch, mode, count):
 def test_old_config_loads_and_partial_realtime_overrides(tmp_path):
     import yaml
 
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     del data["agent"]["realtime"]
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

@@ -1,4 +1,4 @@
-"""Grok Voice speech-to-speech realtime client (Phases 1–2: no radio/PTT).
+"""Grok Voice speech-to-speech realtime client; no radio or PTT control.
 
 Explicit ``agent.backend: grok_realtime`` path. Does not replace or fall
 back into ``stt`` / ``agent`` / ``tts`` grok / grok_api adapters. SuperGrok
@@ -38,7 +38,7 @@ OUTPUT_TRANSCRIPT_DELTA = "response.output_audio_transcript.delta"
 OUTPUT_TRANSCRIPT_DONE = "response.output_audio_transcript.done"
 RESPONSE_DONE = "response.done"
 
-# Server events parents will use for PTT later; this client only parses them.
+# Server events consumed by the parent transmission supervisor.
 OUTPUT_AUDIO_DELTA = "response.output_audio.delta"
 OUTPUT_AUDIO_DONE = "response.output_audio.done"
 FUNCTION_CALL_ARGUMENTS_DONE = "response.function_call_arguments.done"
@@ -489,7 +489,7 @@ class GrokRealtimeClient:
 
     def _parse_event(self, raw: str | bytes) -> RealtimeEvent:
         if isinstance(raw, bytes):
-            # Binary audio frames are for a later transport mode; Phase 1 expects JSON.
+            # Audio arrives as base64 payloads in JSON events, not binary frames.
             raise WalkietalkError(
                 "Grok realtime received unexpected binary frame; configure JSON audio transport"
             )
@@ -550,7 +550,7 @@ class GrokRealtimeClient:
 
 @dataclass(frozen=True)
 class OfflineVoiceResult:
-    """Offline capture result: reply audio and any transcripts. No TX."""
+    """Reply audio and transcripts collected without radio transmission."""
 
     reply_wav: Wav | None
     input_transcript: str = ""
@@ -685,7 +685,7 @@ async def run_offline_turn(
     *,
     instructions: str | None = None,
 ) -> OfflineVoiceResult:
-    """One offline utterance: append/commit PCM, collect reply audio, never TX."""
+    """Send one utterance and collect reply audio without radio transmission."""
     await client.connect()
     try:
         await client.session_update(instructions=instructions)

@@ -377,7 +377,7 @@ def test_timeout_in_continuous_mode_has_clear_usage_error(config, monkeypatch, c
     ],
 )
 def test_invalid_shutdown_configuration(tmp_path, field, value):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["shutdown"].update(
         enabled=True,
         phrase="bridge shutdown",
@@ -427,12 +427,13 @@ def test_unbounded_device_capture_and_interrupt_close_stream(monkeypatch, interr
 
 
 def test_enabled_shutdown_requires_confirmation_phrase(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["shutdown"].update(
         enabled=True,
         phrase="bridge shutdown",
         code="confirm alpha nine",
         arm_confirmation_phrase="Shutdown armed.",
+        confirmation_phrase="",
     )
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -441,11 +442,12 @@ def test_enabled_shutdown_requires_confirmation_phrase(tmp_path):
 
 
 def test_enabled_shutdown_requires_arm_confirmation_phrase(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["shutdown"].update(
         enabled=True,
         phrase="bridge shutdown",
         code="confirm alpha nine",
+        arm_confirmation_phrase="",
         confirmation_phrase="Walkietalk shutting down.",
     )
     path = tmp_path / "config.yaml"
@@ -455,7 +457,7 @@ def test_enabled_shutdown_requires_arm_confirmation_phrase(tmp_path):
 
 
 def test_wake_confirmation_must_differ_from_the_wake_name(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
     data["wake"]["confirmation_phrase"] = "Charlotte"
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -463,12 +465,22 @@ def test_wake_confirmation_must_differ_from_the_wake_name(tmp_path):
         load_config(path)
 
 
-def test_shutdown_section_is_required_and_disabled_blank_example_loads(tmp_path):
-    data = yaml.safe_load(Path("config.example.yaml").read_text())
-    example = load_config(Path("config.example.yaml"))
+def test_shutdown_section_is_required_and_disabled_example_loads(tmp_path):
+    data = yaml.safe_load(Path("src/walkietalk/data/config.example.yaml").read_text())
+    example = load_config(Path("src/walkietalk/data/config.example.yaml"))
     assert not example.shutdown_enabled
-    assert example.shutdown_confirmation_phrase == ""
-    assert example.shutdown_arm_confirmation_phrase == ""
+    assert example.shutdown_phrase == "initiate self-destruct"
+    assert example.shutdown_phrase_aliases == ("initiate self destruct",)
+    assert example.shutdown_code == "alpha 7"
+    assert example.shutdown_code_aliases == ("alpha seven",)
+    assert (
+        example.shutdown_arm_confirmation_phrase
+        == "Self-destruct sequence armed! What is the self-destruct code?"
+    )
+    assert (
+        example.shutdown_confirmation_phrase
+        == "Initiating self-destruct in 5 seconds! 5, 4, 3, 2, 1!"
+    )
     assert example.wake_confirmation_phrase == ""
     del data["shutdown"]
     path = tmp_path / "config.yaml"

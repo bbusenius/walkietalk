@@ -13,7 +13,6 @@ python3 -m venv .venv
 
 For a uv-managed environment without pip, use `uv pip install -e '.[dev]'` and
 `.venv/bin/python -m build --installer uv`. Piper is an optional `[piper]` extra.
-Do not bump the project version for each teaching phase; it remains `0.1.0`.
 
 ## Verify the distributable
 
@@ -36,11 +35,13 @@ CI runs this on each supported Python version after lint, formatting, tests, and
 the source/wheel build. Installing dependencies itself requires network access
 or a populated package cache; the smoke check is offline.
 
-The wheel contains both templates in `walkietalk/data/`. The root
-`config.example.yaml` remains the human-readable reference; update both copies
-together. A test checks equality and validates the packaged schema. The source
-archive also includes docs and demonstration scripts. Neither artifact should
-contain real config, credential files, recordings, models, or CLI login data.
+The wheel contains the config and credentials templates in `walkietalk/data/`.
+[src/walkietalk/data/config.example.yaml](../src/walkietalk/data/config.example.yaml)
+is the single configuration template for documentation, tests, and `init`.
+Update it when the schema changes. Tests validate the configuration created by
+`init` outside the checkout. The source archive also includes docs and the
+installation checker. Neither artifact should contain real config, credential
+files, recordings, models, or CLI login data.
 
 ## Architecture and extension points
 
@@ -60,21 +61,14 @@ validation. `setup.py` owns packaged templates and private credential-file loadi
 - The parent owns PTT; isolated playback prevents blocked audio from stopping
   timeout/unkey handling. Preserve these boundaries when adding integrations.
 - A combined voice-agent uses `agent.backend: grok_realtime` (opt-in), not a silent fill-in for `stt`/`agent`/`tts`; see
-  [GROK-REALTIME-PLAN.md](GROK-REALTIME-PLAN.md).
+  [realtime configuration](CONFIGURATION.md#combined-voice-agent-optional-realtime).
 
-Add explicit config fields/defaults to the schema and both examples, document
+Add explicit config fields/defaults to the schema and configuration template, document
 auth/billing and capability limits, and test the adapter's actual failure contract:
 bounded deadlines, malformed/oversized results, missing/rejected login, no secret
 or diagnostic leakage, no fallback, and no hardware access. Use fake transports
 and processes in automated tests; CI must not spend credits or use saved logins.
 Record live checks separately before claiming an integration is verified.
-
-## Teaching workflow
-
-Implement one phase per branch and PR. Run appropriate automated checks, then
-provide the entire demonstration checklist with commands and expected behavior.
-The family explains and observes the result before authorizing commit/push/PR/merge.
-Passing one adapter check is not completion of a phase. See [phase records](PHASES.md).
 
 Keep credentials out of Git. Preserve an existing user's device, wake, voice,
 gain, and station settings. Use ordinary user permissions, and never turn an
