@@ -11,7 +11,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import WalkietalkError, validate_gain
+from .config import OutputTooLarge, WalkietalkError, validate_gain
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,9 @@ def read_wav(path: Path, maximum: float, gain: float = 1) -> Wav:
             if rate not in {8000, 11025, 12000, 16000, 22050, 24000, 32000, 48000}:
                 raise WalkietalkError("Unsupported WAV rate; use 48000 Hz for the AIOC")
             duration = count / rate
-            if count == 0 or duration > maximum:
+            if duration > maximum:
+                raise OutputTooLarge(f"WAV must be nonempty and no longer than {maximum:g} seconds")
+            if count == 0:
                 raise WalkietalkError(
                     f"WAV must be nonempty and no longer than {maximum:g} seconds"
                 )

@@ -1,5 +1,7 @@
 # Install on Ubuntu
 
+## Platforms
+
 Walkietalk runs on Linux with Python 3.11 or later. Automated CI covers Python
 3.11–3.13. The hardware reference is an AIOC connected to the gateway radio;
 computer-only checks also work without that hardware. The package does not
@@ -108,6 +110,51 @@ Select `tts.backend: piper` first. Keep the `.onnx` and matching `.onnx.json`
 files together at the configured location. Expect a mono PCM16 WAV at 48 kHz
 and `No hardware opened`. Use a new output filename for a repeat check.
 Piper's engine and voice licenses are separate from Walkietalk's MIT license.
+
+### Optional messaging dependencies
+
+For outgoing voice notes, ffmpeg must include the `libopus` encoder, wacli must
+provide `send voice`, and signal-cli must support `send --voice-note`.
+See [voice conversion settings](MESSAGING.md#optional-voice-conversion).
+
+
+WhatsApp and Signal messaging require external programs installed separately
+from Walkietalk. Neither `pip install .` nor installing the wheel installs these
+executables; they are not Python dependencies in `pyproject.toml`.
+
+| Feature | Required program | Installation source |
+| --- | --- | --- |
+| WhatsApp messaging | `wacli` | [Official installation instructions](https://github.com/openclaw/wacli#install) and [release downloads](https://github.com/openclaw/wacli/releases) |
+| Signal messaging | `signal-cli` | [Official installation instructions](https://github.com/AsamK/signal-cli#installation) and [release downloads](https://github.com/AsamK/signal-cli/releases) |
+| Incoming audio playback from either service | `ffmpeg` | Ubuntu package shown below; [other installation options](https://ffmpeg.org/download.html) |
+
+Follow the selected CLI's installation instructions, including any runtime
+requirements for its chosen distribution. Install only the messaging clients
+you enable. For audio replies on Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install ffmpeg
+```
+
+The executables must be on `PATH` for the Linux user and environment that run
+Walkietalk. In that same terminal, check the programs you intend to use:
+
+```bash
+command -v wacli
+command -v signal-cli
+ffmpeg -version
+```
+
+The first two commands should print executable paths; the last should print
+FFmpeg version information. These checks verify executable availability only.
+Walkietalk's `config-check` validates configuration, not installation of these
+tools. Text replies use your selected TTS provider; audio replies require FFmpeg
+and use that TTS provider for the sender introduction.
+
+With messaging disabled, none of these additional programs is required.
+See [messaging behavior and configuration](MESSAGING.md) before enabling a
+service. Updates to Walkietalk through pip do not update these external tools.
 
 ## 4. Configure the AIOC
 

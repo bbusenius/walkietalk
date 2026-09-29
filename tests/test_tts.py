@@ -237,3 +237,33 @@ def test_tts_check_exports_without_hardware_and_refuses_overwrite(
     before = path.read_bytes()
     assert cli.main(args) == 1
     assert path.read_bytes() == before
+
+
+def test_message_chunks_pass_real_piper_validation(fake_piper):
+    from walkietalk.messaging import MessagePlayback
+
+    config, _, record = fake_piper
+    body = "This is the full message. " * 40
+    playback = MessagePlayback(body.strip())
+    voice = tts.PiperTts(config)
+    spoken = []
+    while playback.remaining:
+        speech, rest = playback.prepare_text(voice, "Grandma", config)
+        assert speech.duration == 2
+        spoken.append(json.loads(record.read_text())["text"].strip())
+        playback.remaining = rest
+    assert len(spoken) > 1
+    assert all(len(text) <= config.agent_max_reply_chars for text in spoken)
+    reconstructed = " ".join(text.removeprefix("Grandma says: ") for text in spoken)
+    assert reconstructed.removesuffix(", over") == body.strip().rstrip(".")
+
+
+@pytest.mark.parametrize("samples", [44100, 1_000_000])
+def test_piper_reports_duration_and_transport_overflow_as_splittable(fake_piper, samples):
+    from walkietalk.config import OutputTooLarge
+
+    config, settings, _ = fake_piper
+    settings.write_text(json.dumps({"samples": samples}))
+    voice = tts.PiperTts(replace(config, max_tx_seconds=1, settle_seconds=0))
+    with pytest.raises(OutputTooLarge):
+        voice.synthesize("A message chunk.", truncate=False)

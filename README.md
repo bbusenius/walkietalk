@@ -1,9 +1,20 @@
 # walkietalk
 
-A Linux radio bridge with interchangeable AI agents and voices. Speak into a
-walkie-talkie, address the configured wake phrase, and get an answer from your
-chosen agent. Supported connections include Grok, Codex, Hermes, and Claude,
-using saved CLI logins or explicitly selected API billing.
+A Linux radio bridge with interchangeable AI agents and voices, including
+optional WhatsApp and Signal messaging. Speak into a walkie-talkie and use
+a configured wake phrase to ask your chosen agent a question or send a
+transcribed message to a contact. Hear agent answers and contact messages
+over the radio. Supported agents include Grok, Codex, Hermes, and Claude.
+
+> [!NOTE]
+> You are responsible for the rules of your radio service. Walkietalk does not
+> decide whether a transmission is permitted. On US GMRS, review licensing,
+> station identification, and the requirement that an operator monitor the
+> station while it transmits. Connecting a station to the telephone network or
+> another network, including to carry WhatsApp or Signal messages, is
+> restricted. See the
+> [FCC's GMRS page](https://www.fcc.gov/wireless/bureau-divisions/mobility-division/general-mobile-radio-service-gmrs)
+> and [47 CFR Part 95, Subpart E](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-95/subpart-E).
 
 ## Hardware
 
@@ -24,8 +35,9 @@ Connect the gateway radio to the computer through the AIOC. Use a second,
 compatible handheld to talk to the bridge, with matching channel and radio
 settings.
 
-Use a Linux computer with Python 3.11 or later. See the
-[platform support notes](docs/INSTALL.md) before choosing a dedicated host.
+A separate Linux computer can host the bridge. Raspberry Pi has no dedicated
+packaging or validated setup here; see the [platform notes](docs/INSTALL.md#platforms)
+before choosing hardware. Windows/WSL and macOS are untested.
 
 ## Install
 
@@ -165,6 +177,7 @@ software cleanup can and cannot guarantee, and
 ## Guides
 
 - [Installation, upgrades, and removal](docs/INSTALL.md)
+- [WhatsApp and Signal messaging](docs/MESSAGING.md), including [optional dependencies](docs/INSTALL.md#optional-messaging-dependencies)
 - [Configuration, credentials, and command reference](docs/CONFIGURATION.md)
 - [Backend setup and supported integrations](docs/BACKENDS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

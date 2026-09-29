@@ -16,9 +16,16 @@ import httpx
 from .agent import validate_reply
 from .agent_process import run_cli
 from .audio import Wav, read_wav
-from .config import Config, WalkietalkError
+from .config import Config, OutputTooLarge, WalkietalkError
 from .stt import GROK_TOKEN_URL, _session_expired, load_grok_store, save_grok_store
-from .tts import level_wav, radio_wav, speech_byte_budget, write_wav
+from .tts import (
+    check_speech_file,
+    level_wav,
+    radio_wav,
+    speech_byte_budget,
+    tts_worker_failure,
+    write_wav,
+)
 
 GROK_TTS_URL = "https://api.x.ai/v1/tts"
 
@@ -134,7 +141,7 @@ class GrokTts:
         body = bytearray()
         async for chunk in response.aiter_bytes(chunk_size=65536):
             if len(body) + len(chunk) > maximum:
-                raise WalkietalkError("Grok TTS response exceeded the transport limit; discarded")
+                raise OutputTooLarge("Grok TTS response exceeded the transport limit; discarded")
             body.extend(chunk)
         return bytes(body)
 
@@ -267,18 +274,8 @@ class GrokTts:
                 name="Grok TTS",
             )
             if code:
-                try:
-                    error = json.loads(stdout)["error"]
-                    if not isinstance(error, str) or len(error) > 2000 or not error.isprintable():
-                        raise ValueError
-                except (ValueError, KeyError, TypeError):
-                    error = "Grok TTS worker failed; diagnostics withheld; no transmission"
-                raise WalkietalkError(error)
-            if (
-                not path.is_file()
-                or path.stat().st_size > speech_byte_budget(self.config.max_tx_seconds) * 2
-            ):
-                raise WalkietalkError("Grok TTS returned no bounded WAV; no transmission")
+                raise tts_worker_failure(stdout, "Grok TTS")
+            check_speech_file(path, speech_byte_budget(self.config.max_tx_seconds) * 2, "Grok TTS")
             speech = level_wav(
                 radio_wav(
                     read_wav(path, self.config.max_tx_seconds * 2),
@@ -303,7 +300,7 @@ def main() -> int:
         )
         return 0
     except (WalkietalkError, OSError) as exc:
-        print(json.dumps({"error": str(exc)}))
+        print(json.dumps({"error": str(exc), "too_large": isinstance(exc, OutputTooLarge)}))
         return 1
 
 

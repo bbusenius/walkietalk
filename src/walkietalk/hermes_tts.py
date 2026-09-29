@@ -13,8 +13,15 @@ import httpx
 from .agent import validate_reply
 from .agent_process import run_cli
 from .audio import Wav, read_wav
-from .config import Config, WalkietalkError
-from .tts import level_wav, radio_wav, speech_byte_budget, write_wav
+from .config import Config, OutputTooLarge, WalkietalkError
+from .tts import (
+    check_speech_file,
+    level_wav,
+    radio_wav,
+    speech_byte_budget,
+    tts_worker_failure,
+    write_wav,
+)
 
 
 class HermesTts:
@@ -62,6 +69,8 @@ class HermesTts:
                             )
                         if status == 504:
                             raise WalkietalkError("Hermes TTS timed out; no transmission")
+                        if status == 413:
+                            raise OutputTooLarge("Hermes TTS speech exceeds requested duration")
                         if status != 200:
                             raise WalkietalkError(
                                 f"Hermes TTS HTTP {status}; check the speech service and its "
@@ -73,7 +82,7 @@ class HermesTts:
                         limit = speech_byte_budget(self.config.max_tx_seconds)
                         async for chunk in response.aiter_bytes(chunk_size=65536):
                             if len(data) + len(chunk) > limit:
-                                raise WalkietalkError("Hermes TTS audio exceeded transport limit")
+                                raise OutputTooLarge("Hermes TTS audio exceeded transport limit")
                             data.extend(chunk)
                         return bytes(data)
         except (TimeoutError, httpx.TimeoutException):
@@ -135,17 +144,8 @@ class HermesTts:
                 name="Hermes TTS",
             )
             if code:
-                try:
-                    error = json.loads(stdout)["error"]
-                    if not isinstance(error, str) or not error.isprintable() or len(error) > 2000:
-                        raise ValueError
-                except (ValueError, KeyError, TypeError):
-                    error = "Hermes TTS worker failed; diagnostics withheld; no transmission"
-                raise WalkietalkError(error)
-            if not path.is_file() or path.stat().st_size > speech_byte_budget(
-                self.config.max_tx_seconds
-            ):
-                raise WalkietalkError("Hermes TTS returned no bounded WAV; no transmission")
+                raise tts_worker_failure(stdout, "Hermes TTS")
+            check_speech_file(path, speech_byte_budget(self.config.max_tx_seconds), "Hermes TTS")
             speech = self._read(path, truncate=truncate)
             if time.monotonic() >= deadline:
                 raise WalkietalkError("Hermes TTS timed out; no transmission")
@@ -165,7 +165,7 @@ def main() -> int:
         # Only our own sanitized errors can leave the worker.
         exc = sys.exception()
         message = str(exc) if isinstance(exc, WalkietalkError) else "Hermes TTS audio file failed"
-        print(json.dumps({"error": message}))
+        print(json.dumps({"error": message, "too_large": isinstance(exc, OutputTooLarge)}))
         return 1
 
 

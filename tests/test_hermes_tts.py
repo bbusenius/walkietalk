@@ -377,3 +377,17 @@ def test_station_id_requests_strict_audio_from_hermes_service(config, monkeypatc
         hermes_tts.HermesTts(config)._synthesize_direct("TEST1ID", truncate=False).duration == 0.1
     )
     assert call_service(monkeypatch, payload=request_data(truncate=False))[0] == 200
+
+
+def test_overlong_service_speech_is_reported_as_splittable(config, monkeypatch):
+    from walkietalk.config import OutputTooLarge
+
+    response = call_service(
+        monkeypatch,
+        payload=request_data(truncate=False),
+        generate=Mock(side_effect=service.SpeechTooLong("private diagnostic")),
+    )
+    assert response == (413, b"Speech exceeds requested duration")
+    fake_http(monkeypatch, lambda req: httpx.Response(response[0], content=response[1]))
+    with pytest.raises(OutputTooLarge):
+        hermes_tts.HermesTts(config)._synthesize_direct("Hello.", truncate=False)

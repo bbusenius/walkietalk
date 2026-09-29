@@ -25,6 +25,7 @@ from .config import (
     Config,
     WalkietalkError,
 )
+from .wake import transcription_keyterms
 
 CACHE = Path.home() / ".cache" / "walkietalk" / "faster-whisper"
 WHISPER_RATE = 16000
@@ -478,9 +479,7 @@ class GrokApiStt:
 
 
 def open_stt(config: Config) -> SttBackend:
-    keyterms = (config.wake_primary, *config.wake_aliases)
-    if config.sleep_primary:
-        keyterms += (config.sleep_primary, *config.sleep_aliases)
+    keyterms = transcription_keyterms(config)
     if config.stt_backend == "faster-whisper":
         return FasterWhisperStt(config.stt_model, config.stt_timeout_seconds)
     if config.stt_backend == "grok":

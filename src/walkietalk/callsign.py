@@ -34,13 +34,13 @@ class CallsignSession:
 
 def identification_transmissions(answer: Wav, ident: Wav, maximum: float) -> tuple[Wav, ...]:
     """Append the full ID when possible; otherwise plan a separate ID burst."""
-    answer = radio_wav(answer, maximum, truncate=True)
+    answer = radio_wav(answer, maximum)
     ident = radio_wav(ident, maximum)
     gap = max(0, int(IDENT_GAP_SECONDS * RADIO_RATE))
     ident_samples = len(ident.frames) // 2
     keep = max(0, int(maximum * RADIO_RATE) - ident_samples - gap)
-    if keep < 1:
+    if len(answer.frames) // 2 > keep:
         return answer, ident
-    frames = answer.frames[: keep * 2] + b"\x00\x00" * gap + ident.frames
+    frames = answer.frames + b"\x00\x00" * gap + ident.frames
     duration = len(frames) / (2 * RADIO_RATE)
     return (radio_wav(Wav(frames, RADIO_RATE, duration), maximum),)
