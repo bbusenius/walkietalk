@@ -1,7 +1,9 @@
 """Voice plug: text to bounded PCM, without radio or audio-device access."""
 
+import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -14,7 +16,7 @@ import numpy as np
 from .agent import validate_reply
 from .agent_process import run_cli
 from .audio import Wav, read_wav
-from .config import Config, WalkietalkError
+from .config import Config, OutputTooLarge, WalkietalkError
 
 RADIO_RATE = 48000
 
@@ -25,6 +27,31 @@ def speech_byte_budget(max_seconds: float, rate: int = RADIO_RATE) -> int:
 
 
 MAX_TTS_BYTES = speech_byte_budget(10)
+
+
+def check_speech_file(path: Path, maximum_bytes: int, name: str) -> None:
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        raise WalkietalkError(f"{name} returned no bounded WAV; no transmission") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise WalkietalkError(f"{name} returned no bounded WAV; no transmission")
+    if info.st_size > maximum_bytes:
+        raise OutputTooLarge(f"{name} returned oversized WAV; no transmission")
+
+
+def tts_worker_failure(stdout: bytes, name: str) -> WalkietalkError:
+    try:
+        failure = json.loads(stdout)
+        if not isinstance(failure, dict):
+            raise ValueError
+        error = failure["error"]
+        too_large = failure.get("too_large") is True
+        if not isinstance(error, str) or len(error) > 2000 or not error.isprintable():
+            raise ValueError
+    except (ValueError, KeyError, TypeError, RecursionError):
+        return WalkietalkError(f"{name} worker failed; diagnostics withheld; no transmission")
+    return (OutputTooLarge if too_large else WalkietalkError)(error)
 
 
 class TtsBackend(Protocol):
@@ -55,7 +82,7 @@ def radio_wav(wav: Wav, maximum: float, *, truncate: bool = False) -> Wav:
     duration = len(wav.frames) / (2 * wav.rate)
     if duration > maximum:
         if not truncate:
-            raise WalkietalkError(
+            raise OutputTooLarge(
                 f"Spoken reply is {duration:.2f}s; maximum is {maximum:g}s after PTT settle. "
                 "Ask for a shorter answer; no transmission"
             )
@@ -71,7 +98,7 @@ def radio_wav(wav: Wav, maximum: float, *, truncate: bool = False) -> Wav:
     cropped = Wav(frames, RADIO_RATE, count / RADIO_RATE)
     if cropped.duration > maximum:
         if not truncate:
-            raise WalkietalkError("Spoken reply exceeds the transmit limit; no transmission")
+            raise OutputTooLarge("Spoken reply exceeds the transmit limit; no transmission")
         return _crop(cropped, maximum)
     return cropped
 
@@ -148,11 +175,7 @@ class PiperTts:
                 raise WalkietalkError(
                     "Piper synthesis failed; diagnostics withheld; no transmission"
                 )
-            if (
-                not path.is_file()
-                or path.stat().st_size > speech_byte_budget(self.config.max_tx_seconds) * 2
-            ):
-                raise WalkietalkError("Piper returned no bounded WAV file; no transmission")
+            check_speech_file(path, speech_byte_budget(self.config.max_tx_seconds) * 2, "Piper")
             wav = read_wav(path, self.config.max_tx_seconds * 2)
             wav = radio_wav(
                 wav, self.config.max_tx_seconds - self.config.settle_seconds, truncate=truncate

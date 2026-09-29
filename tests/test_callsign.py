@@ -10,7 +10,6 @@ from walkietalk.callsign import IDENT_GAP_SECONDS, CallsignSession, identificati
 from walkietalk.capture import Utterance
 from walkietalk.config import Config, WalkietalkError
 from walkietalk.ptt import SerialPTT
-from walkietalk.tts import radio_wav
 
 SPEECH = Wav(b"\x00\x20" * 4800, 48000, 0.1)
 IDENT = Wav(b"\x00\x30" * 2400, 48000, 0.05)
@@ -69,15 +68,19 @@ def test_interval_callsign_waits_after_first_id():
     assert session.due()
 
 
-def test_identification_transmissions_keeps_callsign_inside_the_cap():
-    answer = Wav(b"\x00\x20" * 48000 * 5, 48000, 5)
-    ident = radio_wav(IDENT, 9.8)
-    (joined,) = identification_transmissions(answer, ident, 1.0)
-    assert joined.duration == pytest.approx(1.0)
-    assert joined.frames.endswith(ident.frames)
+def test_identification_preserves_answer_when_id_needs_its_own_burst():
+    answer = Wav(b"\x00\x20" * 48000 * 9, 48000, 9)
+    ident = Wav(b"\x00\x30" * 72000, 48000, 1.5)
+    assert identification_transmissions(answer, ident, 9.8) == (answer, ident)
 
 
-@pytest.mark.parametrize("samples,bursts", [(38400, 2), (38399, 1), (48000, 2)])
+def test_overlong_answer_is_rejected_instead_of_silently_cropped():
+    answer = Wav(b"\x00\x20" * 96000, 48000, 2)
+    with pytest.raises(WalkietalkError):
+        identification_transmissions(answer, IDENT, 1)
+
+
+@pytest.mark.parametrize("samples,bursts", [(33601, 2), (33600, 1), (33599, 1), (48000, 2)])
 def test_identification_fit_boundary_preserves_full_id(samples, bursts):
     ident = Wav(b"\x00\x30" * samples, 48000, samples / 48000)
     transmissions = identification_transmissions(SPEECH, ident, 1)
@@ -86,6 +89,8 @@ def test_identification_fit_boundary_preserves_full_id(samples, bursts):
     assert transmissions[-1].frames.endswith(ident.frames)
     if bursts == 2:
         assert transmissions == (SPEECH, ident)
+    else:
+        assert transmissions[0].frames.startswith(SPEECH.frames)
 
 
 @pytest.mark.parametrize("frames", [b"", b"\x00\x30" * 48001])

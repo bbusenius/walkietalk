@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .config import WalkietalkError
+from .config import OutputTooLarge, WalkietalkError
 from .session import uninterrupted_cleanup
 
 MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024
@@ -78,7 +78,7 @@ def run_cli(
                     raise WalkietalkError(f"{name} timed out; reply discarded")
                 if final_path is not None and final_path.exists():
                     if final_path.stat().st_size > max_final_bytes:
-                        raise WalkietalkError(
+                        raise OutputTooLarge(
                             f"{name} final output exceeded the transport limit; discarded"
                         )
                 for key, _ in selector.select(min(0.05, remaining)):

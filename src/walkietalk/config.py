@@ -47,6 +47,10 @@ class WalkietalkError(Exception):
     """A failure that should be shown without a Python traceback."""
 
 
+class OutputTooLarge(WalkietalkError):
+    """A bounded output exceeded its size or duration budget."""
+
+
 def validate_gain(value: object) -> float:
     """Allow attenuation or amplification, but never invalid numeric values."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -75,6 +79,26 @@ def positive_integer(value: object, name: str, maximum: int) -> int:
     if not 0 < value <= maximum:
         raise WalkietalkError(f"{name} must be greater than 0 and at most {maximum}")
     return value
+
+
+@dataclass(frozen=True)
+class MessagingMode:
+    """One optional WhatsApp or Signal conversation. An empty wake leaves it off."""
+
+    wake: str = ""
+    aliases: tuple[str, ...] = ()
+    to: str = ""
+    empty_queue_phrase: str = ""
+    sender_alias: str = ""
+    listening_mode: str = "conversation"
+    conversation_timeout_seconds: float = 60
+    account: str = ""
+    attachments_dir: str = ""
+    send_as_voice: bool = False
+    transcribe_voice: bool = False
+
+    def enabled(self) -> bool:
+        return bool(self.wake)
 
 
 @dataclass(frozen=True)
@@ -150,6 +174,152 @@ class Config:
     agent_realtime_websocket_url: str = DEFAULT_REALTIME_WEBSOCKET_URL
     agent_realtime_connect_timeout_seconds: float = 10
     agent_realtime_idle_timeout_seconds: float = 60
+    whatsapp: MessagingMode = MessagingMode()
+    signal: MessagingMode = MessagingMode()
+
+
+_MESSAGING_FIELDS = {"wake", "aliases", "to", "empty_queue_phrase"}
+MESSAGING_SERVICES = ("whatsapp", "signal")
+
+
+def _phrase_text(value: object, name: str, *, allow_empty: bool) -> str:
+    from .shutdown import normalize_command
+
+    if (
+        not isinstance(value, str)
+        or len(value) > 200
+        or any(not char.isprintable() for char in value)
+        or (value and not normalize_command(value))
+        or (not allow_empty and not value.strip())
+    ):
+        empty = "empty or " if allow_empty else ""
+        raise WalkietalkError(f"{name} must be {empty}text with words, at most 200 characters")
+    return value.strip()
+
+
+def _load_messaging(data: dict) -> dict[str, MessagingMode]:
+    raw = data.get("messaging", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict) or not set(raw) <= set(MESSAGING_SERVICES):
+        raise WalkietalkError("messaging allows only whatsapp and signal")
+    modes: dict[str, MessagingMode] = {}
+    for service in MESSAGING_SERVICES:
+        if service not in raw:
+            modes[service] = MessagingMode()
+            continue
+        fields = raw[service]
+        optional_fields = {"sender_alias", "listening", "send_as_voice", "transcribe_voice"}
+        if service == "signal":
+            optional_fields.update(("account", "attachments_dir"))
+        if (
+            not isinstance(fields, dict)
+            or not _MESSAGING_FIELDS <= set(fields) <= _MESSAGING_FIELDS | optional_fields
+        ):
+            raise WalkietalkError(
+                f"messaging.{service} requires these fields: {', '.join(sorted(_MESSAGING_FIELDS))}"
+            )
+        wake = _phrase_text(fields["wake"], f"messaging.{service}.wake", allow_empty=True)
+        phrase = _phrase_text(
+            fields["empty_queue_phrase"],
+            f"messaging.{service}.empty_queue_phrase",
+            allow_empty=True,
+        )
+        aliases = fields["aliases"]
+        if not isinstance(aliases, list) or any(
+            not isinstance(item, str) or not item.strip() or len(item) > 200 for item in aliases
+        ):
+            raise WalkietalkError(
+                f"messaging.{service}.aliases must be a list of non-empty phrases"
+            )
+        aliases = [
+            _phrase_text(item, f"messaging.{service}.aliases", allow_empty=False)
+            for item in aliases
+        ]
+        if aliases and not wake:
+            raise WalkietalkError(f"Set messaging.{service}.wake before adding aliases")
+        destination = fields["to"]
+        if not isinstance(destination, str) or any(not char.isprintable() for char in destination):
+            raise WalkietalkError(f"messaging.{service}.to must be a destination")
+        destination = destination.strip()
+        if wake and not destination:
+            raise WalkietalkError(f"Set messaging.{service}.to before enabling {service}")
+        if destination and (len(destination) > 128 or any(char.isspace() for char in destination)):
+            raise WalkietalkError(
+                f"messaging.{service}.to must be a phone number or JID, at most 128 characters"
+            )
+        sender_alias = _phrase_text(
+            fields.get("sender_alias", ""), f"messaging.{service}.sender_alias", allow_empty=True
+        )
+        account = fields.get("account", "")
+        if not isinstance(account, str) or (
+            account and not re.fullmatch(r"\+[1-9][0-9]{1,14}", account)
+        ):
+            raise WalkietalkError(
+                "messaging.signal.account must be empty or a phone number in +countrycode format"
+            )
+        listening = fields.get("listening", {})
+        for option in ("send_as_voice", "transcribe_voice"):
+            if not isinstance(fields.get(option, False), bool):
+                raise WalkietalkError(f"messaging.{service}.{option} must be true or false")
+        attachments_dir = fields.get("attachments_dir", "")
+        if not isinstance(attachments_dir, str) or (
+            attachments_dir
+            and (
+                not attachments_dir.isprintable()
+                or not Path(attachments_dir).expanduser().is_absolute()
+            )
+        ):
+            raise WalkietalkError("messaging.signal.attachments_dir must be an absolute path")
+        if not isinstance(listening, dict) or not set(listening) <= {
+            "mode",
+            "conversation_timeout_seconds",
+        }:
+            raise WalkietalkError(f"Invalid messaging.{service}.listening settings")
+        listening_mode = listening.get("mode", "conversation")
+        if listening_mode not in ("conversation", "wake_phrase"):
+            raise WalkietalkError(f"Invalid messaging.{service}.listening.mode")
+        timeout = seconds(
+            listening.get("conversation_timeout_seconds", 60),
+            f"messaging.{service}.listening.conversation_timeout_seconds",
+            maximum=600,
+        )
+        modes[service] = MessagingMode(
+            account=account,
+            attachments_dir=attachments_dir,
+            send_as_voice=fields.get("send_as_voice", False),
+            transcribe_voice=fields.get("transcribe_voice", False),
+            sender_alias=sender_alias,
+            listening_mode=listening_mode,
+            conversation_timeout_seconds=timeout,
+            wake=wake,
+            aliases=tuple(item.strip() for item in aliases),
+            to=destination,
+            empty_queue_phrase=phrase,
+        )
+    return modes
+
+
+def _reject_messaging_collisions(modes: dict[str, MessagingMode], reserved: set[str]) -> None:
+    from .shutdown import normalize_command
+
+    used: dict[str, str] = {}
+    for service, mode in modes.items():
+        if not mode.enabled():
+            continue
+        phrases = [("wake", mode.wake)]
+        phrases.extend(("alias", alias) for alias in mode.aliases)
+        if mode.empty_queue_phrase:
+            phrases.append(("empty_queue_phrase", mode.empty_queue_phrase))
+        for kind, phrase in phrases:
+            key = normalize_command(phrase)
+            shared_notice = kind == "empty_queue_phrase" and used.get(key) == "empty_queue_phrase"
+            if key in reserved or (key in used and not shared_notice):
+                raise WalkietalkError(
+                    f"messaging.{service}.{kind} must differ from wake, sleep, shutdown, "
+                    "and the other messaging phrases"
+                )
+            used[key] = kind
 
 
 def load_config(path: Path) -> Config:
@@ -220,10 +390,15 @@ def load_config(path: Path) -> Config:
     }
     if isinstance(data, dict) and "voice_agent" in data:
         raise WalkietalkError(VOICE_AGENT_MIGRATE_ERROR)
-    if not isinstance(data, dict) or not set(expected) <= set(data) <= set(expected) | {"sleep"}:
+    optional_sections = {"sleep", "messaging"}
+    present = set(data) if isinstance(data, dict) else set()
+    if (
+        not isinstance(data, dict)
+        or not set(expected) <= present <= set(expected) | optional_sections
+    ):
         raise WalkietalkError(
             "Config must contain exactly agent, audio, listening, ptt, radio, shutdown, stt, tts, "
-            "vad, and wake sections, with an optional sleep section. "
+            "vad, and wake sections, with optional sleep and messaging sections. "
             "Run `walkietalk init --directory NEW_PATH` for a complete config example."
         )
     if "sleep" in data:
@@ -511,6 +686,14 @@ def load_config(path: Path) -> Config:
             for item in variants
         ):
             raise WalkietalkError(f"shutdown.{field}_aliases must be a list of non-empty phrases")
+    messaging = _load_messaging(data)
+    wake_groups = [(primary, aliases)] + [
+        (mode.wake, mode.aliases) for mode in messaging.values() if mode.enabled()
+    ]
+
+    def stripped_variants(value):
+        return (value, *(strip_wake(value, name, variants)[1] for name, variants in wake_groups))
+
     wakes = {normalize_command(v) for v in (primary, *aliases)}
     if normalize_command(wake_ack) in wakes:
         raise WalkietalkError("wake.confirmation_phrase must differ from the wake names")
@@ -532,11 +715,12 @@ def load_config(path: Path) -> Config:
         variants = {
             normalize_command(candidate)
             for value in other
-            for candidate in (value, strip_wake(value, primary, aliases)[1])
+            for candidate in stripped_variants(value)
         }
         sleep_variants = sleeps | {
-            normalize_command(strip_wake(value, primary, aliases)[1])
+            normalize_command(candidate)
             for value in (sleep["primary"], *sleep["aliases"])
+            for candidate in stripped_variants(value)
         }
         if sleep_variants & variants:
             raise WalkietalkError(
@@ -568,7 +752,7 @@ def load_config(path: Path) -> Config:
             return {
                 normalize_command(candidate)
                 for value in values
-                for candidate in (value, strip_wake(value, primary, aliases)[1])
+                for candidate in stripped_variants(value)
             }
 
         arm = control_variants((shutdown["phrase"], *shutdown["phrase_aliases"]))
@@ -584,6 +768,57 @@ def load_config(path: Path) -> Config:
             raise WalkietalkError(
                 "Shutdown phrases, codes, confirmation phrases, and wake names must be distinct"
             )
+    reserved = set(wakes)
+    reserved.add(normalize_command(wake_ack))
+    if sleep["primary"]:
+        reserved.update(
+            normalize_command(value)
+            for value in (sleep["primary"], *sleep["aliases"], sleep["confirmation_phrase"])
+        )
+    if shutdown["enabled"]:
+        reserved.update(
+            normalize_command(value)
+            for value in (
+                shutdown["phrase"],
+                *shutdown["phrase_aliases"],
+                shutdown["code"],
+                *shutdown["code_aliases"],
+                shutdown["arm_confirmation_phrase"],
+                shutdown["confirmation_phrase"],
+            )
+        )
+    reserved.discard("")
+    _reject_messaging_collisions(messaging, reserved)
+    # A longer wake must not consume part of a control after another wake.
+    # For example, "charlotte go" would steal "charlotte go to sleep".
+    all_wakes = [
+        name for primary_wake, variants in wake_groups for name in (primary_wake, *variants)
+    ]
+    controls = []
+    if sleep["primary"]:
+        controls.extend((sleep["primary"], *sleep["aliases"]))
+    if shutdown["enabled"]:
+        controls.extend(
+            (
+                shutdown["phrase"],
+                *shutdown["phrase_aliases"],
+                shutdown["code"],
+                *shutdown["code_aliases"],
+            )
+        )
+    for control in controls:
+        for base in all_wakes:
+            utterance = f"{base} {control}".strip()
+            expected = normalize_command(control)
+            for name in all_wakes:
+                matched, tail = strip_wake(utterance, name, ())
+                if matched and normalize_command(name) != normalize_command(base):
+                    # Removing only the requested prefix is fine. Consuming
+                    # control words would change the command's meaning.
+                    if len(normalize_command(tail)) < len(expected):
+                        raise WalkietalkError(
+                            "Wake prefixes must differ from sleep and shutdown controls"
+                        )
     confirmation = seconds(
         shutdown["confirmation_seconds"], "shutdown.confirmation_seconds", maximum=300
     )
@@ -711,4 +946,6 @@ def load_config(path: Path) -> Config:
         agent_realtime_websocket_url=realtime_url.rstrip("/"),
         agent_realtime_connect_timeout_seconds=realtime_connect,
         agent_realtime_idle_timeout_seconds=realtime_idle,
+        whatsapp=messaging["whatsapp"],
+        signal=messaging["signal"],
     )

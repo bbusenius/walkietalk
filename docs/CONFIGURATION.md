@@ -9,6 +9,8 @@ Use the packaged [config.example.yaml](../src/walkietalk/data/config.example.yam
 as the schema reference. All its sections and fields are required, including
 fields for unused backends, except:
 
+- `messaging` or either service may be omitted to disable its contact conversation; see
+  [WhatsApp and Signal settings](MESSAGING.md).
 - `sleep` may be omitted to disable sleep; if present, all three fields are required.
 - `stt.max_response_bytes` may be omitted to use 1048576 (1 MiB).
 - `agent.realtime` and any of its fields may be omitted to use the defaults below.
@@ -279,9 +281,8 @@ not invent one. `callsign_mode` is `"off"`, `end_of_reply`, or `interval`;
 `callsign_interval_seconds` sets the interval (greater than 0 through 1800 seconds).
 Quote `"off"` in YAML for both callsign mode and TTS normalization so the parser
 reads a string. With a text agent, ID uses the selected TTS voice and normally
-shares the reply's transmit budget, shortening the answer audio to reserve space
-for the complete ID. If the ID and its gap leave no room
-for answer audio, Walkietalk sends the answer first and then the ID in a separate
+shares the reply's transmit budget when the complete answer, gap, and ID fit.
+Otherwise, Walkietalk sends the complete answer first and then the ID in a separate
 burst, with PTT released for 0.2 seconds between them. Each burst has its own
 transmit cap. Listening stays paused through both bursts, and post-transmit mute
 starts after the last one. The ID interval starts only after the transmission

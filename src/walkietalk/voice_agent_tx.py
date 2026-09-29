@@ -42,6 +42,7 @@ from .grok_realtime import (
     wait_for_session_updated,
 )
 from .session import uninterrupted_cleanup
+from .wake import transcription_keyterms
 
 # Energy-gate: key closer to audible speech than first_output_audio_delta.
 # RMS of PCM16 LE mono; silence ~0, soft noise tens, speech typically >> threshold.
@@ -846,9 +847,7 @@ class RealtimeTalkSession:
         if not self._warm:
             await self._client.connect()
             self._client.start_reader()
-            terms = (self.config.wake_primary, *self.config.wake_aliases)
-            if self.config.sleep_primary:
-                terms += (self.config.sleep_primary, *self.config.sleep_aliases)
+            terms = transcription_keyterms(self.config)
             await self._client.session_update(
                 instructions=_talk_instructions(self.config, instructions),
                 transcription_keyterms=terms,

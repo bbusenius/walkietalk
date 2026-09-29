@@ -27,6 +27,10 @@ class SpeechFailure(Exception):
     pass
 
 
+class SpeechTooLong(SpeechFailure):
+    """Speech cannot fit the requested duration without truncation."""
+
+
 def validate_request(value, max_seconds=120):
     required = {
         "text",
@@ -137,7 +141,7 @@ def generate(request, hermes_root: str, stop_event=None) -> bytes:
                 raise SpeechFailure("Configured Hermes provider failed; check its setup")
             path = root / "speech.wav"
             if path.stat().st_size > int(request["max_audio_seconds"] * 96000) + 4096:
-                raise SpeechFailure("Hermes speech exceeded the audio limit")
+                raise SpeechTooLong("Hermes speech exceeded the audio limit")
             with wave.open(str(path), "rb") as audio:
                 if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()) != (
                     1,
@@ -146,7 +150,9 @@ def generate(request, hermes_root: str, stop_event=None) -> bytes:
                 ):
                     raise SpeechFailure("Invalid speech WAV")
                 frames = audio.getnframes()
-                if frames < 1 or frames > math.ceil(request["max_audio_seconds"] * 48000):
+                if frames > math.ceil(request["max_audio_seconds"] * 48000):
+                    raise SpeechTooLong("Speech exceeds requested duration")
+                if frames < 1:
                     raise SpeechFailure("Invalid speech duration")
                 if len(audio.readframes(frames)) != frames * 2:
                     raise SpeechFailure("Incomplete speech WAV")
@@ -223,6 +229,8 @@ class SpeechHandler(BaseHTTPRequestHandler):
             audio = generate(request, self.server.hermes_root, self.server.stopping)
         except TimeoutError:
             self.respond(504, b"Speech generation timed out")
+        except SpeechTooLong:
+            self.respond(413, b"Speech exceeds requested duration")
         except Exception:
             self.respond(502, b"Configured Hermes speech provider failed; no fallback")
         else:

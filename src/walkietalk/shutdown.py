@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .config import Config
-from .wake import strip_wake
+from .wake import configured_wakes, strip_wake
 
 
 def normalize_command(text: str) -> str:
@@ -53,8 +53,10 @@ class ShutdownSession:
             return ShutdownDecision("none")
         # The command works independently of the wake gate, with or without
         # the configured wake name. Only complete command utterances match.
-        _, traffic = strip_wake(transcript, self.config.wake_primary, self.config.wake_aliases)
-        candidates = {normalize_command(transcript), normalize_command(traffic)}
+        candidates = {normalize_command(transcript)}
+        for _destination, primary, aliases in configured_wakes(self.config):
+            _matched, traffic = strip_wake(transcript, primary, aliases)
+            candidates.add(normalize_command(traffic))
         if any(f"{phrase} {code}" in candidates for phrase in self.phrases for code in self.codes):
             self.close()
             return ShutdownDecision("confirmed", "Shutdown confirmed; stopping walkietalk.")

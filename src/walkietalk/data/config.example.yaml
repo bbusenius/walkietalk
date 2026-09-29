@@ -46,6 +46,37 @@ sleep:                    # optional; omit this section or leave primary empty t
   primary: "go to sleep"
   aliases: ["stop listening"]
   confirmation_phrase: "Standing by." # spoken with talk --transmit; empty stays silent
+messaging:                # optional; omit this section to disable both conversations
+  whatsapp:               # empty wake disables this mode; put the number in your own config
+    wake: ""
+    aliases: []
+    to: ""
+    sender_alias: ""       # spoken sender label; blank uses this service's wake phrase
+    # Voice recordings include the activation code if spoken with the message.
+    # In conversation mode, activate in a separate transmission, then speak the message
+    # within the follow-up window to avoid sending the code to the recipient.
+    send_as_voice: false  # send the original radio recording instead of its transcript
+    transcribe_voice: false # transcribe incoming audio, then read it with the configured TTS voice
+    listening:
+      mode: "conversation" # independent of the agent: conversation or wake_phrase
+      conversation_timeout_seconds: 60
+    empty_queue_phrase: "" # spoken when this wake phrase arrives alone and nothing is waiting
+  signal:
+    attachments_dir: ""   # optional override; default follows XDG_DATA_HOME/signal-cli/attachments
+    account: ""           # local sending number (+countrycode); blank uses the sole local account
+    wake: ""
+    aliases: []
+    to: ""
+    sender_alias: ""       # spoken sender label; blank uses this service's wake phrase
+    # Voice recordings include the activation code if spoken with the message.
+    # In conversation mode, activate in a separate transmission, then speak the message
+    # within the follow-up window to avoid sending the code to the recipient.
+    send_as_voice: false  # send the original radio recording instead of its transcript
+    transcribe_voice: false # transcribe incoming audio, then read it with the configured TTS voice
+    listening:
+      mode: "conversation" # independent of the agent: conversation or wake_phrase
+      conversation_timeout_seconds: 60
+    empty_queue_phrase: ""
 agent:
   backend: "stub"          # stub, hermes, codex, grok, claude, claude_api, or grok_realtime
   max_reply_chars: 600     # reject oversized replies; 1–2000 characters
