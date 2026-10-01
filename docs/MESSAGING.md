@@ -160,8 +160,9 @@ phrase is not spoken, and anything already waiting is spoken after the send.
 
 Every reply is transmitted on the radio with PTT, under the same transmit
 limit, settle, and post-transmit mute as any other spoken reply. Station ID
-uses the callsign already configured. When an ID is due it is appended, or sent
-as the next burst if it does not fit. With station ID off, a reply does not
+uses the callsign and `callsign_method` already configured. When an ID is due
+it is appended, or sent as the next burst if it does not fit. `voice` speaks
+the ID; `morse` plays the audible tone. With station ID off, a reply does not
 carry one.
 
 Each reply is introduced with the configured `sender_alias`, never a contact-book

@@ -1,3 +1,4 @@
+import array
 import time
 from dataclasses import replace
 from unittest.mock import Mock
@@ -8,9 +9,13 @@ from walkietalk import cli
 from walkietalk.audio import PlaybackPreparationError, Wav, read_wav
 from walkietalk.callsign import (
     IDENT_GAP_SECONDS,
+    MORSE_AMPLITUDE,
     CallsignSession,
     StationIDError,
     identification_transmissions,
+    morse_runs,
+    morse_unit_samples,
+    morse_wav,
 )
 from walkietalk.capture import Utterance
 from walkietalk.config import Config, WalkietalkError
@@ -304,6 +309,132 @@ def test_no_callsign_when_mode_off(bridge, monkeypatch):
     assert cli.main(ARGS) == 0
     voice.synthesize.assert_called_once()
     assert played == [SPEECH]
+
+
+WSOF426 = (
+    1,
+    -1,
+    3,
+    -1,
+    3,  # W .--
+    -3,
+    1,
+    -1,
+    1,
+    -1,
+    1,  # S ...
+    -3,
+    3,
+    -1,
+    3,
+    -1,
+    3,  # O ---
+    -3,
+    1,
+    -1,
+    1,
+    -1,
+    3,
+    -1,
+    1,  # F ..-.
+    -3,
+    1,
+    -1,
+    1,
+    -1,
+    1,
+    -1,
+    1,
+    -1,
+    3,  # 4 ....-
+    -3,
+    1,
+    -1,
+    1,
+    -1,
+    3,
+    -1,
+    3,
+    -1,
+    3,  # 2 ..---
+    -3,
+    3,
+    -1,
+    1,
+    -1,
+    1,
+    -1,
+    1,
+    -1,
+    1,  # 6 -....
+)
+
+
+def test_wsof426_is_international_morse_with_itu_gaps():
+    assert morse_runs("WSOF426") == WSOF426
+    assert morse_runs("wsof426") == WSOF426
+    assert sum(abs(run) for run in WSOF426) == 89
+    assert morse_runs("A") == (1, -1, 3)
+    assert morse_runs("EE") == (1, -3, 1)
+    assert morse_runs("E E") == (1, -7, 1)
+    assert morse_runs("E  E") == (1, -7, 1)
+    with pytest.raises(WalkietalkError, match="letters, digits, and spaces"):
+        morse_runs("WSOF426!")
+
+
+def test_morse_audio_is_an_audible_tone_at_the_dit_lengths():
+    wav = morse_wav("A E")
+    samples = array.array("h")
+    samples.frombytes(wav.frames)
+    runs = (1, -1, 3, -7, 1)
+    unit = morse_unit_samples()
+    assert wav.rate == 48000
+    assert unit == 2880
+    assert len(samples) == sum(abs(run) for run in runs) * unit
+    assert wav.duration == pytest.approx(len(samples) / 48000)
+    offset = 0
+    for run in runs:
+        count = abs(run) * unit
+        piece = samples[offset + count // 4 : offset + 3 * count // 4]
+        if run > 0:
+            assert max(abs(sample) for sample in piece) > 10000
+        else:
+            assert all(sample == 0 for sample in piece)
+        offset += count
+    peak = max(abs(sample) for sample in samples)
+    assert abs(peak - round(MORSE_AMPLITUDE * 32767)) <= 1
+    assert peak < 20000
+
+
+def test_morse_callsign_is_played_without_tts(bridge, monkeypatch):
+    config, _, voice, _ = bridge
+    config = replace(config, callsign="E", callsign_mode="end_of_reply", callsign_method="morse")
+    played = []
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "transmit_speech", lambda speech, cfg, **k: played.append(speech))
+    assert cli.main(ARGS) == 0
+    voice.synthesize.assert_called_once()
+    assert played[0].frames.endswith(morse_wav("E").frames)
+
+
+def test_overlong_morse_id_stops_before_sending_the_answer(bridge, monkeypatch, capsys):
+    config, _, voice, _ = bridge
+    config = replace(
+        config,
+        callsign="0",
+        callsign_mode="end_of_reply",
+        callsign_method="morse",
+        max_tx_seconds=1,
+        settle_seconds=0.1,
+    )
+    transmission = Mock()
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "transmit_speech", transmission)
+    assert morse_wav("0").duration > 0.9
+    assert cli.main(ARGS) == 1
+    voice.synthesize.assert_called_once()
+    transmission.assert_not_called()
+    assert "Station ID failed" in capsys.readouterr().err
 
 
 def test_receive_only_does_not_mute_or_identify(bridge, monkeypatch):

@@ -13,6 +13,7 @@ STT_BACKENDS = ("faster-whisper", "grok", "grok_api")
 DEFAULT_STT_MAX_RESPONSE_BYTES = 1024 * 1024
 TTS_NORMALIZE = ("off", "peak")
 CALLSIGN_MODES = ("off", "end_of_reply", "interval")
+CALLSIGN_METHODS = ("voice", "morse")
 AGENT_BACKENDS = ("stub", "hermes", "codex", "grok", "claude", "claude_api", "grok_realtime")
 AGENT_BACKEND_ERROR = (
     "agent.backend must be stub, hermes, codex, grok, claude, claude_api, or grok_realtime; "
@@ -113,6 +114,7 @@ class Config:
     post_tx_mute_seconds: float = 0
     callsign: str = ""
     callsign_mode: str = "off"
+    callsign_method: str = "voice"
     callsign_interval_seconds: float = 900
     energy_threshold: float = 0.02
     hangover_ms: int = 400
@@ -411,6 +413,8 @@ def load_config(path: Path) -> Config:
         optional = {"max_response_bytes"} if section == "stt" else set()
         if section == "agent":
             optional = {"realtime"}
+        if section == "radio":
+            optional = {"callsign_method"}
         if not isinstance(data[section], dict) or not (
             fields <= set(data[section]) <= fields | optional
         ):
@@ -855,6 +859,15 @@ def load_config(path: Path) -> Config:
     ident_mode = data["radio"]["callsign_mode"]
     if ident_mode not in CALLSIGN_MODES:
         raise WalkietalkError("radio.callsign_mode must be off, end_of_reply, or interval")
+    ident_method = data["radio"].get("callsign_method", defaults.callsign_method)
+    if ident_method not in CALLSIGN_METHODS:
+        raise WalkietalkError("radio.callsign_method must be voice or morse")
+    granted = callsign.strip()
+    if ident_method == "morse" and granted and not re.fullmatch(r"[A-Za-z0-9 ]+", granted):
+        raise WalkietalkError(
+            "radio.callsign must contain only letters, digits, and spaces "
+            "when radio.callsign_method is morse"
+        )
     interval = seconds(
         data["radio"]["callsign_interval_seconds"],
         "radio.callsign_interval_seconds",
@@ -871,6 +884,7 @@ def load_config(path: Path) -> Config:
         post_tx_mute_seconds=mute,
         callsign=callsign.strip(),
         callsign_mode=ident_mode,
+        callsign_method=ident_method,
         callsign_interval_seconds=interval,
         energy_threshold=seconds(
             data["vad"]["energy_threshold"], "vad.energy_threshold", maximum=1

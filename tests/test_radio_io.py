@@ -62,6 +62,7 @@ def test_invalid_tx_limit_rejected(tmp_path, config_data, value):
         ("radio", "post_tx_mute_seconds", -1),
         ("radio", "post_tx_mute_seconds", 31),
         ("radio", "callsign_mode", "always"),
+        ("radio", "callsign_method", "cw"),
         ("radio", "callsign", "!!!"),
         ("radio", "callsign_interval_seconds", 0),
     ],
@@ -84,6 +85,25 @@ def test_valid_config(tmp_path, config_data):
     config = load_config(write_config(tmp_path, config_data))
     assert config.line == "dtr"
     assert config.max_tx_seconds == 10
+    assert config.callsign_method == "voice"
+
+
+def test_existing_config_without_callsign_method_defaults_to_voice(tmp_path, config_data):
+    del config_data["radio"]["callsign_method"]
+    config_data["radio"]["callsign"] = "TEST123"
+    config_data["radio"]["callsign_mode"] = "end_of_reply"
+    config = load_config(write_config(tmp_path, config_data))
+    assert config.callsign_method == "voice"
+    assert config.callsign == "TEST123"
+
+
+def test_morse_callsign_rejects_characters_without_a_code(tmp_path, config_data):
+    config_data["radio"]["callsign_method"] = "morse"
+    config_data["radio"]["callsign"] = "WSOF426!"
+    with pytest.raises(WalkietalkError, match="letters, digits, and spaces"):
+        load_config(write_config(tmp_path, config_data))
+    config_data["radio"]["callsign"] = "WSOF426"
+    assert load_config(write_config(tmp_path, config_data)).callsign == "WSOF426"
 
 
 @pytest.mark.parametrize("value", [10, 30, 60, 120])

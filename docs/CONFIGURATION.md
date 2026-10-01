@@ -296,27 +296,37 @@ increase `audio.gain` if outgoing audio is quiet, accepting possible clipping.
 The transmit cap must be positive and finite; settle must be greater than 0,
 at most 2 seconds, and less than the cap. Post-transmit mute accepts 0–30 seconds.
 
-`radio.callsign` is your station ID, or empty for no spoken ID. Walkietalk does
+`radio.callsign` is your station ID, or empty for no station ID. Walkietalk does
 not invent one. `callsign_mode` is `"off"`, `end_of_reply`, or `interval`;
 `callsign_interval_seconds` sets the interval (greater than 0 through 1800 seconds).
 Quote `"off"` in YAML for both callsign mode and TTS normalization so the parser
-reads a string. With a text agent, ID uses the selected TTS voice and normally
-shares the reply's transmit budget when the complete answer, gap, and ID fit.
-Otherwise, Walkietalk sends the complete answer first and then the ID in a separate
-burst, with PTT released for 0.2 seconds between them. Each burst has its own
-transmit cap. Listening stays paused through both bursts, and post-transmit mute
-starts after the last one. The ID interval starts only after the transmission
-containing the ID succeeds. Any hardware failure stops the sequence.
+reads a string. `callsign_method` is `voice` or `morse`. `voice` speaks the call
+sign with the selected TTS voice. `morse` sends it as International Morse code
+on an 800 Hz tone at 20 words per minute: a dash is three dots, the gap inside
+a character is one dot, the gap between characters is three dots, and a space
+is seven dots. A space is how a unit number follows the call sign. Morse accepts
+letters, digits, and spaces; any other character is rejected when that method
+is selected. The tone is generated in the bridge at half of full scale, and
+`audio.gain` still applies. Morse does not call TTS.
 
-With `grok_realtime`, the station ID always uses a separate bounded voice burst
-after the reply, with PTT released between them. Its interval advances only after
-the complete ID is transmitted successfully.
+With a text agent, the ID normally shares the reply's transmit budget when the
+complete answer, gap, and ID fit. Otherwise, Walkietalk sends the complete
+answer first and then the ID in a separate burst, with PTT released for 0.2
+seconds between them. Each burst has its own transmit cap. Listening stays
+paused through both bursts, and post-transmit mute starts after the last one.
+The ID interval starts only after the transmission containing the ID succeeds.
+Any hardware failure stops the sequence.
+
+With `grok_realtime`, the station ID always uses a separate bounded burst after
+the reply, with PTT released between them. `voice` speaks that burst through
+the realtime voice. `morse` plays the local tone. The interval advances only
+after the complete ID is transmitted successfully.
 
 When a configured ID is due, failure to prepare or transmit it stops `talk` with
-an error. TTS prepares the ID before transmitting the answer. If the answer
-finishes but its separate ID burst fails, the completed answer or chunk is
-recorded as delivered before stopping. The CLI does not crop station-ID audio
-to make it fit, and identification remains due until the complete ID succeeds.
+an error. On a text agent, the ID is prepared before the answer is transmitted.
+If the answer finishes but its separate ID burst fails, the completed answer or
+chunk is recorded as delivered before stopping. The CLI does not crop station-ID
+audio to make it fit, and identification remains due until the complete ID succeeds.
 
 The parent owns PTT, supervises playback in a child process, and releases PTT
 on completion, handled failure, Ctrl+C, or SIGTERM. It cannot guarantee release

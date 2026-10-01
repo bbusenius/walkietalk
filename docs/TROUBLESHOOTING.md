@@ -88,8 +88,10 @@ answer is cut off at the end, it may exceed the remaining transmit budget:
 ask for shorter replies or deliberately adjust `radio.max_tx_seconds`.
 
 After unkeying, `radio.post_tx_mute_seconds` suppresses immediate recapture.
-If station ID is unwanted, select `callsign_mode: "off"`; if needed, set your own
-callsign and mode. The bridge does not infer your station ID.
+If station ID is unwanted, select `callsign_mode: "off"`. To send one, set your
+own callsign, mode, and method (`voice` or `morse`). The bridge does not infer
+your station ID. With `callsign_method: morse`, a call sign that contains
+anything other than a letter, digit, or space is rejected when the config loads.
 
 Ctrl+C or SIGTERM triggers cleanup. If the gateway remains keyed, turn off the
 radio and investigate before running again. Power loss, SIGKILL, disconnected

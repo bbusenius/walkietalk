@@ -15,6 +15,8 @@ from .callsign import (
     CallsignSession,
     StationIDError,
     identification_transmissions,
+    morse_wav,
+    station_id_wav,
 )
 from .capture import capture_from_device, capture_from_wav
 from .config import (
@@ -352,17 +354,24 @@ def _realtime_commit_reply(
             emit("status", "Sending station ID in a separate bounded burst; PTT released.")
             time.sleep(IDENT_GAP_SECONDS)
             try:
-                ident = speak_text_via_realtime(
-                    config,
-                    config.callsign,
-                    SerialPTT(config.serial_port, config.line),
-                    allow_key=True,
-                    play_segment=StreamingPlayback(config),
-                )
-                if ident.truncated_by_tx_cap or not ident.ptt_actions:
-                    raise WalkietalkError("Station ID was not transmitted in full")
+                if config.callsign_method == "morse":
+                    transmit_speech(
+                        morse_wav(config.callsign),
+                        config,
+                        finished="Station ID finished; PTT released.",
+                    )
+                else:
+                    ident = speak_text_via_realtime(
+                        config,
+                        config.callsign,
+                        SerialPTT(config.serial_port, config.line),
+                        allow_key=True,
+                        play_segment=StreamingPlayback(config),
+                    )
+                    if ident.truncated_by_tx_cap or not ident.ptt_actions:
+                        raise WalkietalkError("Station ID was not transmitted in full")
                 callsigns.mark()
-            except RealtimeHardwareError:
+            except (RealtimeHardwareError, PTTHardwareError):
                 raise
             except (WalkietalkError, OSError) as exc:
                 wait_post_tx_mute(config)
@@ -449,8 +458,8 @@ def talk_command(args: argparse.Namespace) -> None:
         if callsigns.enabled():
             emit(
                 "status",
-                f"Station ID {config.callsign!r} mode {config.callsign_mode}; "
-                "supplied in config, not invented.",
+                f"Station ID {config.callsign!r} mode {config.callsign_mode} "
+                f"method {config.callsign_method}; supplied in config, not invented.",
             )
         if config.post_tx_mute_seconds:
             emit(
@@ -1357,7 +1366,7 @@ def transmit_with_callsign(speech: Wav, config: Config, voice, callsigns: Callsi
     if callsigns.due():
         try:
             emit("status", "Generating station ID; PTT off...")
-            ident = radio_wav(voice.synthesize(config.callsign, truncate=False), spoken_seconds)
+            ident = radio_wav(station_id_wav(config, voice), spoken_seconds)
             transmissions = identification_transmissions(speech, ident, spoken_seconds)
         except (WalkietalkError, OSError) as exc:
             raise StationIDError(str(exc)) from exc
@@ -1739,7 +1748,8 @@ def run(args: argparse.Namespace) -> None:
         print(f"Post-TX mute: {config.post_tx_mute_seconds:g}s after unkey", flush=True)
         if config.callsign and config.callsign_mode != "off":
             print(
-                f"Station ID: {config.callsign!r}; mode {config.callsign_mode}",
+                f"Station ID: {config.callsign!r}; mode {config.callsign_mode}; "
+                f"method {config.callsign_method}",
                 flush=True,
             )
         else:

@@ -36,12 +36,14 @@ Walkietalk neither supplies a substitute key nor switches providers on failure.
 
 ## Start the speech service
 
-Station-ID synthesis requests `truncate: false` so an overlong callsign is
-rejected instead of shortened. When upgrading a setup that uses Hermes speech
-and callsigns, update the companion `hermes_speech_service.py` and restart the
-speech service too. Older services reject this request; Walkietalk reports an
-ID synthesis failure and does not count the ID as sent. Ordinary reply requests
-remain compatible with older services.
+A voice station ID (`callsign_method: voice`) requests `truncate: false` so an
+overlong callsign is rejected instead of shortened. When upgrading a setup that
+uses Hermes speech and spoken callsigns, update the companion
+`hermes_speech_service.py` and restart the speech service too. Older services
+reject this request; Walkietalk reports an ID synthesis failure and does not
+count the ID as sent. Ordinary reply requests remain compatible with older
+services. `callsign_method: morse` is generated in the bridge and does not call
+this service.
 
 On a native Hermes installation, use its Python interpreter and source path:
 

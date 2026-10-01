@@ -15,11 +15,12 @@ from unittest.mock import Mock
 import pytest
 
 from walkietalk import cli, voice_agent_tx
-from walkietalk.callsign import CallsignSession, StationIDError
+from walkietalk.callsign import CallsignSession, StationIDError, morse_wav
 from walkietalk.capture import collect_utterance, frames_from_pcm
 from walkietalk.config import Config, WalkietalkError, load_config
 from walkietalk.grok_realtime import GrokRealtimeClient, RealtimeEvent, resample_pcm16
 from walkietalk.messaging import MessageBridge
+from walkietalk.session import PTTHardwareError
 from walkietalk.voice_agent_tx import (
     PttAction,
     RealtimeCaptureError,
@@ -335,6 +336,96 @@ def test_realtime_station_id_policy(monkeypatch, mode, count):
             callsigns=callsigns,
         )
     assert spoken == ["TEST123"] * count
+
+
+def test_realtime_morse_id_plays_local_audio(monkeypatch):
+    cfg = config(callsign="E", callsign_mode="end_of_reply", callsign_method="morse")
+    callsigns = CallsignSession(cfg, time.monotonic)
+    result = SupervisedTxResult(
+        None, output_transcript="reply", ptt_actions=(PttAction("key", "test"),)
+    )
+    talk = SimpleNamespace(commit_and_respond=lambda *_, **__: result)
+    played = []
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    monkeypatch.setattr(cli, "speak_text_via_realtime", lambda *_: pytest.fail("voice ID"))
+    monkeypatch.setattr(
+        cli, "transmit_speech", lambda speech, *_args, **_kwargs: played.append(speech)
+    )
+    monkeypatch.setattr(cli, "IDENT_GAP_SECONDS", 0)
+    assert cli._realtime_commit_reply(
+        talk_realtime=talk,
+        config=cfg,
+        args=argparse.Namespace(transmit=True, once=True, wav=None),
+        session=ListeningSession(cfg),
+        callsigns=callsigns,
+    )
+    assert played[0].frames == morse_wav("E").frames
+    assert callsigns.last_id_at is not None
+
+
+def test_realtime_morse_id_failure_stops_after_the_reply(monkeypatch):
+    cfg = config(
+        callsign="E",
+        callsign_mode="interval",
+        callsign_method="morse",
+        post_tx_mute_seconds=2,
+    )
+    callsigns = CallsignSession(cfg, time.monotonic)
+    reply = SupervisedTxResult(
+        None, output_transcript="reply", ptt_actions=(PttAction("key", "test"),)
+    )
+    talk = SimpleNamespace(commit_and_respond=Mock(return_value=reply))
+    mute = Mock()
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    monkeypatch.setattr(cli, "speak_text_via_realtime", lambda *_: pytest.fail("voice ID"))
+    monkeypatch.setattr(
+        cli, "transmit_speech", Mock(side_effect=WalkietalkError("playback failed"))
+    )
+    monkeypatch.setattr(cli, "wait_post_tx_mute", mute)
+    monkeypatch.setattr(cli, "IDENT_GAP_SECONDS", 0)
+    with pytest.raises(StationIDError) as error:
+        cli._realtime_commit_reply(
+            talk_realtime=talk,
+            config=cfg,
+            args=argparse.Namespace(transmit=True, once=False, wav=None),
+            session=ListeningSession(cfg),
+            callsigns=callsigns,
+        )
+    assert error.value.message_transmitted and callsigns.due()
+    talk.commit_and_respond.assert_called_once()
+    mute.assert_called_once_with(cfg)
+
+
+def test_realtime_morse_id_ptt_fault_skips_mute(monkeypatch):
+    cfg = config(
+        callsign="E",
+        callsign_mode="interval",
+        callsign_method="morse",
+        post_tx_mute_seconds=2,
+    )
+    callsigns = CallsignSession(cfg, time.monotonic)
+    reply = SupervisedTxResult(None, ptt_actions=(PttAction("key", "test"),))
+    talk = SimpleNamespace(commit_and_respond=Mock(return_value=reply))
+    mute = Mock()
+    fault = PTTHardwareError("PTT release failed")
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    monkeypatch.setattr(cli, "transmit_speech", Mock(side_effect=fault))
+    monkeypatch.setattr(cli, "wait_post_tx_mute", mute)
+    monkeypatch.setattr(cli, "IDENT_GAP_SECONDS", 0)
+    with pytest.raises(PTTHardwareError) as error:
+        cli._realtime_commit_reply(
+            talk_realtime=talk,
+            config=cfg,
+            args=argparse.Namespace(transmit=True, once=False, wav=None),
+            session=ListeningSession(cfg),
+            callsigns=callsigns,
+        )
+    assert error.value is fault
+    assert callsigns.due()
+    mute.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["prepare", "silent", "truncated"])
