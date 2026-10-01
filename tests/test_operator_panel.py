@@ -21,8 +21,8 @@ import pytest
 from walkietalk import cli, operator_panel
 from walkietalk.config import Config, MessagingMode, WalkietalkError
 from walkietalk.messaging import Inbound
-from walkietalk.operator_mode import OperatorQueue
-from walkietalk.operator_panel import OperatorPanel, wrap_lines
+from walkietalk.operator_mode import APPROVED_EDIT_BLOCK, MAX_EDIT_CHARS, OperatorQueue
+from walkietalk.operator_panel import LineEditor, OperatorPanel, wrap_lines
 from walkietalk.term import emit, route_logs
 
 MODE = MessagingMode(wake="nana", to="123", sender_alias="Nana")
@@ -36,6 +36,8 @@ class Screen:
     def __init__(self, rows=24, columns=80):
         self.size = rows, columns
         self.lines = {}
+        self.keys = []
+        self.cursor = None
 
     def getmaxyx(self):
         return self.size
@@ -53,6 +55,17 @@ class Screen:
         assert row < self.size[0] and column + len(text) < self.size[1]
         self.lines[row] = text
 
+    def move(self, row, col):
+        self.cursor = (row, col)
+
+    def timeout(self, ms):
+        pass
+
+    def get_wch(self):
+        if not self.keys:
+            raise curses.error
+        return self.keys.pop(0)
+
     def refresh(self):
         pass
 
@@ -61,6 +74,13 @@ class Screen:
 def screen(monkeypatch):
     monkeypatch.setattr(curses, "ACS_HLINE", ord("-"), raising=False)
     return Screen()
+
+
+@pytest.fixture(autouse=True)
+def restore_escdelay():
+    delay = curses.get_escdelay()
+    yield
+    curses.set_escdelay(delay)
 
 
 def test_fixed_layout_counts_identity_and_live_meter(screen):
@@ -163,13 +183,19 @@ def test_tab_selects_approved_messages_and_all_controls_fit_minimum_terminal(scr
     displayed = queue.snapshot()
     rows = panel._draw(screen, displayed)
     assert "outgoing review head" in screen.lines.values()
+    assert "[R] Read" in screen.lines[17]
+    assert "[E] Edit" in screen.lines[17]
+    assert "[A] Approve" in screen.lines[17]
     assert "[T] Transmit" in screen.lines[17]
+    assert "[D] Deny" in screen.lines[17]
     assert "[S] Sleep" in screen.lines[18] and "[Ctrl+C] Stop" in screen.lines[18]
     panel._dispatch(9, displayed, rows)
     assert panel._approved_view
     panel._draw(screen, queue.snapshot(approved=panel._approved_view))
-    assert "approved reply" in screen.lines.values()
-    assert "Tab: Review" in "\n".join(screen.lines.values())
+    approved_text = "\n".join(screen.lines.values())
+    assert "approved reply" in approved_text
+    assert "Tab: Review" in approved_text
+    assert "[T] Transmit" in approved_text and "[E] Edit" not in approved_text
 
 
 def test_transmit_on_empty_review_points_to_approved_messages(screen, monkeypatch):
@@ -589,7 +615,7 @@ def test_actual_panel_shortcuts_resize_and_ctrl_c_restore_terminal(voice, releas
             if not voice:
                 os.write(master, b"r")
                 expect("Preview complete")
-                expect("Read [A] Approve")
+                expect("[R] Read [E] Edit [A] Approve")
             release_start = cursor
             os.write(master, b"t" if release == "transmit" else b"a")
             expect("SECONDMESSAGE")
@@ -684,3 +710,267 @@ print("FAILURE_RESTORED", flush=True)
             process.kill()
             process.wait(timeout=5)
         os.close(master)
+
+
+def test_line_editor_edits_at_the_start_middle_and_end():
+    editor = LineEditor("hello", 3, "Editing")
+    assert editor.buffer == "hello" and editor.cursor == 5
+    editor.home()
+    editor.insert("X")
+    assert (editor.buffer, editor.cursor) == ("Xhello", 1)
+    editor.end()
+    editor.backspace()
+    assert (editor.buffer, editor.cursor) == ("Xhell", 5)
+    editor.cursor = 1
+    editor.delete()
+    assert (editor.buffer, editor.cursor) == ("Xell", 1)
+    editor.backspace()
+    assert (editor.buffer, editor.cursor) == ("ell", 0)
+    editor.move(2)
+    editor.insert("Y")
+    assert (editor.buffer, editor.cursor) == ("elYl", 3)
+    editor.move(-5)
+    assert editor.cursor == 0
+    editor.move(100)
+    assert editor.cursor == len(editor.buffer)
+    editor.clear()
+    assert (editor.buffer, editor.cursor) == ("", 0)
+    assert editor.insert("a" * MAX_EDIT_CHARS)
+    assert editor.insert("b") is False
+    assert editor.buffer == "a" * MAX_EDIT_CHARS
+    shorter = LineEditor("a" * (MAX_EDIT_CHARS - 2), 1, "Editing")
+    assert shorter.insert("bcd") is True
+    assert shorter.buffer == "a" * (MAX_EDIT_CHARS - 2) + "bc"
+
+
+def test_line_editor_layout_wraps_the_cursor_and_wide_characters():
+    empty = LineEditor("", 1, "Editing")
+    assert empty.layout(8) == ([""], 0, 0)
+    exact = LineEditor("abcd", 1, "Editing")
+    assert exact.layout(4) == (["abcd", ""], 1, 0)
+    wide = LineEditor("界😀", 1, "Editing")
+    assert wide.layout(2) == (["界", "😀", ""], 2, 0)
+    combined = LineEditor("e\u0301", 1, "Editing")
+    combined.cursor = 1
+    assert combined.layout(10) == (["e\u0301"], 0, 1)
+    combined.end()
+    assert combined.layout(1) == (["e\u0301", ""], 1, 0)
+
+
+def test_edit_opens_prefilled_and_refuses_blocked_items(monkeypatch):
+    monkeypatch.setattr(operator_panel, "operator_request", Mock())
+    queue = review()
+    queue.add("signal", text="hello there")
+    panel = OperatorPanel(queue, Path("unused"))
+    displayed = queue.snapshot()
+    panel._dispatch(ord("E"), displayed, 4)
+    assert panel._editor.buffer == "hello there"
+    assert panel._editor.cursor == len("hello there")
+    assert panel._editor.revision == displayed["revision"]
+    assert panel._editor.heading.startswith("Editing Item 1")
+    assert panel._result == ("status", "Enter saves, Esc cancels.")
+
+    approved = review()
+    approved.add("signal", incoming=Inbound("signal", "text", text="kept", identity="1"))
+    approved.finish(approved._waiting[0])
+    panel = OperatorPanel(approved, Path("unused"))
+    panel._dispatch(ord("E"), approved.snapshot(approved=True), 4)
+    assert panel._editor is None
+    assert panel._result == ("warn", APPROVED_EDIT_BLOCK)
+
+    blocked = review()
+    blocked.add("signal", audio=Mock())
+    panel = OperatorPanel(blocked, Path("unused"))
+    panel._dispatch(ord("e"), blocked.snapshot(), 4)
+    assert panel._editor is None
+    assert "recording" in panel._result[1]
+
+
+def test_editing_inserts_shortcut_letters_as_text(screen):
+    queue = review()
+    queue.add("signal", text="hi")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    panel._edit_key(screen, "a")
+    assert panel._editor.buffer == "hia"
+    panel._edit_key(screen, "d")
+    assert panel._editor.buffer == "hiad"
+
+
+def test_enter_saves_and_a_pasted_newline_inserts_a_space(screen, monkeypatch):
+    request = Mock(return_value=True)
+    monkeypatch.setattr(operator_panel, "operator_request", request)
+    monkeypatch.setattr(curses, "unget_wch", Mock())
+    monkeypatch.setattr(curses, "ungetch", Mock())
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    displayed = queue.snapshot()
+    panel._dispatch(ord("e"), displayed, 4)
+    panel._editor.insert("!")
+    panel._edit_key(screen, "\n")
+    panel._worker.join(timeout=2)
+    assert request.call_args.args == (Path("unused"), "edit")
+    assert request.call_args.kwargs["revision"] == displayed["revision"]
+    assert request.call_args.kwargs["text"] == "hello!"
+    assert panel._editor is None
+
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    screen.keys = ["x"]
+    panel._edit_key(screen, "\n")
+    assert panel._editor.buffer.endswith(" ")
+    assert screen.keys == []
+    curses.unget_wch.assert_called_once_with("x")
+    request.assert_called_once()
+
+
+def test_escape_and_unchanged_text_close_without_a_request(screen, monkeypatch):
+    request = Mock(return_value=True)
+    flushinp = Mock()
+    monkeypatch.setattr(operator_panel, "operator_request", request)
+    monkeypatch.setattr(curses, "flushinp", flushinp)
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    assert panel._edit_key(screen, "\x1b") is False
+    flushinp.assert_called_once()
+    assert panel._editor is None
+    assert panel._result[1] == "Edit cancelled; message unchanged."
+    request.assert_not_called()
+
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    panel._editor.insert("   ")
+    panel._edit_key(screen, "\n")
+    assert panel._editor is None
+    assert panel._result[1] == "Edit cancelled; message unchanged."
+    request.assert_not_called()
+
+
+def test_failed_edit_keeps_the_unsent_text_in_the_log(screen, monkeypatch):
+    monkeypatch.setattr(operator_panel, "operator_request", Mock(return_value=False))
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    panel._editor.insert("!")
+    panel._edit_key(screen, "\n")
+    panel._worker.join(timeout=2)
+    assert ("warn", "Unsent edit: hello!") in queue.recent_logs()
+
+
+def test_edit_timeout_keeps_the_unsent_text_in_the_log(screen, monkeypatch):
+    monkeypatch.setattr(
+        operator_panel, "operator_request", Mock(side_effect=WalkietalkError("timed out"))
+    )
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    panel._editor.insert("!")
+    panel._edit_key(screen, "\n")
+    panel._worker.join(timeout=2)
+    assert ("warn", "Unsent edit: hello!") in queue.recent_logs()
+    assert ("error", "timed out") in queue.recent_logs()
+
+
+def test_escape_drops_a_following_shortcut(screen, monkeypatch):
+    monkeypatch.setattr(curses, "flushinp", Mock())
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    snapshot = queue.snapshot()
+    panel._handle_keys(screen, ["e"], snapshot, 4)
+    assert panel._editor is not None
+    panel._handle_keys(screen, ["\x1b", "d"], snapshot, 4)
+    assert panel._editor is None
+    assert panel._result[1] == "Edit cancelled; message unchanged."
+    assert queue.waiting(queue._waiting[0])
+    curses.flushinp.assert_called_once()
+
+
+def test_escape_delay_is_short_only_while_editing(screen, monkeypatch):
+    calls = []
+    monkeypatch.setattr(curses, "get_escdelay", lambda: 1000)
+    monkeypatch.setattr(curses, "set_escdelay", lambda ms: calls.append(ms))
+    monkeypatch.setattr(curses, "flushinp", Mock())
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    assert calls == [25]
+    panel._edit_key(screen, "\x1b")
+    assert calls == [25, 1000]
+    assert panel._saved_escdelay is None
+
+
+def test_pending_keys_insert_before_the_next_redraw(screen):
+    queue = review()
+    queue.add("signal", text="hi")
+    panel = OperatorPanel(queue, Path("unused"))
+    snapshot = queue.snapshot()
+    panel._handle_keys(screen, ["e", "a", "d"], snapshot, 4)
+    assert panel._editor.buffer == "hiad"
+    panel._handle_keys(screen, ["\n", "x"], snapshot, 4)
+    assert panel._editor.buffer == "hiad x"
+    assert panel._editor is not None
+
+
+def test_editor_opens_at_the_start_and_clamps_scroll(screen, monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", Mock())
+    queue = review()
+    queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._scroll = 20
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    assert panel._scroll == 0
+    panel._scroll = 20
+    panel._draw(screen, queue.snapshot())
+    assert panel._scroll == 0
+    assert "hello" in screen.lines.values()
+
+
+def test_edit_warns_when_the_message_changes(screen, monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", Mock())
+    queue = review()
+    item = queue.add("signal", text="hello")
+    panel = OperatorPanel(queue, Path("unused"))
+    displayed = queue.snapshot()
+    panel._dispatch(ord("e"), displayed, 4)
+    queue.edit(item, "other")
+    panel._draw(screen, queue.snapshot())
+    assert panel._result == ("warn", "Message changed while editing; Enter will be rejected.")
+
+
+def test_draw_while_editing_places_the_cursor_and_scrolls_to_it(screen, monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", Mock())
+    queue = review()
+    queue.add("signal", text="hi")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._dispatch(ord("e"), queue.snapshot(), 4)
+    panel._draw(screen, queue.snapshot())
+    assert screen.cursor == (16, 4)
+    assert any("[Enter] Save" in line for line in screen.lines.values())
+    panel._editor.buffer = "x" * (76 * 4)
+    panel._editor.cursor = len(panel._editor.buffer)
+    panel._draw(screen, queue.snapshot())
+    assert panel._scroll == 1
+    assert screen.cursor == (19, 2)
+    text = "\n".join(screen.lines.values())
+    assert "[Enter] Save" in text
+    assert "Lines " in text
+    assert "PgUp" not in text
+    assert "Up/Down" not in text
+
+
+def test_draw_after_editing_shows_the_original(screen, monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", Mock())
+    queue = review()
+    item = queue.add("signal", text="hello")
+    queue.edit(item, "changed")
+    panel = OperatorPanel(queue, Path("unused"))
+    panel._draw(screen, queue.snapshot())
+    text = "\n".join(screen.lines.values())
+    assert "| Edited" in text
+    assert "changed" in text
+    assert "Original: hello" in text

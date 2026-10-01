@@ -2,7 +2,7 @@
 
 A Linux radio bridge with interchangeable AI agents and voices, including
 optional WhatsApp and Signal messaging. Speak into a walkie-talkie and use
-a configured wake phrase to ask your chosen agent a question or send a
+a configured wake phrase to ask your chosen AI agent a question or send a
 transcribed message to a contact. Hear agent answers and contact messages
 over the radio. Optional [operator mode](docs/MESSAGING.md#operator-mode) holds
 messages for local review and approval. Supported agents include Grok, Codex,
@@ -166,7 +166,9 @@ it. Expect a transcript and an agent reply in the terminal. `talk --capture`
 listens continuously and prints replies without transmitting.
 
 With [operator mode](docs/MESSAGING.md#operator-mode) enabled, add `--panel` to
-keep live logs above fixed message review controls in the same terminal.
+keep live logs above fixed message review controls in the same terminal. Press
+**E** in that panel, or run `walkietalk operator edit` in another terminal, to
+change the message under review before approving it.
 
 ### Enable spoken radio replies
 

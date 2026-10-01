@@ -25,11 +25,35 @@ from .term import emit
 if TYPE_CHECKING:
     from .messaging import Inbound
 
-OPERATOR_ACTIONS = ("status", "read", "approve", "transmit", "deny", "sleep")
+OPERATOR_ACTIONS = ("status", "read", "edit", "approve", "transmit", "deny", "sleep")
 COMMAND_HELP = (
-    "Use walkietalk operator status/read/approve/transmit/deny/sleep from another terminal."
+    "Use walkietalk operator status/read/edit/approve/transmit/deny/sleep from another terminal."
 )
+MAX_EDIT_CHARS = 8000
+# One non-BMP character escapes to 12 bytes (\uXXXX\uXXXX), so 8000 of them need ~96 KiB.
+MAX_REQUEST_BYTES = 128 * 1024
+APPROVED_EDIT_BLOCK = "Approved messages can't be edited; deny to drop it."
 _DISPLAYED = object()
+
+
+def normalized_change(text: str, previous: str) -> str | None:
+    """Normalized replacement, or None when it is empty or already the previous words."""
+    from .messaging import normalize_message
+
+    updated = normalize_message(text)
+    if not updated or updated == normalize_message(previous):
+        return None
+    return updated
+
+
+def original_line(original: str) -> str:
+    """Received words shown under an edited message."""
+    return f"Original: {original}"
+
+
+def edited_status(content: str, original: str) -> tuple[tuple[str, str], tuple[str, str]]:
+    """How an edited item is shown: the new words, then the received words."""
+    return ("reply", f"Edited: {content}"), ("status", original_line(original))
 
 
 def _snapshot_view(snapshot: dict, *, approved: bool) -> dict:
@@ -49,6 +73,7 @@ class ReviewCommand:
     action: str
     revision: int | None
     approved_view: bool = False
+    text: str | None = None
     responses: queue.Queue = field(default_factory=queue.Queue)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -61,6 +86,7 @@ class ReviewItem:
     text: str = ""
     audio: Wav | None = None
     transcript: str | None = None
+    edited: str | None = None
 
     @property
     def kind(self) -> str:
@@ -70,6 +96,17 @@ class ReviewItem:
     def previewed(self) -> bool:
         """Approval needs readable content, whether captured already or obtained by Read."""
         return self.kind == "text" or bool(self.transcript and self.transcript.strip())
+
+    @property
+    def original(self) -> str:
+        """Words before any operator edit. Voice uses its transcript, never a caption."""
+        if self.kind == "voice":
+            return self.transcript or ""
+        return self.incoming.text if self.incoming else self.text
+
+    @property
+    def content(self) -> str:
+        return self.edited if self.edited is not None else self.original
 
 
 class OperatorQueue:
@@ -88,7 +125,7 @@ class OperatorQueue:
         self._active_command: ReviewCommand | None = None
         self._sequence = 0
         self._revision = 0
-        self._review_display = (None, None)
+        self._review_display = (None, None, None)
         self._announced = -1
         self._displayed: int | None = None
         self.status_provider: Callable[[], str] | None = None
@@ -155,8 +192,10 @@ class OperatorQueue:
                         f"Operator review: {direction} {item.service}, {alias}, {item.kind}.",
                     )
                 )
-                if item.kind == "text":
-                    messages.append(("reply", item.incoming.text if item.incoming else item.text))
+                if item.edited is not None:
+                    messages.extend(edited_status(item.edited, item.original))
+                elif item.kind == "text":
+                    messages.append(("reply", item.content))
                 elif item.previewed:
                     messages.append(("reply", f"Voice transcript: {item.transcript}"))
                 else:
@@ -186,7 +225,7 @@ class OperatorQueue:
     def _update_revisions(self, *, retry: ReviewItem | None = None) -> None:
         """Bind commands to each view's content, including fresh attempts after failure."""
         head = self._waiting[0] if self._waiting else None
-        display = (head, head.transcript if head else None)
+        display = (head, head.transcript if head else None, head.edited if head else None)
         if display != self._review_display or (head is not None and head is retry):
             self._revision += 1
             self._displayed = None
@@ -208,10 +247,58 @@ class OperatorQueue:
             "service": item.service,
             "alias": mode.sender_alias or mode.wake,
             "kind": item.kind,
-            "text": item.incoming.text if item.incoming else item.text,
+            "text": item.content
+            if item.kind == "text"
+            else (item.incoming.text if item.incoming else item.text),
             "previewed": item.previewed,
-            "transcript": item.transcript,
+            "transcript": item.edited
+            if item.kind == "voice" and item.edited is not None
+            else item.transcript,
+            "edited": item.edited is not None,
+            "original": item.original if item.edited is not None else None,
+            "edit_block": self._edit_block(item),
         }
+
+    def _edit_block(self, item: ReviewItem) -> str | None:
+        """Why this item can't be edited, or None. Caller holds the lock."""
+        if item not in self._waiting:
+            return APPROVED_EDIT_BLOCK
+        if item.kind == "voice":
+            if item.incoming is None:
+                return "Outgoing voice sends the recording; it can't be edited."
+            if not getattr(self.config, item.service).transcribe_voice:
+                return "This voice message plays as audio; it can't be edited."
+            if not item.previewed:
+                return "Read the voice transcript before editing."
+        return None
+
+    def edit_block(self, item: ReviewItem) -> str | None:
+        with self._lock:
+            return self._edit_block(item)
+
+    def edit(self, item: ReviewItem, text: str) -> str:
+        """Replace the review head's words and return the previous words."""
+        with self._lock:
+            assert item in self._waiting
+            previous = item.content
+            item.edited = None if text == item.original else text
+            self._update_revisions()
+            # The talk loop logs Before/After; don't announce this revision again.
+            self._announced = self._revision
+            self._displayed = self._revision
+            return previous
+
+    def playback_words(self, incoming: Inbound) -> str | None:
+        """Edited words to speak, or None so delivery keeps the inbound text."""
+        with self._lock:
+            item = self._incoming.get((incoming.service, incoming.identity))
+            if item is None or item.edited is None:
+                return None
+            return item.content
+
+    def command_text(self) -> str | None:
+        with self._lock:
+            return self._active_command.text if self._active_command else None
 
     def snapshot(self, *, approved: bool = False) -> dict:
         with self._lock:
@@ -231,13 +318,16 @@ class OperatorQueue:
             result["conversation"] = self.status_provider()
         return _snapshot_view(result, approved=approved)
 
-    def submit(self, line: str, *, revision=_DISPLAYED, approved: bool = False) -> ReviewCommand:
+    def submit(
+        self, line: str, *, revision=_DISPLAYED, approved: bool = False, text: str | None = None
+    ) -> ReviewCommand:
         with self._lock:
             displayed = self._approved_revision if approved else self._displayed
             command = ReviewCommand(
                 line.strip().casefold(),
                 displayed if revision is _DISPLAYED else revision,
                 approved,
+                text,
             )
             self._commands.append(command)
             return command
@@ -396,7 +486,7 @@ def operator_socket(config_path: Path) -> Path:
 
 
 def _send_response(connection: socket.socket, response: dict) -> None:
-    connection.sendall(json.dumps(response).encode() + b"\n")
+    connection.sendall(json.dumps(response, ensure_ascii=False).encode() + b"\n")
 
 
 def _read_response(connection: socket.socket, stream, deadline: float) -> dict:
@@ -422,8 +512,8 @@ class _OperatorHandler(socketserver.StreamRequestHandler):
             self.connection.settimeout(5)
             snapshot = control.review.snapshot()
             _send_response(self.connection, {"snapshot": snapshot})
-            line = self.rfile.readline(1025)
-            if not line.endswith(b"\n") or len(line) > 1024:
+            line = self.rfile.readline(MAX_REQUEST_BYTES + 1)
+            if not line.endswith(b"\n") or len(line) > MAX_REQUEST_BYTES:
                 return
             request = json.loads(line)
             action = request.get("action") if isinstance(request, dict) else None
@@ -433,6 +523,32 @@ class _OperatorHandler(socketserver.StreamRequestHandler):
                 or action not in OPERATOR_ACTIONS
                 or type(approved) is not bool
             ):
+                _send_response(
+                    self.connection, {"done": True, "ok": False, "message": COMMAND_HELP}
+                )
+                return
+            text = request.get("text")
+            if action == "edit":
+                from .messaging import normalize_message
+
+                if approved:
+                    _send_response(
+                        self.connection,
+                        {"done": True, "ok": False, "message": APPROVED_EDIT_BLOCK},
+                    )
+                    return
+                text = normalize_message(text) if isinstance(text, str) else ""
+                if not text or len(text) > MAX_EDIT_CHARS:
+                    _send_response(
+                        self.connection,
+                        {
+                            "done": True,
+                            "ok": False,
+                            "message": f"Edit needs text of 1-{MAX_EDIT_CHARS} characters.",
+                        },
+                    )
+                    return
+            elif text is not None:
                 _send_response(
                     self.connection, {"done": True, "ok": False, "message": COMMAND_HELP}
                 )
@@ -468,7 +584,18 @@ class _OperatorHandler(socketserver.StreamRequestHandler):
                     },
                 )
                 return
-            command = control.review.submit(action, revision=revision, approved=approved)
+            if action == "edit" and snapshot["item"]["edit_block"]:
+                _send_response(
+                    self.connection,
+                    {"done": True, "ok": False, "message": snapshot["item"]["edit_block"]},
+                )
+                return
+            command = control.review.submit(
+                action,
+                revision=revision,
+                approved=approved,
+                text=text if action == "edit" else None,
+            )
             _send_response(
                 self.connection,
                 {"kind": "status", "message": "Command queued; waiting for the radio to be idle."},
@@ -621,6 +748,22 @@ def _operator_connection(config_path: Path | None, timeout: float) -> socket.soc
             connection.close()
 
 
+def operator_snapshot(config_path: Path | None, *, timeout: float = 10) -> dict:
+    """Return the review snapshot without running any action."""
+    deadline = time.monotonic() + timeout
+    with _operator_connection(config_path, timeout) as connection:
+        with connection.makefile("rb") as response_file:
+            try:
+                snapshot = _read_response(connection, response_file, deadline)["snapshot"]
+                _send_response(connection, {"action": "status"})
+                _read_response(connection, response_file, deadline)
+            except TimeoutError:
+                raise WalkietalkError("Operator controls did not respond.") from None
+            except (KeyError, ValueError, TypeError):
+                raise WalkietalkError("Invalid response from operator controls") from None
+    return snapshot
+
+
 def operator_request(
     config_path: Path | None,
     action: str,
@@ -630,6 +773,7 @@ def operator_request(
     revision=_DISPLAYED,
     show_snapshot: bool = True,
     approved: bool = False,
+    text: str | None = None,
 ) -> bool:
     """Print the review head and stream the result from the running talk instance."""
     deadline = time.monotonic() + timeout
@@ -653,8 +797,16 @@ def operator_request(
                             f"Item {item['number']}: {item['direction']} {item['service']}, "
                             f"{item['alias']}, {item['kind']}.",
                         )
-                        if item["kind"] == "text":
+                        if item.get("edited") and item["kind"] == "text":
+                            for kind, message in edited_status(item["text"], item["original"]):
+                                log(kind, message)
+                        elif item["kind"] == "text":
                             log("reply", item["text"])
+                        elif item.get("edited"):
+                            for kind, message in edited_status(
+                                item["transcript"], item["original"]
+                            ):
+                                log(kind, message)
                         else:
                             log(
                                 "status",
@@ -672,6 +824,8 @@ def operator_request(
                             else "Operator review queue empty.",
                         )
                 request = {"action": action}
+                if text is not None:
+                    request["text"] = text
                 if approved and action != "sleep":
                     request["approved"] = True
                 if revision is not _DISPLAYED and action != "sleep":

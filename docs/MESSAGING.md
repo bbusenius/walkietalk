@@ -221,6 +221,7 @@ walkietalk -c config.local.yaml talk --capture --transmit
 # A second terminal:
 walkietalk operator status
 walkietalk operator read
+walkietalk operator edit
 walkietalk operator approve
 # Or approve and release this incoming message without a radio wake:
 walkietalk operator transmit
@@ -253,8 +254,9 @@ walkietalk -c config.local.yaml talk --capture --transmit --panel
 
 The upper area shows live radio logs; the lower area stays in place with the
 conversation state, queue counts, current item, and action progress. Consecutive
-RMS readings update one log line. Press **R** to read, **A** to approve, **T** to
-approve and transmit an incoming message, **D** to deny, and **Ctrl+C** to stop.
+RMS readings update one log line. Press **R** to read, **E** to edit the review
+message, **A** to approve, **T** to approve and transmit an incoming message,
+**D** to deny, and **Ctrl+C** to stop.
 Press **S** to put the conversation to sleep from either view, including when the
 queue is empty.
 Press **Tab** to switch between review and approved incoming messages. In the
@@ -266,6 +268,13 @@ requires an available transcript. When the transcript is already shown, press
 **A** directly. Press **R** when the voice item still needs transcription.
 Text and cached transcripts wrap; use **Up/Down**, **PageUp/PageDown**, or
 **Home/End** to scroll the message. Approval or denial displays the next item.
+**E** opens the review message already filled in. **Enter** saves and **Esc**
+cancels. **Left/Right** move one character; **Home/End**, **Ctrl+A**, and
+**Ctrl+E** jump to the ends; **Backspace** and **Delete** remove characters;
+**Ctrl+U** clears the line. Review shortcuts are typed as text while the editor
+is open. A pasted line break or **Tab** becomes a space. **Up/Down** and
+**PageUp/PageDown** do nothing until the editor closes. An empty edit, or one
+that does not change the words, cancels.
 
 The Approved view selects the oldest approved message that is first in its
 contact's delivery queue. An earlier message awaiting review blocks that
@@ -283,10 +292,41 @@ are restored on exit. Omit `--panel` for ordinary logs and separate CLI control.
 | --- | --- |
 | `operator status` | Show the current message and counts of items waiting for review or approved for radio delivery. |
 | `operator read` | Show text or a cached voice transcript with the transmitter unkeyed; keep the item waiting. |
+| `operator edit` | Replace the words of the message under review. Prompts with the current text; Enter saves, and Ctrl+C or Ctrl+D cancels. Add `--text` to set the words without a prompt. Does not approve, send, or transmit. |
 | `operator approve` | Approve an incoming item for radio delivery, or send an outgoing item to its stored contact. Voice requires an available transcript; run `read` if one is not shown yet. |
 | `operator transmit` | Approve and schedule one incoming item for delivery without a radio wake. Add `--approved` to release an item approved earlier. Voice requires an available transcript. |
 | `operator deny` | Drop the selected item, including any unsent remainder. |
 | `operator sleep` | Close the active conversation and pause any pending operator delivery, retaining queued messages and approvals. Works without a selected message. |
+
+### Editing messages
+
+Only the message shown in the Review view can be edited. Outgoing text and
+incoming text can be changed. An incoming voice note can be edited after Read
+when `transcribe_voice` is true; the transcript is what changes. Outgoing voice
+sends the recording and cannot be edited. An incoming voice note with
+`transcribe_voice: false` plays as audio and cannot be edited. Messages in the
+Approved view cannot be edited; deny is how one is dropped.
+
+An edit does not approve, send, or transmit. Approve or Transmit still has to
+follow. After whitespace is normalized, empty text or text that matches the
+current words is not an edit, and the message stays as it was. Deny remains the
+only way to drop a message.
+
+Approve and Transmit stay bound to the words that were on screen. A command
+aimed at the text from before the edit is rejected and does not approve the new
+wording.
+
+Edited incoming text is what the radio speaks and what receive-only mode
+displays. Edited outgoing text is what WhatsApp or Signal receives. If a
+message returns to Review after a failed partial transmission and is then
+edited, the whole edited text is delivered from the start. Without an edit,
+only the unsent remainder goes out.
+
+Each edit adds three lines to the radio log: which item was edited, `Before:`
+the words it replaces, and `After:` the new words. `Before:` is the text just
+replaced, so a second edit names the previous edit there. The panel and
+`operator status` keep showing the received words below the new ones as
+`Original:`. Putting the received wording back clears the edited mark.
 
 Text is shown as each review head appears. The display identifies its direction,
 service, and configured contact alias. Commands submitted while capture or

@@ -41,7 +41,10 @@ from .operator_mode import (
     OPERATOR_ACTIONS,
     OperatorReady,
     OperatorServer,
+    edited_status,
+    normalized_change,
     operator_request,
+    operator_snapshot,
 )
 from .ptt import DryPTT, SerialPTT
 from .session import PTTHardwareError, handle_stop_signals, transmit, uninterrupted_cleanup
@@ -202,6 +205,9 @@ def parser() -> argparse.ArgumentParser:
     operator.add_argument("action", nargs="?", default="status", choices=OPERATOR_ACTIONS)
     operator.add_argument(
         "--approved", action="store_true", help="Select the oldest approved incoming message"
+    )
+    operator.add_argument(
+        "--text", help="Replacement text for edit; without it, edit prompts with the current text"
     )
     operator.add_argument(
         "--timeout",
@@ -596,6 +602,10 @@ def talk_command(args: argparse.Namespace) -> None:
         return progress.speech
 
     def preview_item(item) -> None:
+        if item.edited is not None:
+            for kind, message in edited_status(item.edited, item.original):
+                operator_log(kind, message)
+            return
         transcript = None
         if item.kind == "text":
             operator_log("reply", item.incoming.text if item.incoming else item.text)
@@ -632,7 +642,7 @@ def talk_command(args: argparse.Namespace) -> None:
         command, item, stale = operator.next_command()
         ok = False
         try:
-            if command not in ("read", "approve", "transmit", "deny", "sleep"):
+            if command not in ("read", "edit", "approve", "transmit", "deny", "sleep"):
                 operator_log("status", COMMAND_HELP)
                 return
             if stale:
@@ -657,6 +667,33 @@ def talk_command(args: argparse.Namespace) -> None:
                 else:
                     operator.finish(item)
                 operator_log("status", "Message denied.")
+                ok = True
+                return
+            if command == "edit":
+                blocked = operator.edit_block(item)
+                if blocked:
+                    operator_log("warn", blocked)
+                    return
+                text = normalized_change(operator.command_text() or "", item.content)
+                if text is None:
+                    operator_log("status", "Edit cancelled; message unchanged.")
+                    ok = True
+                    return
+                original = operator.edit(item, text)
+                if item.incoming is not None:
+                    # Delivery restarts from the edited words; cached speech is discarded.
+                    message_progress[(item.service, item.incoming.identity)] = MessagePlayback(
+                        text, transcript=text
+                    )
+                mode = bridge.mode(item.service)
+                direction = "incoming" if item.incoming else "outgoing"
+                operator_log(
+                    "status",
+                    f"Operator edited item {item.sequence} ({direction} {item.service}, "
+                    f"{mode.sender_alias or mode.wake}, {item.kind}).",
+                )
+                operator_log("status", f"Before: {original}")
+                operator_log("reply", f"After: {text}")
                 ok = True
                 return
             if command == "approve" and not operator.waiting(item):
@@ -716,7 +753,7 @@ def talk_command(args: argparse.Namespace) -> None:
                 if item.audio is not None:
                     bridge.send_voice(item.service, item.audio)
                 else:
-                    bridge.send_text(item.service, item.text)
+                    bridge.send_text(item.service, item.content)
                 operator.finish(item)
                 operator_log("status", "Approved outgoing message sent.")
             ok = True
@@ -744,7 +781,13 @@ def talk_command(args: argparse.Namespace) -> None:
             return False
         requested = operator is not None and operator.dispatched(item)
         key = (item.service, item.identity)
-        progress = message_progress.setdefault(key, MessagePlayback(item.text.strip()))
+        words = operator.playback_words(item) if operator is not None else None
+        progress = message_progress.setdefault(
+            key,
+            MessagePlayback(item.text.strip())
+            if words is None
+            else MessagePlayback(words, transcript=words),
+        )
         remaining = ""
         mode = bridge.mode(service)
         alias = mode.sender_alias or mode.wake
@@ -1494,9 +1537,75 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
     )
 
 
+def prompt_edit(current: str) -> str | None:
+    """Edit in place at a prompt prefilled with the current words."""
+    import readline
+
+    readline.set_startup_hook(lambda: readline.insert_text(current))
+    try:
+        return input("Edit> ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    finally:
+        readline.set_startup_hook(None)
+
+
+def operator_edit(config_path, text: str | None, timeout: float) -> None:
+    submitted: str | None = None
+    try:
+        if text is not None:
+            submitted = text
+            ok = operator_request(config_path, "edit", timeout=timeout, text=text)
+        else:
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise WalkietalkError("operator edit needs a terminal; use --text in scripts")
+            snapshot = operator_snapshot(config_path)
+            item = snapshot["item"]
+            if item is None:
+                raise WalkietalkError("No message waiting for operator review.")
+            blocked = item.get("edit_block")
+            if blocked:
+                raise WalkietalkError(blocked)
+            emit(
+                "status",
+                f"Item {item['number']}: {item['direction']} {item['service']}, "
+                f"{item['alias']}, {item['kind']}.",
+            )
+            current = item["text"] if item["kind"] == "text" else item["transcript"]
+            edited = prompt_edit(current)
+            if edited is None or normalized_change(edited, current) is None:
+                emit("status", "Edit cancelled; message unchanged.")
+                return
+            submitted = edited
+            ok = operator_request(
+                config_path,
+                "edit",
+                timeout=timeout,
+                revision=snapshot["revision"],
+                text=edited,
+                show_snapshot=False,
+            )
+    except WalkietalkError:
+        if submitted is not None:
+            print(f"Unsent edit: {submitted}", file=sys.stderr)
+        raise
+    if not ok:
+        if submitted is not None:
+            print(f"Unsent edit: {submitted}", file=sys.stderr)
+        raise WalkietalkError("Operator edit did not complete; see above")
+
+
 def run(args: argparse.Namespace) -> None:
     if args.command == "operator":
         timeout = seconds(args.timeout, "--timeout", maximum=600)
+        if args.text is not None and args.action != "edit":
+            raise WalkietalkError("--text applies only to operator edit")
+        if args.action == "edit":
+            if args.approved:
+                raise WalkietalkError("Approved messages can't be edited; deny to drop it")
+            operator_edit(args.config, args.text, timeout)
+            return
         options = {"approved": True} if args.approved else {}
         if not operator_request(args.config, args.action, timeout=timeout, **options):
             raise WalkietalkError(f"Operator {args.action} did not complete; see above")

@@ -287,14 +287,18 @@ class Talk:
             event(on_wait)
         raise KeyboardInterrupt
 
-    def command(self, command, *, approved=False):
+    def command(self, command, *, approved=False, text=None):
         def submit(on_wait):
+            kwargs = {"text": text} if text is not None else {}
             if approved:
                 self.review.submit(
-                    command, approved=True, revision=self.review.snapshot(approved=True)["revision"]
+                    command,
+                    approved=True,
+                    revision=self.review.snapshot(approved=True)["revision"],
+                    **kwargs,
                 )
             else:
-                self.review.submit(command)
+                self.review.submit(command, **kwargs)
             on_wait()
             pytest.fail("operator command must release capture")
 
@@ -1436,3 +1440,319 @@ def test_outgoing_voice_review_uses_full_capture_transcript_and_sends_same_recor
     # Reuse the capture transcript, without a second speech request.
     assert talk.listener.transcribe.call_count == (0 if realtime else 1)
     talk.transmit.assert_not_called()
+
+
+def _queue(*, transcribe_voice=False):
+    mode = replace(MODE, transcribe_voice=transcribe_voice)
+    return operator_mode.OperatorQueue(Config(messaging_operator_mode=True, signal=mode))
+
+
+def test_text_items_are_editable_and_voice_items_follow_the_review_rules():
+    review = _queue()
+    outgoing = review.add("signal", text="hello there")
+    assert outgoing.original == outgoing.content == "hello there"
+    assert outgoing.edited is None and review.edit_block(outgoing) is None
+
+    recording = review.add("signal", text="spoken", audio=Mock())
+    assert recording.kind == "voice"
+    assert review.edit_block(recording) == "Outgoing voice sends the recording; it can't be edited."
+
+    incoming = Inbound("signal", "text", text="incoming hello", identity="1")
+    incoming_item = review.add("signal", incoming=incoming)
+    assert incoming_item.original == incoming_item.content == "incoming hello"
+    assert review.edit_block(incoming_item) is None
+
+    played = Inbound("signal", "voice", audio_path=Path("voice.ogg"), identity="2")
+    played_item = review.add("signal", incoming=played)
+    assert played_item.original == ""
+    assert review.edit_block(played_item) == (
+        "This voice message plays as audio; it can't be edited."
+    )
+    review.mark_previewed(played_item, "played words")
+    assert review.edit_block(played_item) == (
+        "This voice message plays as audio; it can't be edited."
+    )
+
+    review.finish(outgoing)
+    assert review.edit_block(outgoing) == operator_mode.APPROVED_EDIT_BLOCK
+
+
+def test_transcribed_incoming_voice_is_editable_only_after_read():
+    review = _queue(transcribe_voice=True)
+    item = review.add(
+        "signal", incoming=Inbound("signal", "voice", audio_path=Path("voice.ogg"), identity="1")
+    )
+    assert item.original == "" and review.edit_block(item) == (
+        "Read the voice transcript before editing."
+    )
+    review.mark_previewed(item, "spoken words")
+    assert item.original == item.content == "spoken words"
+    assert review.edit_block(item) is None
+    assert review.edit(item, "changed words") == "spoken words"
+    described = review.snapshot()["item"]
+    assert described["transcript"] == "changed words"
+    assert described["edited"] is True
+    assert described["original"] == "spoken words"
+    assert described["edit_block"] is None
+
+
+def test_voice_caption_is_never_the_original_words():
+    review = _queue(transcribe_voice=True)
+    item = review.add(
+        "signal",
+        incoming=Inbound(
+            "signal", "voice", text="Attachment caption", audio_path=Path("voice.ogg"), identity="1"
+        ),
+    )
+    assert item.original == "" and "Attachment caption" not in item.original
+    review.mark_previewed(item, "spoken words")
+    assert item.original == "spoken words"
+    assert item.original != "Attachment caption"
+
+
+def test_edit_bumps_revision_and_stales_an_approval_of_the_previous_words():
+    review = _queue()
+    item = review.add("signal", text="hello")
+    before = review.snapshot()
+    assert review.edit(item, "changed") == "hello"
+    after = review.snapshot()
+    assert after["revision"] != before["revision"]
+    described = after["item"]
+    assert described["text"] == "changed"
+    assert described["edited"] is True
+    assert described["original"] == "hello"
+    assert described["edit_block"] is None
+    review.submit("approve", revision=before["revision"])
+    assert review.next_command() == ("approve", None, True)
+
+
+def test_announce_shows_edited_words_and_the_original(monkeypatch):
+    review = _queue()
+    item = review.add("signal", text="hello")
+    review.announce()
+    messages = []
+    monkeypatch.setattr(operator_mode, "emit", lambda kind, text: messages.append((kind, text)))
+    review.edit(item, "changed")
+    review.announce()
+    assert messages == []
+    review._announced = -1
+    review.announce()
+    assert ("reply", "Edited: changed") in messages
+    assert ("status", "Original: hello") in messages
+
+
+def test_outgoing_edit_is_what_gets_sent(monkeypatch, capsys):
+    talk = Talk(monkeypatch)
+
+    def still_waiting(on_wait):
+        talk.bridge.send_text.assert_not_called()
+        assert talk.review.waiting(talk.review._waiting[0])
+        assert talk.review._waiting[0].content == "hello friend"
+        on_wait()
+
+    talk.events = [
+        "nana hello there",
+        talk.command("edit", text="hello friend"),
+        still_waiting,
+        talk.command("approve"),
+    ]
+    assert talk.run() == 130
+    talk.bridge.send_text.assert_called_once_with("signal", "hello friend")
+    output = capsys.readouterr().out
+    assert "Operator edited item 1 (outgoing signal, Nana, text)." in output
+    assert "Before: hello there" in output
+    assert "After: hello friend" in output
+    assert "Original:" not in output
+    assert "Edited:" not in output
+    talk.transmit.assert_not_called()
+
+
+def test_edited_incoming_text_is_what_the_radio_speaks(monkeypatch):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="original words", identity="1"))
+    talk.events = [
+        talk.command("edit", text="edited words"),
+        talk.command("transmit"),
+        talk.tick(),
+    ]
+    assert talk.run() == 130
+    talk.voice.synthesize.assert_called_once_with("Nana says: edited words, over", truncate=False)
+    talk.transmit.assert_called_once()
+
+
+def test_receive_only_reply_shows_edited_incoming_text(monkeypatch, capsys):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="original words", identity="1"))
+    talk.events = [
+        talk.command("edit", text="edited words"),
+        talk.command("transmit"),
+        talk.tick(),
+    ]
+    assert talk.run(transmit=False) == 130
+    assert "Reply: Nana says: edited words, over" in capsys.readouterr().out
+    talk.transmit.assert_not_called()
+    talk.voice.synthesize.assert_not_called()
+
+
+def test_edited_voice_transcript_is_spoken_without_transcribing_again(monkeypatch, tmp_path):
+    talk = Talk(monkeypatch, mode=replace(MODE, transcribe_voice=True))
+    talk.bridge.add(Inbound("signal", "voice", audio_path=tmp_path / "voice.ogg", identity="1"))
+    talk.listener.transcribe.return_value = "original transcript"
+    talk.events = [
+        talk.command("read"),
+        talk.command("edit", text="edited transcript"),
+        talk.command("transmit"),
+        talk.tick(),
+    ]
+    assert talk.run() == 130
+    talk.listener.transcribe.assert_called_once()
+    talk.voice.synthesize.assert_called_once_with(
+        "Nana says: edited transcript, over", truncate=False
+    )
+    talk.transmit.assert_called_once()
+
+
+def test_reading_an_edited_voice_note_keeps_the_machine_transcript(monkeypatch, capsys, tmp_path):
+    talk = Talk(monkeypatch, mode=replace(MODE, transcribe_voice=True))
+    talk.bridge.add(Inbound("signal", "voice", audio_path=tmp_path / "voice.ogg", identity="1"))
+    talk.listener.transcribe.return_value = "machine transcript"
+    talk.events = [
+        talk.command("read"),
+        talk.command("edit", text="edited transcript"),
+        talk.command("read"),
+    ]
+    assert talk.run(transmit=False) == 130
+    item = talk.review._waiting[0]
+    assert item.transcript == "machine transcript"
+    assert item.edited == "edited transcript"
+    assert item.original == "machine transcript"
+    output = capsys.readouterr().out
+    assert "Edited: edited transcript" in output
+    assert "Original: machine transcript" in output
+    talk.listener.transcribe.assert_called_once()
+
+
+@pytest.mark.parametrize("case", ["raw-voice", "outgoing-voice", "unread-transcript"])
+def test_refused_edits_warn_and_leave_the_message_unchanged(monkeypatch, capsys, tmp_path, case):
+    if case == "outgoing-voice":
+        talk = Talk(monkeypatch, mode=replace(MODE, send_as_voice=True))
+        talk.events = ["nana hello there", talk.command("edit", text="changed")]
+    else:
+        talk = Talk(monkeypatch, mode=replace(MODE, transcribe_voice=case == "unread-transcript"))
+        talk.bridge.add(Inbound("signal", "voice", audio_path=tmp_path / "voice.ogg", identity="1"))
+        talk.events = [talk.command("edit", text="changed")]
+    assert talk.run() == 130
+    assert talk.review.snapshot()["item"]["edited"] is False
+    expected = {
+        "raw-voice": "This voice message plays as audio; it can't be edited.",
+        "outgoing-voice": "Outgoing voice sends the recording; it can't be edited.",
+        "unread-transcript": "Read the voice transcript before editing.",
+    }[case]
+    assert expected in capsys.readouterr().out
+    talk.bridge.send_text.assert_not_called()
+    talk.bridge.send_voice.assert_not_called()
+    talk.transmit.assert_not_called()
+
+
+@pytest.mark.parametrize("text", ["", "   ", "hello", "  hello  "])
+def test_empty_or_unchanged_edit_cancels(monkeypatch, capsys, text):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    talk.events = [talk.command("edit", text=text)]
+    assert talk.run() == 130
+    item = talk.review._waiting[0]
+    assert item.edited is None and item.content == "hello"
+    assert "Edit cancelled; message unchanged." in capsys.readouterr().out
+    talk.transmit.assert_not_called()
+
+
+def test_a_second_edit_logs_before_and_after_and_keeps_the_received_words(monkeypatch, capsys):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="received", identity="1"))
+    talk.events = [
+        talk.command("edit", text="first change"),
+        talk.command("edit", text="second change"),
+    ]
+    assert talk.run() == 130
+    output = capsys.readouterr().out
+    assert "Before: received" in output
+    assert "After: first change" in output
+    assert "Before: first change" in output
+    assert "After: second change" in output
+    assert "Original:" not in output
+    item = talk.review._waiting[0]
+    assert item.edited == "second change"
+    assert item.original == "received"
+    assert talk.review.snapshot()["item"]["original"] == "received"
+
+
+def test_editing_back_to_the_received_words_clears_the_mark(monkeypatch, capsys):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="received", identity="1"))
+    talk.events = [
+        talk.command("edit", text="changed"),
+        talk.command("edit", text="received"),
+    ]
+    assert talk.run() == 130
+    item = talk.review._waiting[0]
+    assert item.edited is None and item.content == "received"
+    assert talk.review.snapshot()["item"]["edited"] is False
+    output = capsys.readouterr().out
+    assert "Before: changed" in output
+    assert "After: received" in output
+
+
+def test_playback_uses_the_operator_edit_when_progress_is_created_later(monkeypatch):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="original words", identity="1"))
+
+    def edit_without_playback(on_wait):
+        item = talk.review._waiting[0]
+        assert talk.review.edit(item, "edited words") == "original words"
+        on_wait()
+
+    talk.events = [edit_without_playback, talk.command("transmit"), talk.tick()]
+    assert talk.run() == 130
+    talk.voice.synthesize.assert_called_once_with("Nana says: edited words, over", truncate=False)
+
+
+def test_deny_after_edit_removes_the_message(monkeypatch):
+    talk = Talk(monkeypatch)
+    talk.bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    talk.events = [talk.command("edit", text="changed"), talk.command("deny")]
+    assert talk.run() == 130
+    assert not talk.bridge.has("signal")
+    assert talk.review.snapshot()["waiting"] == 0
+    talk.transmit.assert_not_called()
+    talk.bridge.send_text.assert_not_called()
+
+
+def test_edit_after_partial_transmission_speaks_the_full_edited_text(monkeypatch):
+    talk = Talk(monkeypatch, agent_max_reply_chars=38)
+    incoming = Inbound("signal", "text", text="First sentence. Second sentence.", identity="1")
+    talk.bridge.add(incoming)
+    talk.voice.synthesize.side_effect = [PCM, WalkietalkError("TTS failed"), PCM]
+
+    def back(on_wait):
+        assert talk.transmit.call_count == 1
+        assert not talk.review.approved(incoming)
+        assert talk.review.waiting(talk.review._waiting[0])
+        on_wait()
+
+    talk.events = [
+        talk.command("transmit"),
+        talk.tick(),
+        talk.tick(),
+        back,
+        talk.command("edit", text="Completely different."),
+        talk.command("transmit"),
+        talk.tick(6),
+    ]
+    assert talk.run() == 130
+    assert talk.voice.synthesize.call_args_list == [
+        call("Nana says: First sentence.", truncate=False),
+        call("Nana says: Second sentence, over", truncate=False),
+        call("Nana says: Completely different, over", truncate=False),
+    ]
+    assert talk.transmit.call_count == 2
+    assert not talk.bridge.has("signal")
