@@ -22,9 +22,15 @@ def resolve_device(devices: list[dict], name: str, direction: str) -> int:
         if device["name"] == name and device[f"max_{direction}_channels"] > 0
     ]
     if len(matches) != 1:
+        unavailable = (
+            " If the name is correct, the device may be in use. Close other audio apps "
+            "and deselect the AIOC in desktop sound settings."
+            if not matches
+            else ""
+        )
         raise WalkietalkError(
             f"Expected one {direction} device named {name!r}; found {len(matches)}. "
-            "Run `walkietalk devices` and copy the exact AIOC name."
+            "Run `walkietalk devices` and copy the exact AIOC name." + unavailable
         )
     if name.lower() in {"default", "sysdefault", "pulse", "pipewire", "dmix"}:
         raise WalkietalkError("Select the physical AIOC device, not a default/router device")

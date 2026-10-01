@@ -118,6 +118,23 @@ class ListeningSession:
             return f"Mode: {mode}. State: awake ({remaining:.0f}s left{party})."
         return f'Mode: {mode}. State: waiting for wake "{names}".'
 
+    def conversation_status(self) -> str:
+        """Compact operator status using the same state and clock as the wake gate."""
+        if not self.destination:
+            return "asleep; waiting for wake"
+        name = self.config.wake_primary
+        messaging = self.destination in MESSAGING_SERVICES
+        if messaging:
+            mode = getattr(self.config, self.destination)
+            name = f"{mode.sender_alias or mode.wake} ({self.destination})"
+        if self.listening_mode == "wake_phrase":
+            receiving = "; receive when idle" if messaging else ""
+            return f"{name}; wake required to send{receiving}"
+        if self.state() != "awake":
+            return f"{name}; waiting for wake"
+        remaining = max(0.0, (self.awake_until or 0) - self.clock())
+        return f"{name}; follow-up open ({remaining:.0f}s left)"
+
     def _follow_up_open(self, at: float) -> bool:
         return self.awake_until is not None and at < self.awake_until
 
@@ -127,6 +144,11 @@ class ListeningSession:
 
     def close(self) -> None:
         self.awake_until = None
+
+    def sleep(self) -> None:
+        """Close the active conversation and require a wake to select it again."""
+        self.close()
+        self.destination = ""
 
     def expire_if_needed(self) -> str | None:
         if self.listening_mode != "conversation" or self.awake_until is None:
@@ -160,8 +182,7 @@ class ListeningSession:
             }
             if sleeps & {normalize_command(text), normalize_command(traffic)}:
                 wake = self.wake_names[0]
-                self.close()
-                self.destination = ""
+                self.sleep()
                 return GateDecision(
                     False,
                     "sleep",

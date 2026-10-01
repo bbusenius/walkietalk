@@ -181,6 +181,22 @@ def test_transcription_decode_rejects_overlong_audio_instead_of_truncating(tmp_p
     assert messaging.voice_wav(source, 1, rate=16000).duration == 1
 
 
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="optional ffmpeg dependency missing")
+@pytest.mark.parametrize("samples", [15999, 16000, 16001, 32000])
+def test_radio_voice_decode_is_bounded_and_uses_one_conversion(
+    monkeypatch, tmp_path, capsys, samples
+):
+    source = tmp_path / "voice.wav"
+    write_wav(source, Wav(b"\x01\x00" * samples, 16000, samples / 16000))
+    decoder = Mock(wraps=messaging.run_cli)
+    monkeypatch.setattr(messaging, "run_cli", decoder)
+    result = messaging.voice_wav(source, 1, rate=16000)
+    assert result.duration == min(samples, 16000) / 16000
+    assert len(result.frames) == min(samples, 16000) * 2
+    decoder.assert_called_once()
+    assert ("cut to fit" in capsys.readouterr().out) is (samples > 16000)
+
+
 def install_talk(monkeypatch, config):
     bridge = MessageBridge(config)
     bridge.send_voice = Mock()

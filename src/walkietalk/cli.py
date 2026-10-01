@@ -9,10 +9,21 @@ from pathlib import Path
 
 from . import __version__
 from .agent import AgentSession, open_agent, render_guidance
-from .audio import Playback, Wav, read_wav
-from .callsign import IDENT_GAP_SECONDS, CallsignSession, identification_transmissions
+from .audio import Playback, PlaybackPreparationError, Wav, read_wav
+from .callsign import (
+    IDENT_GAP_SECONDS,
+    CallsignSession,
+    StationIDError,
+    identification_transmissions,
+)
 from .capture import capture_from_device, capture_from_wav
-from .config import MESSAGING_SERVICES, Config, WalkietalkError, load_config, seconds
+from .config import (
+    MESSAGING_SERVICES,
+    Config,
+    WalkietalkError,
+    load_config,
+    seconds,
+)
 from .devices import audio_devices, preflight
 from .grok_realtime import RealtimeAuthenticationError, offline_voice_check, open_voice_agent
 from .messaging import (
@@ -25,8 +36,15 @@ from .messaging import (
     spoken_text,
     voice_wav,
 )
+from .operator_mode import (
+    COMMAND_HELP,
+    OPERATOR_ACTIONS,
+    OperatorReady,
+    OperatorServer,
+    operator_request,
+)
 from .ptt import DryPTT, SerialPTT
-from .session import handle_stop_signals, transmit, uninterrupted_cleanup
+from .session import PTTHardwareError, handle_stop_signals, transmit, uninterrupted_cleanup
 from .setup import credentials_environment, initialize
 from .shutdown import ShutdownSession
 from .streaming_playback import StreamingPlayback
@@ -174,6 +192,22 @@ def parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Handle one utterance and exit",
+    )
+    talk.add_argument(
+        "--panel", action="store_true", help="Fixed log and review panels; requires operator mode"
+    )
+    operator = commands.add_parser(
+        "operator", help="Review messages and control a running operator-mode talk instance"
+    )
+    operator.add_argument("action", nargs="?", default="status", choices=OPERATOR_ACTIONS)
+    operator.add_argument(
+        "--approved", action="store_true", help="Select the oldest approved incoming message"
+    )
+    operator.add_argument(
+        "--timeout",
+        type=float,
+        default=120,
+        help="Maximum seconds to wait for a command to finish (default 120)",
     )
     return result
 
@@ -325,7 +359,8 @@ def _realtime_commit_reply(
             except RealtimeHardwareError:
                 raise
             except (WalkietalkError, OSError) as exc:
-                emit("error", f"Station ID failed: {exc}", file=sys.stderr)
+                wait_post_tx_mute(config)
+                raise StationIDError(str(exc), message_transmitted=True) from exc
         wait_post_tx_mute(config)
     if not result.truncated_by_tx_cap:
         session.complete_turn()
@@ -341,6 +376,15 @@ def talk_command(args: argparse.Namespace) -> None:
     if (args.capture or args.transmit) and args.config is None:
         raise WalkietalkError("Hardware access requires --config with explicit AIOC devices")
     config = load_config(args.config) if args.config else Config()
+    if config.messaging_operator_mode:
+        if not args.capture or args.once:
+            raise WalkietalkError("Operator mode requires continuous talk --capture (no --once)")
+    if args.panel:
+        if not config.messaging_operator_mode:
+            raise WalkietalkError("--panel requires messaging.operator_mode: true")
+        from .operator_panel import OperatorPanel, validate_terminal
+
+        validate_terminal()
     realtime = config.agent_backend == "grok_realtime"
     session = ListeningSession(config)
     shutdown = ShutdownSession(config)
@@ -442,6 +486,14 @@ def talk_command(args: argparse.Namespace) -> None:
     if realtime:
         talk_realtime = RealtimeTalkSession(config)
     bridge = None
+    operator = None
+    controls = None
+    panel = None
+
+    def operator_log(kind: str, message: str, *, file=None) -> None:
+        if operator is not None:
+            operator.respond(kind, message)
+        emit(kind, message, file=file)
 
     def speak_notice(phrase: str, *, realtime_voice: bool = False, **messages) -> str:
         result = acknowledge(
@@ -451,56 +503,281 @@ def talk_command(args: argparse.Namespace) -> None:
             wait_post_tx_mute(config)
         return result
 
+    def enter_sleep(message: str, *, local: bool = False) -> None:
+        session.sleep()
+        if shutdown.is_armed:
+            shutdown.close()
+            emit("status", "Pending shutdown cancelled.")
+        if operator is not None and operator.cancel_dispatch():
+            emit("status", "Operator delivery paused; remaining message stays approved.")
+        log = operator_log if local else emit
+        log("status", message)
+        if talk_realtime is not None:
+            _clear_realtime_input(talk_realtime)
+        spoken = speak_notice(
+            config.sleep_confirmation_phrase,
+            preparing="Speaking sleep confirmation; PTT off until speech is ready...",
+            failed="Sleep confirmation failed",
+            finished="Sleep confirmation finished; PTT released.",
+            realtime_voice=realtime,
+        )
+        if spoken == "failed":
+            log("status", "Sleep mode entered; the confirmation was not transmitted.")
+        log("status", session.status_line())
+        if panel is not None:
+            panel.delivery_status("status", "Asleep; queued messages retained.")
+
     next_message_at = 0.0
     message_progress: dict[tuple[str, str], MessagePlayback] = {}
 
-    def play_next(service: str) -> bool:
-        nonlocal next_message_at
+    def message_service() -> str:
+        requested = operator.dispatch_service() if operator is not None else ""
+        return requested or session.destination
+
+    def ready_message(service: str) -> bool:
         item = bridge.peek(service)
         if item is None:
             return False
+        if operator is None:
+            return True
+        return (
+            not controls.closed.is_set()
+            and (panel is None or not panel.closed.is_set())
+            and operator.approved(item)
+            and (
+                operator.dispatched(item)
+                or (
+                    session.destination == service
+                    and (
+                        bridge.mode(service).listening_mode == "wake_phrase"
+                        or session.follow_up_open_at(time.monotonic())
+                    )
+                )
+            )
+        )
+
+    def transcribe_review(audio: Wav) -> str:
+        nonlocal message_listener
+        if message_listener is None:
+            prepared_listener = open_stt(config)
+            operator_log("status", f"Preparing voice transcription: {prepared_listener.label()}...")
+            prepared_listener.prepare()
+            message_listener = prepared_listener
+        transcript = normalize_message(message_listener.transcribe(audio.frames, audio.rate))
+        if not transcript:
+            raise WalkietalkError("Voice message transcription returned no words")
+        return transcript
+
+    def transcribe_note(item, progress) -> None:
+        if progress.transcript is not None:
+            return
+        if item.audio_path is None:
+            raise WalkietalkError("Voice message has no audio")
+        audio = voice_wav(item.audio_path, MAX_TRANSCRIBE_SECONDS, rate=16000, truncate=False)
+        transcript = transcribe_review(audio)
+        progress.transcript = transcript
+        progress.remaining = transcript
+
+    def prepare_voice_message(item, progress) -> Wav:
+        """Prepare radio audio separately from the full-note review transcript."""
+        if progress.speech is not None:
+            return progress.speech
+        if item.audio_path is None:
+            raise WalkietalkError("Voice message has no audio")
+        limit = config.max_tx_seconds - config.settle_seconds
+        mode = bridge.mode(item.service)
+        alias = mode.sender_alias or mode.wake
+        introduction = radio_wav(voice.synthesize(f"{alias} says:", truncate=False), limit)
+        if introduction.duration >= limit:
+            raise WalkietalkError("Sender introduction exceeds the transmit limit")
+        audio = voice_wav(item.audio_path, limit - introduction.duration)
+        frames = introduction.frames + audio.frames
+        progress.speech = Wav(frames, audio.rate, len(frames) / (audio.rate * 2))
+        return progress.speech
+
+    def preview_item(item) -> None:
+        transcript = None
+        if item.kind == "text":
+            operator_log("reply", item.incoming.text if item.incoming else item.text)
+        elif item.incoming is None:
+            # The capture gate already transcribed the complete outgoing recording.
+            transcript = item.transcript or item.text or transcribe_review(item.audio)
+            operator_log("reply", f"Voice transcript: {transcript}")
+        else:
+            incoming = item.incoming
+            if incoming.audio_path is None:
+                raise WalkietalkError("Voice message has no audio")
+            key = (incoming.service, incoming.identity)
+            progress = message_progress.setdefault(key, MessagePlayback(incoming.text))
+            mode = bridge.mode(item.service)
+            if mode.transcribe_voice:
+                operator_log("status", "Transcribing voice message for review...")
+                transcribe_note(incoming, progress)
+                transcript = progress.transcript
+            else:
+                if item.transcript is None:
+                    operator_log("status", "Transcribing voice message for review...")
+                    if progress.preview_audio is None:
+                        progress.preview_audio = voice_wav(
+                            incoming.audio_path, MAX_TRANSCRIBE_SECONDS, rate=16000, truncate=False
+                        )
+                    transcript = transcribe_review(progress.preview_audio)
+                else:
+                    transcript = item.transcript
+                progress.preview_audio = None
+            operator_log("reply", f"Voice transcript: {transcript}")
+        operator.mark_previewed(item, transcript)
+
+    def operator_command() -> None:
+        command, item, stale = operator.next_command()
+        ok = False
+        try:
+            if command not in ("read", "approve", "transmit", "deny", "sleep"):
+                operator_log("status", COMMAND_HELP)
+                return
+            if stale:
+                operator_log(
+                    "warn",
+                    "Cancelled operator sleep command ignored."
+                    if command == "sleep"
+                    else "Stale or cancelled operator command ignored; review the current item.",
+                )
+                return
+            if command == "sleep":
+                enter_sleep("Sleep requested by operator; waiting for wake.", local=True)
+                ok = True
+                return
+            if item is None:
+                operator_log("status", "No message waiting for operator review.")
+                return
+            if command == "deny":
+                if item.incoming is not None:
+                    bridge.discard(item.incoming)
+                    message_progress.pop((item.service, item.incoming.identity), None)
+                else:
+                    operator.finish(item)
+                operator_log("status", "Message denied.")
+                ok = True
+                return
+            if command == "approve" and not operator.waiting(item):
+                operator_log(
+                    "warn", "This message is already approved; use transmit to release it."
+                )
+                return
+            if command == "transmit":
+                if item.incoming is None:
+                    operator_log(
+                        "warn", "Transmit applies to incoming messages; approve to send outgoing."
+                    )
+                    return
+                if shutdown.is_armed:
+                    operator_log(
+                        "warn", "Transmission held while shutdown awaits its confirmation code."
+                    )
+                    return
+                if operator.dispatch_service():
+                    operator_log(
+                        "warn", "An operator delivery is already pending; wait for it to finish."
+                    )
+                    return
+                if bridge.peek(item.service) is not item.incoming:
+                    operator_log(
+                        "warn",
+                        "An earlier message for this contact is waiting; "
+                        "review it or use --approved.",
+                    )
+                    return
+            if command == "read":
+                operator_log("status", f"Preparing {item.kind} preview; transmitter unkeyed.")
+                preview_item(item)
+                operator_log(
+                    "status",
+                    "Preview complete; message still waiting for approval or denial."
+                    if operator.waiting(item)
+                    else "Preview complete; message remains approved for delivery.",
+                )
+            elif item.kind == "voice" and not item.previewed:
+                operator_log("warn", "Read the voice message before approval or transmission.")
+                return
+            elif command == "transmit":
+                if operator.waiting(item):
+                    operator.finish(item)
+                operator.dispatch(item)
+                action = "transmission" if args.transmit else "display (receive-only)"
+                operator_log(
+                    "status",
+                    f"One message scheduled for operator {action}; conversation unchanged.",
+                )
+            elif item.incoming is not None:
+                operator.finish(item)
+                operator_log("status", "Message approved; waiting for radio delivery.")
+            else:
+                operator_log("status", "Sending approved outgoing message...")
+                if item.audio is not None:
+                    bridge.send_voice(item.service, item.audio)
+                else:
+                    bridge.send_text(item.service, item.text)
+                operator.finish(item)
+                operator_log("status", "Approved outgoing message sent.")
+            ok = True
+        except (WalkietalkError, OSError) as exc:
+            if command == "sleep":
+                # Confirmation transmission faults stop talk, just as voice sleep does.
+                raise
+            operator_log("error", f"Operator {command} failed: {exc}", file=sys.stderr)
+            if command == "approve":
+                operator.failed_send()
+                operator_log(
+                    "warn",
+                    "Message retained. Delivery may be uncertain after a send failure; "
+                    "review before approving another attempt.",
+                )
+        finally:
+            operator.complete_command(ok)
+
+    def play_next(service: str) -> bool:
+        nonlocal next_message_at
+        if not ready_message(service):
+            return False
+        item = bridge.peek(service)
+        if item is None:
+            return False
+        requested = operator is not None and operator.dispatched(item)
         key = (item.service, item.identity)
         progress = message_progress.setdefault(key, MessagePlayback(item.text.strip()))
         remaining = ""
         mode = bridge.mode(service)
         alias = mode.sender_alias or mode.wake
-        limit = config.max_tx_seconds - config.settle_seconds
         as_text = item.kind == "text" or mode.transcribe_voice
+        if panel is not None:
+            panel.delivery_status(
+                "status",
+                "Preparing message for radio delivery..."
+                if args.transmit
+                else "Displaying message (receive-only)...",
+            )
         try:
             if item.kind == "voice" and mode.transcribe_voice and progress.transcript is None:
-                if item.audio_path is None or message_listener is None:
-                    raise WalkietalkError("Voice message has no audio or transcription backend")
-                audio = voice_wav(
-                    item.audio_path, MAX_TRANSCRIBE_SECONDS, rate=16000, truncate=False
-                )
-                transcript = normalize_message(
-                    message_listener.transcribe(audio.frames, audio.rate)
-                )
-                if not transcript:
-                    raise WalkietalkError("Voice message transcription returned no words")
-                progress.transcript = transcript
-                progress.remaining = transcript
+                transcribe_note(item, progress)
             text = progress.transcript if progress.transcript is not None else item.text
             label = f"{alias} says: {spoken_text(text)}" if as_text else f"{alias}: voice message"
             emit("reply", f"Reply: {label}")
             if args.transmit:
                 if as_text:
                     speech, remaining = progress.prepare_text(voice, alias, config)
-                elif item.audio_path is not None:
-                    introduction = radio_wav(
-                        voice.synthesize(f"{alias} says:", truncate=False), limit
-                    )
-                    if introduction.duration >= limit:
-                        raise WalkietalkError("Sender introduction exceeds the transmit limit")
-                    audio = voice_wav(item.audio_path, limit - introduction.duration)
-                    frames = introduction.frames + audio.frames
-                    speech = Wav(frames, audio.rate, len(frames) / (audio.rate * 2))
                 else:
-                    raise WalkietalkError("Voice message has no audio")
+                    speech = prepare_voice_message(item, progress)
         except (WalkietalkError, OSError) as exc:
             emit("error", f"Message playback preparation failed: {exc}", file=sys.stderr)
             progress.failures += 1
-            if progress.failures >= PLAYBACK_ATTEMPTS:
+            if operator is not None:
+                operator.hold(item)
+                emit("warn", "Message retained for a new operator approval.")
+                if panel is not None:
+                    panel.delivery_status(
+                        "error", "Delivery failed; retained for review. See radio log."
+                    )
+            elif progress.failures >= PLAYBACK_ATTEMPTS:
                 emit(
                     "error",
                     "Skipping unplayable message after three attempts.",
@@ -510,31 +787,102 @@ def talk_command(args: argparse.Namespace) -> None:
                 message_progress.pop(key)
             next_message_at = time.monotonic() + 5
             return False
+        # Preparation can outlast a receive window or the operator control server.
+        if operator is not None and not ready_message(service):
+            if panel is not None:
+                panel.delivery_status(
+                    "warn", "Delivery paused; waiting for an eligible receive window."
+                )
+            return False
+        identification_error = None
         if args.transmit:
-            transmit_with_callsign(speech, config, voice, callsigns)
+            try:
+                transmit_with_callsign(speech, config, voice, callsigns)
+            except StationIDError as exc:
+                if not exc.message_transmitted:
+                    raise
+                identification_error = exc
+            except PTTHardwareError:
+                raise
+            except (WalkietalkError, OSError) as exc:
+                if operator is None:
+                    raise
+                operator.hold(item)
+                emit("error", f"Message transmission failed: {exc}", file=sys.stderr)
+                emit(
+                    "warn",
+                    "Message retained; PTT was not asserted and nothing was transmitted."
+                    if isinstance(exc, PlaybackPreparationError)
+                    else "Message retained; a partial transmission may have been heard.",
+                )
+                if panel is not None:
+                    panel.delivery_status(
+                        "error", "Delivery failed; retained for review. See radio log."
+                    )
+                next_message_at = time.monotonic() + 5
+                return False
         progress.remaining = remaining
         progress.failures = 0
         if not remaining:
             bridge.acknowledge(item)
             message_progress.pop(key)
+            if requested:
+                emit("status", "Operator delivery complete; conversation unchanged.")
+            if panel is not None:
+                panel.delivery_status(
+                    "status",
+                    "Message transmitted; conversation unchanged."
+                    if args.transmit and requested
+                    else "Message transmitted."
+                    if args.transmit
+                    else "Message displayed (receive-only).",
+                )
+        elif panel is not None:
+            panel.delivery_status("status", "Part transmitted; remaining chunks pending.")
+        if identification_error is not None:
+            raise identification_error
+        if not requested:
+            session.complete_turn()
         # Reopen capture and leave a chance to speak (including sleep) between replies.
         next_message_at = time.monotonic() + 1
         return True
 
     try:
+        if config.messaging_operator_mode:
+            controls = OperatorServer(None, args.config)
+            controls.acquire()
         bridge = open_messaging(config)
+        if config.messaging_operator_mode:
+            operator = bridge.operator
+            operator.status_provider = session.conversation_status
+            controls.review = operator
+            emit("status", "Operator mode: messages require local approval. " + COMMAND_HELP)
+            operator.announce()
+            controls.start()
+            if args.panel:
+                panel = OperatorPanel(operator, args.config)
+                panel.start()
         while True:
+            if panel is not None:
+                panel.check()
+            if operator is not None:
+                operator.announce()
+                if controls.closed.is_set():
+                    raise WalkietalkError("Operator controls closed unexpectedly; stopping talk.")
+                if operator.has_commands():
+                    operator_command()
+                    continue
             emit("status", session.status_line())
             if talk_realtime is not None and not talk_realtime.warm_connected:
                 # Contact playback does not depend on the realtime provider.
+                service = message_service()
                 if (
-                    session.destination in MESSAGING_SERVICES
+                    service in MESSAGING_SERVICES
                     and not shutdown.is_armed
                     and time.monotonic() >= next_message_at
-                    and bridge.has(session.destination)
+                    and ready_message(service)
                 ):
-                    if play_next(session.destination):
-                        session.complete_turn()
+                    play_next(service)
                 try:
                     emit("status", "Connecting voice session before the next listen.")
                     talk_realtime.warm(instructions=render_guidance(config, spoken=True))
@@ -551,6 +899,12 @@ def talk_command(args: argparse.Namespace) -> None:
                     continue
 
             def on_wait() -> None:
+                if panel is not None:
+                    panel.check()
+                if operator is not None:
+                    operator.announce()
+                    if controls.closed.is_set() or operator.has_commands():
+                        raise OperatorReady()
                 if talk_realtime is not None and not talk_realtime.warm_connected:
                     # Close the idle capture before reconnecting; do not discover
                     # an expired socket only after somebody starts their wake phrase.
@@ -562,13 +916,14 @@ def talk_command(args: argparse.Namespace) -> None:
                 if message:
                     emit("warn", message)
                     emit("status", session.status_line())
+                service = message_service()
                 if (
-                    session.destination in MESSAGING_SERVICES
+                    service in MESSAGING_SERVICES
                     and not shutdown.is_armed
                     and time.monotonic() >= next_message_at
-                    and bridge.has(session.destination)
+                    and ready_message(service)
                 ):
-                    raise MessagingReady(session.destination)
+                    raise MessagingReady(service)
 
             stream_frame = talk_realtime.on_frame if talk_realtime is not None else None
             stream_reset = talk_realtime.on_reset if talk_realtime is not None else None
@@ -594,11 +949,14 @@ def talk_command(args: argparse.Namespace) -> None:
                     if listener is not None:
                         emit("meter", f"Preparing {listener.label()}...")
                         listener.prepare()
+            except OperatorReady:
+                if talk_realtime is not None:
+                    _clear_realtime_input(talk_realtime)
+                continue
             except MessagingReady as ready:
                 if talk_realtime is not None:
                     _clear_realtime_input(talk_realtime)
-                if play_next(ready.service):
-                    session.complete_turn()
+                play_next(ready.service)
                 emit("status", session.status_line())
                 if once:
                     return
@@ -611,6 +969,10 @@ def talk_command(args: argparse.Namespace) -> None:
                 emit("error", f"Realtime capture discarded: {exc}", file=sys.stderr)
                 emit("status", "Reconnecting on the next utterance; say the wake phrase again.")
                 continue
+            if controls is not None and controls.closed.is_set():
+                raise WalkietalkError("Operator controls closed unexpectedly; stopping talk.")
+            if panel is not None:
+                panel.check()
             started = utterance.started_at if utterance.started_at is not None else time.monotonic()
             # Every turn uses the same native wake/control/empty-input gate,
             # including follow-ups. Captured audio remains the model input.
@@ -623,7 +985,10 @@ def talk_command(args: argparse.Namespace) -> None:
                 )
             except RealtimeTranscriptTimeout:
                 shutdown.close()
-                emit("ignored", session.decide("", started).message)
+                emit(
+                    "warn",
+                    "Realtime transcription timed out; no transcript received. Window unchanged.",
+                )
                 if once:
                     return
                 continue
@@ -642,8 +1007,12 @@ def talk_command(args: argparse.Namespace) -> None:
                     "Still listening; shutdown cancelled. Say the wake phrase and try again.",
                 )
                 continue
+            if panel is not None:
+                panel.check()
             control = shutdown.decide(text, started)
             if control.kind != "none":
+                if operator is not None:
+                    operator.cancel_dispatch()
                 action = _handle_shutdown_control(
                     control,
                     session=session,
@@ -666,11 +1035,23 @@ def talk_command(args: argparse.Namespace) -> None:
                 continue
             emit("transcript", f"Transcript: {text}")
             decision = session.decide(text, started)
+            if operator is not None and (
+                decision.destination and decision.destination != operator.dispatch_service()
+            ):
+                if operator.cancel_dispatch():
+                    emit("status", "Operator delivery paused; remaining message stays approved.")
+                    if panel is not None:
+                        panel.delivery_status(
+                            "warn", "Delivery paused; remaining message stays approved."
+                        )
             if decision.kind == "wake_only" and decision.destination in MESSAGING_SERVICES:
                 emit("status", decision.message)
                 if talk_realtime is not None:
                     _clear_realtime_input(talk_realtime)
-                if bridge.has(decision.destination):
+                # Check the wake's queue before opening the follow-up window.
+                incoming = bridge.peek(decision.destination)
+                if incoming is not None and (operator is None or operator.approved(incoming)):
+                    session.complete_turn()
                     play_next(decision.destination)
                 else:
                     mode = bridge.mode(decision.destination)
@@ -685,29 +1066,24 @@ def talk_command(args: argparse.Namespace) -> None:
                             "status",
                             "The wake phrase was received; the queue notice was not transmitted.",
                         )
-                session.complete_turn()
+                    session.complete_turn()
                 emit("status", session.status_line())
-            elif decision.kind in ("wake_only", "sleep"):
-                sleeping = decision.kind == "sleep"
-                label = "Sleep" if sleeping else "Wake"
+            elif decision.kind == "sleep":
+                enter_sleep(decision.message)
+            elif decision.kind == "wake_only":
                 emit("status", decision.message)
                 if talk_realtime is not None:
                     _clear_realtime_input(talk_realtime)
                 spoken = speak_notice(
-                    config.sleep_confirmation_phrase
-                    if sleeping
-                    else config.wake_confirmation_phrase,
-                    preparing=(
-                        f"Speaking {label.lower()} confirmation; PTT off until speech is ready..."
-                    ),
-                    failed=f"{label} confirmation failed",
-                    finished=f"{label} confirmation finished; PTT released.",
+                    config.wake_confirmation_phrase,
+                    preparing="Speaking wake confirmation; PTT off until speech is ready...",
+                    failed="Wake confirmation failed",
+                    finished="Wake confirmation finished; PTT released.",
                     realtime_voice=realtime,
                 )
                 if spoken == "failed":
-                    emit("status", f"{label} was received; the confirmation was not transmitted.")
-                if not sleeping:
-                    session.complete_turn()
+                    emit("status", "Wake was received; the confirmation was not transmitted.")
+                session.complete_turn()
                 emit("status", session.status_line())
             elif decision.accepted and decision.destination in MESSAGING_SERVICES:
                 emit("accepted", decision.message)
@@ -715,6 +1091,20 @@ def talk_command(args: argparse.Namespace) -> None:
                 session.close()
                 if talk_realtime is not None:
                     _clear_realtime_input(talk_realtime)
+                if operator is not None:
+                    audio = (
+                        Wav(utterance.pcm, utterance.rate, utterance.duration)
+                        if bridge.mode(decision.destination).send_as_voice
+                        else None
+                    )
+                    operator.add(
+                        decision.destination,
+                        text=normalize_message(text if audio is not None else decision.traffic),
+                        audio=audio,
+                    )
+                    emit("status", "Outgoing message held for operator approval.")
+                    session.complete_turn()
+                    continue
                 try:
                     if bridge.mode(decision.destination).send_as_voice:
                         bridge.send_voice(
@@ -735,8 +1125,8 @@ def talk_command(args: argparse.Namespace) -> None:
                     if once:
                         raise
                     continue
-                play_next(decision.destination)
-                session.complete_turn()
+                if not play_next(decision.destination):
+                    session.complete_turn()
                 emit("status", session.status_line())
             elif decision.accepted:
                 emit("accepted", decision.message)
@@ -768,7 +1158,7 @@ def talk_command(args: argparse.Namespace) -> None:
                         conversation.history = history
                         emit("status", "Still listening; say the wake phrase and try again.")
                         continue
-                    if voice is not None:
+                    if args.transmit and voice is not None:
                         try:
                             emit("status", "Generating speech; PTT off...")
                             speech = radio_wav(
@@ -802,8 +1192,16 @@ def talk_command(args: argparse.Namespace) -> None:
                 if bridge is not None:
                     bridge.close()
             finally:
-                if talk_realtime is not None:
-                    talk_realtime.close()
+                try:
+                    if controls is not None:
+                        controls.close()
+                finally:
+                    try:
+                        if talk_realtime is not None:
+                            talk_realtime.close()
+                    finally:
+                        if panel is not None:
+                            panel.close()
 
 
 def _ignore_empty_realtime(session: ListeningSession, talk_realtime, started: float) -> None:
@@ -812,6 +1210,7 @@ def _ignore_empty_realtime(session: ListeningSession, talk_realtime, started: fl
     if talk_realtime is not None:
         try:
             talk_realtime.discard_turn()
+            emit("warn", "Realtime transcription returned no text; voice session reset.")
         except (WalkietalkError, OSError) as exc:
             emit("error", f"Realtime discard failed; session reset: {exc}", file=sys.stderr)
 
@@ -918,42 +1317,88 @@ def transmit_with_callsign(speech: Wav, config: Config, voice, callsigns: Callsi
             ident = radio_wav(voice.synthesize(config.callsign, truncate=False), spoken_seconds)
             transmissions = identification_transmissions(speech, ident, spoken_seconds)
         except (WalkietalkError, OSError) as exc:
-            ident = None
-            emit("error", f"Station ID failed: {exc}", file=sys.stderr)
-            emit("status", "Sending the answer without a station ID.")
-    transmit_speech(transmissions[0], config)
-    if len(transmissions) == 2:
-        emit("status", "Station ID needs a separate burst; PTT released between bursts.")
-        time.sleep(IDENT_GAP_SECONDS)
-        transmit_speech(transmissions[1], config, finished="Station ID finished; PTT released.")
-    if ident is not None:
-        callsigns.mark()
-    wait_post_tx_mute(config)
+            raise StationIDError(str(exc)) from exc
+    mute = True
+    try:
+        try:
+            transmit_speech(transmissions[0], config)
+        except PlaybackPreparationError:
+            mute = False
+            raise
+        if len(transmissions) == 2:
+            emit("status", "Station ID needs a separate burst; PTT released between bursts.")
+            time.sleep(IDENT_GAP_SECONDS)
+            try:
+                transmit_speech(
+                    transmissions[1], config, finished="Station ID finished; PTT released."
+                )
+            except PTTHardwareError:
+                raise
+            except (WalkietalkError, OSError) as exc:
+                raise StationIDError(str(exc), message_transmitted=True) from exc
+        if ident is not None:
+            callsigns.mark()
+    except PTTHardwareError:
+        # Hardware faults stop immediately after PTT cleanup; never resume capture.
+        mute = False
+        raise
+    finally:
+        if mute:
+            wait_post_tx_mute(config)
 
 
 def transmit_speech(
     speech: Wav, config: Config, finished: str = "Spoken reply finished; PTT released."
 ) -> None:
     """Prepare the isolated worker first, then key/play/unkey in the parent."""
-    speech = radio_wav(speech, config.max_tx_seconds - config.settle_seconds)
-    with tempfile.TemporaryDirectory(prefix="walkietalk-reply-") as directory:
-        path = Path(directory) / "reply.wav"
-        write_wav(path, speech)
-        playback = Playback(
-            path, config.output_device, config.gain, config.max_tx_seconds - config.settle_seconds
-        )
-        try:
-            playback.prepare()
-            ptt = SerialPTT(config.serial_port, config.line)
+    transmission_started = False
+    try:
+        speech = radio_wav(speech, config.max_tx_seconds - config.settle_seconds)
+        with tempfile.TemporaryDirectory(prefix="walkietalk-reply-") as directory:
+            path = Path(directory) / "reply.wav"
+            write_wav(path, speech)
+            playback = Playback(
+                path,
+                config.output_device,
+                config.gain,
+                config.max_tx_seconds - config.settle_seconds,
+            )
+            ptt_failed = False
+            transmission_completed = False
+            try:
+                playback.prepare()
+                ptt = SerialPTT(config.serial_port, config.line)
 
-            def action(deadline: float) -> None:
-                time.sleep(min(config.settle_seconds, max(0, deadline - time.monotonic())))
-                playback.play(deadline)
+                def action(deadline: float) -> None:
+                    time.sleep(min(config.settle_seconds, max(0, deadline - time.monotonic())))
+                    playback.play(deadline)
 
-            transmit(ptt, action, config.max_tx_seconds)
-        finally:
-            with uninterrupted_cleanup():
-                playback.close()  # transmit has already attempted release before worker cleanup.
+                transmission_started = True
+                transmit(ptt, action, config.max_tx_seconds)
+                transmission_completed = True
+            except PTTHardwareError:
+                ptt_failed = True
+                raise
+            finally:
+                with uninterrupted_cleanup():
+                    # Preserve a fatal PTT fault even when audio teardown also fails.
+                    try:
+                        playback.close()  # transmit has already attempted release.
+                    except (WalkietalkError, OSError) as exc:
+                        if not ptt_failed and not transmission_completed:
+                            raise
+                        context = "PTT fault" if ptt_failed else "transmission"
+                        emit(
+                            "error",
+                            f"Audio cleanup failed after {context}: {exc}",
+                            file=sys.stderr,
+                        )
+    except PTTHardwareError:
+        raise
+    except (WalkietalkError, OSError) as exc:
+        if not transmission_started:
+            raise PlaybackPreparationError(str(exc)) from exc
+        raise
     emit("status", finished)
 
 
@@ -1050,6 +1495,12 @@ def voice_agent_check_command(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.command == "operator":
+        timeout = seconds(args.timeout, "--timeout", maximum=600)
+        options = {"approved": True} if args.approved else {}
+        if not operator_request(args.config, args.action, timeout=timeout, **options):
+            raise WalkietalkError(f"Operator {args.action} did not complete; see above")
+        return
     if args.command == "init":
         initialize(args.directory)
         directory = args.directory.expanduser().absolute()
@@ -1241,7 +1692,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         if args.command in {"listen", "talk"}:
             emit("warn", "Stopped; capture closed.", file=sys.stderr)
-        elif args.command in {"models", "agent-check", "tts-check", "voice-agent-check"}:
+        elif args.command in {
+            "models",
+            "agent-check",
+            "tts-check",
+            "voice-agent-check",
+            "operator",
+        }:
             emit("warn", "Stopped.", file=sys.stderr)
         else:
             emit("warn", "Stopped; PTT cleanup attempted.", file=sys.stderr)

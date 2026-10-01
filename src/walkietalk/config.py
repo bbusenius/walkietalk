@@ -174,6 +174,7 @@ class Config:
     agent_realtime_websocket_url: str = DEFAULT_REALTIME_WEBSOCKET_URL
     agent_realtime_connect_timeout_seconds: float = 10
     agent_realtime_idle_timeout_seconds: float = 60
+    messaging_operator_mode: bool = False
     whatsapp: MessagingMode = MessagingMode()
     signal: MessagingMode = MessagingMode()
 
@@ -197,12 +198,15 @@ def _phrase_text(value: object, name: str, *, allow_empty: bool) -> str:
     return value.strip()
 
 
-def _load_messaging(data: dict) -> dict[str, MessagingMode]:
+def _load_messaging(data: dict) -> tuple[bool, dict[str, MessagingMode]]:
     raw = data.get("messaging", {})
     if raw is None:
         raw = {}
-    if not isinstance(raw, dict) or not set(raw) <= set(MESSAGING_SERVICES):
-        raise WalkietalkError("messaging allows only whatsapp and signal")
+    if not isinstance(raw, dict) or not set(raw) <= {*MESSAGING_SERVICES, "operator_mode"}:
+        raise WalkietalkError("messaging allows only operator_mode, whatsapp and signal")
+    operator_mode = raw.get("operator_mode", False)
+    if not isinstance(operator_mode, bool):
+        raise WalkietalkError("messaging.operator_mode must be true or false")
     modes: dict[str, MessagingMode] = {}
     for service in MESSAGING_SERVICES:
         if service not in raw:
@@ -297,7 +301,7 @@ def _load_messaging(data: dict) -> dict[str, MessagingMode]:
             to=destination,
             empty_queue_phrase=phrase,
         )
-    return modes
+    return operator_mode, modes
 
 
 def _reject_messaging_collisions(modes: dict[str, MessagingMode], reserved: set[str]) -> None:
@@ -686,7 +690,7 @@ def load_config(path: Path) -> Config:
             for item in variants
         ):
             raise WalkietalkError(f"shutdown.{field}_aliases must be a list of non-empty phrases")
-    messaging = _load_messaging(data)
+    operator_mode, messaging = _load_messaging(data)
     wake_groups = [(primary, aliases)] + [
         (mode.wake, mode.aliases) for mode in messaging.values() if mode.enabled()
     ]
@@ -946,6 +950,7 @@ def load_config(path: Path) -> Config:
         agent_realtime_websocket_url=realtime_url.rstrip("/"),
         agent_realtime_connect_timeout_seconds=realtime_connect,
         agent_realtime_idle_timeout_seconds=realtime_idle,
+        messaging_operator_mode=operator_mode,
         whatsapp=messaging["whatsapp"],
         signal=messaging["signal"],
     )

@@ -5,8 +5,13 @@ from unittest.mock import Mock
 import pytest
 
 from walkietalk import cli
-from walkietalk.audio import Wav, read_wav
-from walkietalk.callsign import IDENT_GAP_SECONDS, CallsignSession, identification_transmissions
+from walkietalk.audio import PlaybackPreparationError, Wav, read_wav
+from walkietalk.callsign import (
+    IDENT_GAP_SECONDS,
+    CallsignSession,
+    StationIDError,
+    identification_transmissions,
+)
 from walkietalk.capture import Utterance
 from walkietalk.config import Config, WalkietalkError
 from walkietalk.ptt import SerialPTT
@@ -195,10 +200,39 @@ def test_id_transmissions_release_ptt_and_mark_only_after_success(
         assert "turn the radio off" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("failed_burst", [0, 1])
+def test_preparation_failure_only_reports_no_transmission_before_first_burst(
+    monkeypatch, failed_burst
+):
+    config = replace(
+        Config(), callsign="TEST1ID", callsign_mode="interval", max_tx_seconds=1, settle_seconds=0.1
+    )
+    ident = Wav(b"\x00\x30" * 43200, 48000, 0.9)
+    voice = Mock()
+    voice.synthesize.return_value = ident
+    tracker = CallsignSession(config, lambda: 100)
+    players = [Mock(), Mock()]
+    players[failed_burst].prepare.side_effect = WalkietalkError("output device unavailable")
+    monkeypatch.setattr(cli, "Playback", Mock(side_effect=players))
+    ptt = Mock()
+    monkeypatch.setattr(cli, "SerialPTT", ptt)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+
+    if failed_burst == 0:
+        with pytest.raises(PlaybackPreparationError):
+            cli.transmit_with_callsign(SPEECH, config, voice, tracker)
+    else:
+        with pytest.raises(StationIDError) as failure:
+            cli.transmit_with_callsign(SPEECH, config, voice, tracker)
+        assert failure.value.message_transmitted
+    assert ptt.call_count == players[0].play.call_count == failed_burst
+    assert tracker.due() and tracker.last_id_at is None
+
+
 @pytest.mark.parametrize(
     "failure", [WalkietalkError("Speech failed"), Wav(b"\x00\x30" * 96000, 48000, 2)]
 )
-def test_unavailable_id_sends_answer_and_does_not_mark(bridge, monkeypatch, capsys, failure):
+def test_unavailable_id_stops_before_sending_answer(bridge, monkeypatch, capsys, failure):
     config, _, voice, _ = bridge
     config = replace(config, callsign="TEST1ID", callsign_mode="interval", max_tx_seconds=1)
     tracker = CallsignSession(config, lambda: 100)
@@ -207,8 +241,8 @@ def test_unavailable_id_sends_answer_and_does_not_mark(bridge, monkeypatch, caps
     voice.synthesize.side_effect = [SPEECH, failure]
     transmission = Mock()
     monkeypatch.setattr(cli, "transmit_speech", transmission)
-    assert cli.main(ARGS) == 0
-    transmission.assert_called_once_with(SPEECH, config)
+    assert cli.main(ARGS) == 1
+    transmission.assert_not_called()
     assert tracker.due()
     assert tracker.last_id_at is None
     assert "Station ID failed" in capsys.readouterr().err

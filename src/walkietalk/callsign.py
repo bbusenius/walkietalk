@@ -3,10 +3,18 @@
 from collections.abc import Callable
 
 from .audio import Wav
-from .config import Config
+from .config import Config, WalkietalkError
 from .tts import RADIO_RATE, radio_wav
 
 IDENT_GAP_SECONDS = 0.2
+
+
+class StationIDError(WalkietalkError):
+    """Stop traffic on ID failure while preserving a completed message burst."""
+
+    def __init__(self, message: str, *, message_transmitted: bool = False):
+        super().__init__(f"Station ID failed: {message}; stopping talk.")
+        self.message_transmitted = message_transmitted
 
 
 class CallsignSession:

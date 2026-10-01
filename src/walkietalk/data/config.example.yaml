@@ -47,6 +47,7 @@ sleep:                    # optional; omit this section or leave primary empty t
   aliases: ["stop listening"]
   confirmation_phrase: "Standing by." # spoken with talk --transmit; empty stays silent
 messaging:                # optional; omit this section to disable both conversations
+  operator_mode: false    # hold messages for operator CLI or panel review
   whatsapp:               # empty wake disables this mode; put the number in your own config
     wake: ""
     aliases: []
