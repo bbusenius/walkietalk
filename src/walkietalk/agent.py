@@ -16,7 +16,8 @@ DEFAULT_INSTRUCTIONS = (
 )
 SPOKEN_INSTRUCTIONS = (
     " This answer will be spoken on a radio. Aim for one short sentence, "
-    "at most {max_words} words, to fit within {spoken_seconds} seconds."
+    "at most {max_words} words, to fit within {spoken_seconds} seconds. "
+    "Use radio words like over, copy, roger, stand by, go ahead, and out, when appropriate."
 )
 INSTRUCTION_PLACEHOLDER_ERROR = (
     "agent.instructions placeholders must be {max_reply_chars}, {spoken_seconds}, or {max_words}"

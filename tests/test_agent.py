@@ -144,6 +144,7 @@ def test_default_instructions_name_the_family_default_and_the_radio_window():
     assert "at most 600 characters" in text
     assert "at most 39 words" in text
     assert "19.6 seconds" in text
+    assert "over, copy, roger, stand by, go ahead, and out" in text
     assert "Do not search the web." in text
     assert "Return only the final answer" in text
     quiet = AgentSession(config, backend)
@@ -151,6 +152,7 @@ def test_default_instructions_name_the_family_default_and_the_radio_window():
     quiet_text = backend.reply.call_args.args[1].instructions
     assert "suitable for a family" in quiet_text
     assert "spoken on a radio" not in quiet_text
+    assert "radio words" not in quiet_text
 
 
 def test_custom_instructions_replace_guidance_and_fill_placeholders():
