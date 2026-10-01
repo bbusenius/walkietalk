@@ -4,17 +4,25 @@ A Linux radio bridge with interchangeable AI agents and voices, including
 optional WhatsApp and Signal messaging. Speak into a walkie-talkie and use
 a configured wake phrase to ask your chosen agent a question or send a
 transcribed message to a contact. Hear agent answers and contact messages
-over the radio. Supported agents include Grok, Codex, Hermes, and Claude.
+over the radio. Optional [operator mode](docs/MESSAGING.md#operator-mode) holds
+messages for local review and approval. Supported agents include Grok, Codex,
+Hermes, and Claude.
 
-> [!NOTE]
+> [!IMPORTANT]
 > You are responsible for the rules of your radio service. Walkietalk does not
-> decide whether a transmission is permitted. On US GMRS, review licensing,
-> station identification, and the requirement that an operator monitor the
-> station while it transmits. Connecting a station to the telephone network or
-> another network, including to carry WhatsApp or Signal messages, is
-> restricted. See the
+> decide whether a transmission is permitted. Optional
+> [operator mode](docs/MESSAGING.md#operator-mode) requires local review and
+> approval of each incoming and outgoing WhatsApp or Signal message. On US GMRS,
+> review licensing, station identification, and the requirement that an operator
+> monitor the station while it transmits. A GMRS telephone connection is
+> prohibited. Repeater, base, and fixed stations may connect to the telephone
+> network or another network only for remote control. Operator approval is not
+> an exception. The FCC's GMRS page addresses interconnection with other
+> networks to carry communications, including internet-linked repeaters, and
+> does not address a stored WhatsApp or Signal message. See the
 > [FCC's GMRS page](https://www.fcc.gov/wireless/bureau-divisions/mobility-division/general-mobile-radio-service-gmrs)
 > and [47 CFR Part 95, Subpart E](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-95/subpart-E).
+> We make no claims as to the legality of using this product in any way.
 
 ## Hardware
 
@@ -23,21 +31,24 @@ radio. Other hardware may require changes to audio selection or PTT wiring.
 
 | Item | Role | Reference |
 | --- | --- | --- |
-| **Baofeng UV-5G Plus** | Gateway radio with K1 jack for AIOC | [Manufacturer](https://www.baofengradio.com/products/uv-5g-plus-5w-gmrs-radio) |
+| **Baofeng UV-5G Plus** | Gateway radio with K1 jack for AIOC | [Single](https://www.baofengradio.com/products/uv-5g-plus-5w-gmrs-radio) or [Pair](https://www.baofengradio.com/products/uv-5g-plus-5w-gmrs-radio-1-pair)|
 | **NA6D AIOC** | USB radio audio input/output and PTT control | [Interface](https://na6d.com/products/aioc-ham-radio-all-in-one-cable) |
 | **USB-C data cable** | Data and power for AIOC; a charge-only cable will not work | [Cable](https://na6d.com/products/na6d-usb) |
-
-For US GMRS operation, review the
-[FCC's licensing and operating requirements](https://www.fcc.gov/wireless/bureau-divisions/mobility-division/general-mobile-radio-service-gmrs)
-before transmitting.
 
 Connect the gateway radio to the computer through the AIOC. Use a second,
 compatible handheld to talk to the bridge, with matching channel and radio
 settings.
 
-A separate Linux computer can host the bridge. Raspberry Pi has no dedicated
-packaging or validated setup here; see the [platform notes](docs/INSTALL.md#platforms)
-before choosing hardware. Windows/WSL and macOS are untested.
+### Optional
+
+| Item | Role | Reference |
+| --- | --- | --- |
+| **Raspberry Pi** | Dedicated Linux host | [Raspberry Pi](https://www.raspberrypi.com/) |
+| **Midland T51VP3 X-Talker, 2-pack** | Additional handheld radios | [Midland](https://midlandusa.com/products/t51vp3-x-talker-frs-walkie-talkie-2-pack) |
+
+A Raspberry Pi is a good affordable option if you don't have a Linux computer.
+See the [platform notes](docs/INSTALL.md#platforms) before choosing hardware.
+Windows/WSL and macOS are untested.
 
 ## Install
 
@@ -153,6 +164,9 @@ Hold the talk button on your handheld, say "Charlotte, why is the sky blue?",
 then release the button. Substitute your configured wake name if you changed
 it. Expect a transcript and an agent reply in the terminal. `talk --capture`
 listens continuously and prints replies without transmitting.
+
+With [operator mode](docs/MESSAGING.md#operator-mode) enabled, add `--panel` to
+keep live logs above fixed message review controls in the same terminal.
 
 ### Enable spoken radio replies
 

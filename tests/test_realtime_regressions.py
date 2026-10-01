@@ -10,13 +10,16 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from walkietalk import cli, voice_agent_tx
-from walkietalk.callsign import CallsignSession
+from walkietalk.callsign import CallsignSession, StationIDError
+from walkietalk.capture import collect_utterance, frames_from_pcm
 from walkietalk.config import Config, WalkietalkError, load_config
-from walkietalk.grok_realtime import GrokRealtimeClient, RealtimeEvent
+from walkietalk.grok_realtime import GrokRealtimeClient, RealtimeEvent, resample_pcm16
+from walkietalk.messaging import MessageBridge
 from walkietalk.voice_agent_tx import (
     PttAction,
     RealtimeCaptureError,
@@ -334,6 +337,42 @@ def test_realtime_station_id_policy(monkeypatch, mode, count):
     assert spoken == ["TEST123"] * count
 
 
+@pytest.mark.parametrize("failure", ["prepare", "silent", "truncated"])
+def test_realtime_station_id_failure_stops_traffic_after_mute(monkeypatch, failure):
+    cfg = config(callsign="TEST123", callsign_mode="interval", post_tx_mute_seconds=2)
+    callsigns = CallsignSession(cfg, time.monotonic)
+    reply = SupervisedTxResult(
+        None, output_transcript="reply", ptt_actions=(PttAction("key", "test"),)
+    )
+    talk = SimpleNamespace(commit_and_respond=Mock(return_value=reply))
+    identify = Mock()
+    if failure == "prepare":
+        identify.side_effect = OSError("ID voice unavailable")
+    else:
+        identify.return_value = SupervisedTxResult(
+            None,
+            ptt_actions=reply.ptt_actions if failure == "truncated" else (),
+            truncated_by_tx_cap=failure == "truncated",
+        )
+    mute = Mock()
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    monkeypatch.setattr(cli, "speak_text_via_realtime", identify)
+    monkeypatch.setattr(cli, "wait_post_tx_mute", mute)
+    monkeypatch.setattr(cli, "IDENT_GAP_SECONDS", 0)
+    with pytest.raises(StationIDError) as error:
+        cli._realtime_commit_reply(
+            talk_realtime=talk,
+            config=cfg,
+            args=argparse.Namespace(transmit=True, once=False, wav=None),
+            session=ListeningSession(cfg),
+            callsigns=callsigns,
+        )
+    assert error.value.message_transmitted and callsigns.due()
+    talk.commit_and_respond.assert_called_once()
+    mute.assert_called_once_with(cfg)
+
+
 def test_old_config_loads_and_partial_realtime_overrides(tmp_path):
     import yaml
 
@@ -524,7 +563,8 @@ def test_cli_silent_carrier_preserves_window_and_accepts_next_turn(monkeypatch, 
     assert "response.create" in spoken.types()
     assert spoken.commits == [PCM[:480]]
     output = capsys.readouterr().out
-    assert "Ignored (empty transcript). Window unchanged." in output
+    assert "Realtime transcription timed out; no transcript received. Window unchanged." in output
+    assert "Ignored (empty transcript)" not in output
     assert "No words received" not in output
 
 
@@ -577,6 +617,8 @@ def test_empty_transcript_reconnects_before_the_next_capture(monkeypatch, capsys
     assert "response.create" in spoken.types()
     output = capsys.readouterr().out
     assert "Ignored (empty transcript). Window unchanged." in output
+    assert "Realtime transcription returned no text; voice session reset." in output
+    assert "transcription timed out" not in output
     assert "Connecting voice session before the next listen." in output
     assert "Accepted (wake name)." in output
 
@@ -1134,3 +1176,123 @@ def test_sleep_deletes_control_audio_preserves_history_and_waits_for_wake(monkey
     assert "go to sleep" in terms
     assert "stop listening" in terms
     assert gate.awake_until == 100 + cfg.conversation_timeout_seconds
+
+
+@pytest.mark.parametrize("transmit", [False, True])
+@pytest.mark.parametrize("noise_before_sleep", [False, True])
+def test_operator_sleep_preserves_next_capture_and_agent_wake(
+    monkeypatch, capsys, transmit, noise_before_sleep
+):
+    """Exercise local sleep with real VAD, resampling, and remote buffer lifecycle."""
+    cfg = config(
+        messaging_operator_mode=True,
+        listening_mode="conversation",
+        wake_primary="marko polo",
+        wake_aliases=("mark polo", "marcko polo"),
+        sleep_primary="go to sleep",
+        sleep_confirmation_phrase="Standing by.",
+        wake_confirmation_phrase="Wake phrase received!",
+    )
+    remote = Voice(transcripts=("marko polo first question", "Go.", "marko polo", "next question"))
+    realtime = RealtimeTalkSession(cfg, transport=remote, api_key="fake")
+    gate = ListeningSession(cfg)
+    bridge = MessageBridge(cfg)
+    controls = SimpleNamespace(
+        closed=threading.Event(), acquire=lambda: None, start=lambda: None, close=lambda: None
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _: cfg)
+    monkeypatch.setattr(cli, "ListeningSession", lambda _: gate)
+    monkeypatch.setattr(cli, "RealtimeTalkSession", lambda _: realtime)
+    monkeypatch.setattr(cli, "open_messaging", lambda _: bridge)
+    monkeypatch.setattr(cli, "OperatorServer", lambda *_: controls)
+    monkeypatch.setattr(cli, "preflight", lambda *_, **__: None)
+    monkeypatch.setattr(cli, "SerialPTT", PTT)
+    monkeypatch.setattr(cli, "StreamingPlayback", lambda _: lambda *_: None)
+    for name in ("open_stt", "open_agent", "open_tts"):
+        monkeypatch.setattr(cli, name, lambda *_: pytest.fail("separate backend opened"))
+    acks = []
+
+    def speak(config, text, ptt, **kwargs):
+        assert realtime.warm_connected
+        assert realtime.appended_bytes == 0
+        assert not remote.buffer
+        assert text in (cfg.sleep_confirmation_phrase, cfg.wake_confirmation_phrase)
+        acks.append(text)
+        return SupervisedTxResult(None, ptt_actions=(PttAction("key", "audible_audio_energy"),))
+
+    monkeypatch.setattr(cli, "speak_text_via_realtime", speak)
+    captures = 0
+    uploaded = []
+    sleep_command = None
+    # Use the AIOC rate with distinct PCM per turn to detect missing/stale frames.
+    rate = 48000
+    silence = b"\0\0" * (rate // 50)
+
+    def capture(*_, on_wait, on_frame, on_reset, log, **__):
+        nonlocal captures, sleep_command
+        captures += 1
+        assert realtime.warm_connected
+        if captures > 5:
+            raise KeyboardInterrupt
+        if captures == 2:
+            assert gate.destination == "agent" and gate.awake_until is not None
+
+            def request_sleep():
+                nonlocal sleep_command
+                sleep_command = bridge.operator.submit("sleep")
+                on_wait()  # Releases idle capture before the operator action runs.
+                pytest.fail("sleep command must release idle capture")
+
+            # Include a discarded carrier burst to exercise input_audio_buffer.clear.
+            pcm = (b"\x88\x13" * (rate // 50) + silence * 20) if noise_before_sleep else silence
+            return collect_utterance(
+                frames_from_pcm(pcm, rate),
+                rate=rate,
+                energy_threshold=cfg.energy_threshold,
+                hangover_ms=cfg.hangover_ms,
+                max_utterance_seconds=cfg.max_utterance_seconds,
+                wait_deadline=None,
+                log=log,
+                on_wait=request_sleep,
+                on_frame=on_frame,
+                on_reset=on_reset,
+            )
+        if captures in (3, 4):
+            assert sleep_command is not None and not bridge.operator.has_commands()
+            assert gate.destination == "" and gate.awake_until is None
+        elif captures == 5:
+            assert gate.destination == "agent" and gate.awake_until is not None
+        speech = (4000 + captures * 1000).to_bytes(2, "little", signed=True) * (rate // 50)
+        pcm = silence * 5 + speech * 25 + silence * 20
+        utterance = collect_utterance(
+            frames_from_pcm(pcm, rate),
+            rate=rate,
+            energy_threshold=cfg.energy_threshold,
+            hangover_ms=cfg.hangover_ms,
+            max_utterance_seconds=cfg.max_utterance_seconds,
+            wait_deadline=None,
+            log=log,
+            on_wait=on_wait,
+            on_frame=on_frame,
+            on_reset=on_reset,
+        )
+        uploaded.append(resample_pcm16(utterance.pcm, rate))
+        return utterance
+
+    monkeypatch.setattr(cli, "capture_from_device", capture)
+    args = ["-c", "/tmp/fake.yaml", "--no-env-file", "talk", "--capture"]
+    assert cli.main(args + (["--transmit"] if transmit else [])) == 130
+    assert remote.commits == uploaded
+    assert remote.types().count("session.update") == 1
+    assert remote.types().count("response.create") == 2
+    assert [m["item_id"] for m in remote.sent if m["type"] == "conversation.item.delete"] == [
+        "user-2",
+        "user-3",
+    ]
+    assert acks == (
+        [cfg.sleep_confirmation_phrase, cfg.wake_confirmation_phrase] if transmit else []
+    )
+    assert gate.destination == "agent" and gate.awake_until is not None
+    output = capsys.readouterr().out
+    assert 'Ignored (say "marko polo" first).' in output
+    assert "Ignored (empty transcript)" not in output

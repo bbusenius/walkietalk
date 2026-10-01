@@ -649,7 +649,9 @@ def test_playback_retries_then_listens_before_next_message(
     monkeypatch.setattr(cli, "open_stt", lambda config: listener)
     spoken = []
     attempts = []
-    monkeypatch.setattr(cli, "voice_wav", lambda *args: Wav(b"\x01\x00" * 480, 48000, 0.01))
+    monkeypatch.setattr(
+        cli, "voice_wav", lambda *args, **kwargs: Wav(b"\x01\x00" * 480, 48000, 0.01)
+    )
 
     class Voice:
         def label(self):

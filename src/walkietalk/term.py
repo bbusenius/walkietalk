@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
+from contextlib import contextmanager
 from typing import TextIO
 
 RESET = "\033[0m"
@@ -18,6 +20,18 @@ STYLES = {
     "error": "\033[1;31m",
     "reply": "\033[35m",  # magenta
 }
+_sink: Callable[[str, str], None] | None = None
+
+
+@contextmanager
+def route_logs(sink: Callable[[str, str], None]):
+    """Route Python log events into the optional terminal panel."""
+    global _sink
+    previous, _sink = _sink, sink
+    try:
+        yield
+    finally:
+        _sink = previous
 
 
 def _enable_windows_color() -> None:
@@ -51,6 +65,9 @@ def style(kind: str, text: str, *, stream: TextIO | None = None) -> str:
 
 
 def emit(kind: str, text: str, *, file: TextIO | None = None) -> None:
+    if _sink is not None:
+        _sink(kind, text)
+        return
     file = file or sys.stdout
     print(style(kind, text, stream=file), file=file, flush=True)
 

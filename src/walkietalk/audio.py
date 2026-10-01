@@ -14,6 +14,10 @@ from pathlib import Path
 from .config import OutputTooLarge, WalkietalkError, validate_gain
 
 
+class PlaybackPreparationError(WalkietalkError):
+    """Playback could not be prepared; the transmitter has not been opened."""
+
+
 @dataclass(frozen=True)
 class Wav:
     frames: bytes

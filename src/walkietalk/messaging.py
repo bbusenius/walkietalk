@@ -24,6 +24,7 @@ import httpx
 from .agent_process import _signal_group, run_cli
 from .audio import Wav, read_wav
 from .config import MESSAGING_SERVICES, Config, MessagingMode, OutputTooLarge, WalkietalkError
+from .operator_mode import OperatorQueue
 from .session import uninterrupted_cleanup
 from .term import emit
 from .tts import TtsBackend, radio_wav, write_wav
@@ -114,6 +115,8 @@ class MessagePlayback:
     failures: int = 0
     chunk_chars: int | None = None
     transcript: str | None = None
+    speech: Wav | None = None
+    preview_audio: Wav | None = None
 
     def prepare_text(self, voice: TtsBackend, alias: str, config: Config) -> tuple[Wav, str]:
         prefix = f"{alias} says: "
@@ -300,6 +303,9 @@ def parse_whatsapp_row(row: dict, mode: MessagingMode) -> Inbound | None:
 
 def voice_wav(path: Path, maximum: float, *, rate: int = 48000, truncate: bool = True) -> Wav:
     """Convert a stored voice note to the mono PCM16 WAV the radio already plays."""
+    maximum_samples = int(maximum * rate)
+    if maximum_samples < 1:
+        raise OutputTooLarge("Voice message has no room within the audio limit")
     with tempfile.TemporaryDirectory(prefix="walkietalk-voice-") as directory:
         output = Path(directory) / "voice.wav"
         try:
@@ -315,7 +321,7 @@ def voice_wav(path: Path, maximum: float, *, rate: int = 48000, truncate: bool =
                     "-af",
                     # One extra sample detects overlong notes without decoding
                     # unbounded media or silently losing the transcript's tail.
-                    f"aresample={rate},atrim=end_sample={int(maximum * rate) + (not truncate)}",
+                    f"aresample={rate},atrim=end_sample={maximum_samples + 1}",
                     "-ac",
                     "1",
                     "-ar",
@@ -337,7 +343,14 @@ def voice_wav(path: Path, maximum: float, *, rate: int = 48000, truncate: bool =
             raise WalkietalkError(f"Cannot play voice message: {exc}") from exc
         if code:
             raise WalkietalkError("Cannot play voice message: ffmpeg failed")
-        return read_wav(output, maximum)
+        audio = read_wav(output, (maximum_samples + 1) / rate)
+        if len(audio.frames) // 2 <= maximum_samples:
+            return audio
+        if not truncate:
+            raise OutputTooLarge(f"Voice message exceeds the {maximum:g}s transcription limit")
+        emit("warn", "Voice note cut to fit the transmit limit.")
+        frames = audio.frames[: maximum_samples * 2]
+        return Wav(frames, audio.rate, len(frames) / (audio.rate * 2))
 
 
 def encode_voice_note(audio: Wav, output: Path, maximum: float) -> None:
@@ -384,6 +397,7 @@ class MessageBridge:
         self.config = config
         self.whatsapp_store = whatsapp_store()
         self.queues: dict[str, list[Inbound]] = {service: [] for service in MESSAGING_SERVICES}
+        self.operator = OperatorQueue(config) if config.messaging_operator_mode else None
         self.seen: set[str] = set()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -481,6 +495,8 @@ class MessageBridge:
             self.seen.add(f"{item.service}:{item.identity}")
             if item.text or item.audio_path:
                 self.queues[item.service].append(item)
+                if self.operator is not None:
+                    self.operator.add(item.service, incoming=item)
 
     def peek(self, service: str) -> Inbound | None:
         with self._lock:
@@ -491,6 +507,16 @@ class MessageBridge:
         with self._lock:
             if self.queues[item.service] and self.queues[item.service][0] == item:
                 self.queues[item.service].pop(0)
+                if self.operator is not None:
+                    self.operator.forget(item)
+
+    def discard(self, item: Inbound) -> None:
+        """Denial can remove an item behind an approved reply waiting for its contact."""
+        with self._lock:
+            if item in self.queues[item.service]:
+                self.queues[item.service].remove(item)
+            if self.operator is not None:
+                self.operator.forget(item)
 
     def send_text(self, service: str, text: str) -> None:
         mode = self.mode(service)

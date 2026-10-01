@@ -19,7 +19,7 @@ from walkietalk.audio import Playback, read_wav
 from walkietalk.config import WalkietalkError, load_config
 from walkietalk.devices import resolve_device
 from walkietalk.ptt import SerialPTT
-from walkietalk.session import transmit
+from walkietalk.session import PTTHardwareError, transmit
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def test_exact_device_selection_never_falls_back():
     ]:
         with pytest.raises(WalkietalkError):
             resolve_device(devices, name, "output")
-    with pytest.raises(WalkietalkError):
+    with pytest.raises(WalkietalkError, match="device may be in use"):
         resolve_device([dict(device, max_output_channels=0)], device["name"], "output")
 
 
@@ -169,14 +169,15 @@ def test_unsupported_wav_rejected(tmp_path, channels, width, rate):
         read_wav(path, 1)
 
 
-@pytest.mark.parametrize("failure_at", [None, "open", "on", "action", "off"])
+@pytest.mark.parametrize("failure_at", [None, "open", "on", "action", "off", "close"])
 def test_cleanup_after_partial_open_assertion_or_action_failure(failure_at):
     ptt = Mock()
     action = Mock()
     if failure_at:
         (action if failure_at == "action" else getattr(ptt, failure_at)).side_effect = OSError
     if failure_at:
-        with pytest.raises(OSError):
+        expected_error = OSError if failure_at == "action" else PTTHardwareError
+        with pytest.raises(expected_error):
             transmit(ptt, action, 1)
     else:
         transmit(ptt, action, 1)

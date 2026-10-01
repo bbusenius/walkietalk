@@ -11,6 +11,8 @@ fields for unused backends, except:
 
 - `messaging` or either service may be omitted to disable its contact conversation; see
   [WhatsApp and Signal settings](MESSAGING.md).
+- `messaging.operator_mode` may be omitted to keep automatic messaging (default `false`);
+  see [operator mode](MESSAGING.md#operator-mode).
 - `sleep` may be omitted to disable sleep; if present, all three fields are required.
 - `stt.max_response_bytes` may be omitted to use 1048576 (1 MiB).
 - `agent.realtime` and any of its fields may be omitted to use the defaults below.
@@ -99,6 +101,19 @@ is a wait-for-speech limit, not how long someone may speak. Continuous `talk`
 has no idle wait limit; `--timeout` requires `--once`. `listen --capture` waits
 up to 60 seconds by default and accepts its own `--timeout`. `NO_COLOR` disables
 colored logs.
+
+With `messaging.operator_mode: true`, use continuous `talk --capture`. WAV input
+and `--once` are refused because pending messages need the ongoing talk loop.
+Run `walkietalk operator status`, `operator read`, `operator approve`,
+`operator transmit`, `operator deny`, or `operator sleep` from a second terminal.
+Transmit releases one reviewed incoming message without a radio wake; `--approved` selects an
+incoming message approved earlier. These commands find the running instance
+automatically, so `--config` is optional. The radio terminal only displays logs
+unless `--panel` is added. `talk --capture --panel` provides live logs above fixed
+review controls: **R** to read, **A** to approve, **T** to transmit, **D** to deny, **S** to sleep,
+**Tab** to switch between review and approved messages, **Ctrl+C** to stop.
+It requires an interactive terminal; separate CLI commands remain available.
+See [operator mode](MESSAGING.md#operator-mode) for approval and delivery timing.
 
 ## Audio, capture, and speech recognition
 
@@ -190,7 +205,12 @@ transcribed control audio from the remote conversation before acknowledging it.
 voice path as wake confirmation. Receive-only mode prints the sleep status.
 An empty confirmation stays silent; a failed confirmation still leaves the
 window closed. Omit the optional `sleep` section or leave `sleep.primary` empty
-with no aliases to disable sleep. Existing configs remain valid. Restart after
+with no aliases to disable the radio sleep phrase. In operator mode, `walkietalk
+operator sleep` or the panel's **S** key closes the conversation without speaking
+that phrase. It retains queued messages and approvals, pauses pending operator
+delivery, and uses the same configured confirmation. The local command works
+with an empty queue and without a configured radio sleep phrase.
+Existing configs remain valid. Restart after
 editing the configuration.
 
 Continuous mode returns to listening after STT, agent, or speech errors. Failed
@@ -292,9 +312,11 @@ With `grok_realtime`, the station ID always uses a separate bounded voice burst
 after the reply, with PTT released between them. Its interval advances only after
 the complete ID is transmitted successfully.
 
-For TTS replies, a failed ID synthesis or an ID too long for its own burst is reported locally;
-the answer is sent without the ID, and identification remains due. The CLI does
-not crop station-ID audio to make it fit.
+When a configured ID is due, failure to prepare or transmit it stops `talk` with
+an error. TTS prepares the ID before transmitting the answer. If the answer
+finishes but its separate ID burst fails, the completed answer or chunk is
+recorded as delivered before stopping. The CLI does not crop station-ID audio
+to make it fit, and identification remains due until the complete ID succeeds.
 
 The parent owns PTT, supervises playback in a child process, and releases PTT
 on completion, handled failure, Ctrl+C, or SIGTERM. It cannot guarantee release
