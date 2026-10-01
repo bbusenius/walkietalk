@@ -18,7 +18,16 @@ import pytest
 from walkietalk import cli, operator_mode
 from walkietalk.config import Config, MessagingMode, WalkietalkError
 from walkietalk.messaging import Inbound, MessageBridge
-from walkietalk.operator_mode import OperatorServer, operator_request, operator_socket
+from walkietalk.operator_mode import (
+    APPROVED_EDIT_BLOCK,
+    COMMAND_HELP,
+    MAX_EDIT_CHARS,
+    MAX_REQUEST_BYTES,
+    OperatorServer,
+    operator_request,
+    operator_snapshot,
+    operator_socket,
+)
 
 MODE = MessagingMode(wake="nana", to="123", sender_alias="Nana")
 
@@ -1021,3 +1030,376 @@ def test_discovery_does_not_choose_arbitrarily_between_live_instances(control):
         assert ("reply", "first instance") in [call.args for call in log.call_args_list]
     finally:
         other.close()
+
+
+def _reject_edit(server, payload):
+    connection, response, _ = connect(server)
+    try:
+        connection.sendall(
+            payload if isinstance(payload, bytes) else json.dumps(payload).encode() + b"\n"
+        )
+        line = response.readline()
+        return json.loads(line) if line else None
+    finally:
+        response.close()
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [None, 12, "", "   \n", "\x00", "a" * (MAX_EDIT_CHARS + 1)],
+    ids=["missing", "not-string", "empty", "blank", "unprintable", "too-long"],
+)
+def test_socket_rejects_edit_without_usable_text(control, monkeypatch, text):
+    bridge, server, _ = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    queued, requests = watch_commands(monkeypatch, bridge.operator)
+    payload = {"action": "edit"}
+    if text is not None:
+        payload["text"] = text
+    response = _reject_edit(server, payload)
+    assert response["ok"] is False
+    assert "1-8000" in response["message"]
+    assert not queued.is_set() and not requests and not bridge.operator.has_commands()
+
+
+@pytest.mark.parametrize("action", ["status", "read", "approve", "transmit", "deny", "sleep"])
+def test_socket_rejects_text_on_a_non_edit_action(control, monkeypatch, action):
+    bridge, server, _ = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    _, requests = watch_commands(monkeypatch, bridge.operator)
+    response = _reject_edit(server, {"action": action, "text": "changed"})
+    assert response["ok"] is False and response["message"] == COMMAND_HELP
+    assert not requests and not bridge.operator.has_commands()
+
+
+def test_socket_rejects_edit_of_the_approved_view(control, monkeypatch):
+    bridge, server, _ = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    _, requests = watch_commands(monkeypatch, bridge.operator)
+    response = _reject_edit(server, {"action": "edit", "approved": True, "text": "changed"})
+    assert response["ok"] is False and response["message"] == APPROVED_EDIT_BLOCK
+    assert not requests and not bridge.operator.has_commands()
+
+
+def test_socket_rejects_an_item_that_cannot_be_edited(control, monkeypatch):
+    bridge, server, _ = control
+    bridge.operator.add("signal", text="spoken", audio=Mock())
+    _, requests = watch_commands(monkeypatch, bridge.operator)
+    response = _reject_edit(server, {"action": "edit", "text": "changed"})
+    assert response["ok"] is False
+    assert response["message"] == "Outgoing voice sends the recording; it can't be edited."
+    assert not requests and not bridge.operator.has_commands()
+
+
+def test_socket_accepts_a_max_length_emoji_edit(control, monkeypatch):
+    bridge, server, _ = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    queued, requests = watch_commands(monkeypatch, bridge.operator)
+    text = "😀" * MAX_EDIT_CHARS
+    escaped = json.dumps({"action": "edit", "text": text}).encode() + b"\n"
+    plain = json.dumps({"action": "edit", "text": text}, ensure_ascii=False).encode() + b"\n"
+    assert len(plain) <= len(escaped) <= MAX_REQUEST_BYTES
+    response = _reject_edit(server, {"action": "edit", "text": text})
+    assert queued.wait(2)
+    assert response["message"].startswith("Command queued")
+    assert requests[0].text == text
+
+
+def test_socket_rejects_a_request_larger_than_the_edit_limit(control, monkeypatch):
+    bridge, server, _ = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    _, requests = watch_commands(monkeypatch, bridge.operator)
+    response = _reject_edit(server, b"x" * (MAX_REQUEST_BYTES + 1))
+    assert response is None
+    assert not requests and not bridge.operator.has_commands()
+
+
+def test_operator_request_edit_sets_the_words_and_completes(control, monkeypatch):
+    bridge, _, config_path = control
+    incoming = Inbound("signal", "text", text="hello", identity="1")
+    bridge.add(incoming)
+    review = bridge.operator
+    queued, _ = watch_commands(monkeypatch, review)
+    log = Mock()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(
+            operator_request, config_path, "edit", text="  changed words  ", timeout=2, log=log
+        )
+        assert queued.wait(2)
+        command, item, stale = review.next_command()
+        assert command == "edit" and item.incoming is incoming and not stale
+        assert review.command_text() == "changed words"
+        assert review.edit(item, review.command_text()) == "hello"
+        review.complete_command(True)
+        assert result.result(timeout=2) is True
+    assert item.edited == item.content == "changed words"
+    assert item.original == "hello"
+
+
+def test_operator_snapshot_returns_the_head_without_queueing_a_command(control):
+    bridge, _, config_path = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    snapshot = operator_snapshot(config_path, timeout=2)
+    assert snapshot["waiting"] == 1
+    assert snapshot["item"]["text"] == "hello"
+    assert snapshot["item"]["edited"] is False
+    assert not bridge.operator.has_commands()
+
+
+def test_status_shows_edited_text_and_original(control):
+    bridge, _, config_path = control
+    item = bridge.operator.add("signal", text="hello")
+    bridge.operator.edit(item, "changed")
+    log = Mock()
+    assert operator_request(config_path, "status", timeout=2, log=log)
+    calls = [call.args for call in log.call_args_list]
+    assert ("reply", "Edited: changed") in calls
+    assert ("status", "Original: hello") in calls
+    assert ("reply", "changed") not in calls
+    assert not bridge.operator.has_commands()
+
+
+def test_status_shows_an_edited_voice_transcript_and_original(control):
+    bridge, _, config_path = control
+    item = bridge.operator.add(
+        "signal", incoming=Inbound("signal", "voice", audio_path=Path("voice.ogg"), identity="1")
+    )
+    bridge.operator.mark_previewed(item, "spoken words")
+    bridge.operator.edit(item, "changed words")
+    log = Mock()
+    assert operator_request(config_path, "status", timeout=2, log=log)
+    calls = [call.args for call in log.call_args_list]
+    assert ("reply", "Edited: changed words") in calls
+    assert ("status", "Original: spoken words") in calls
+    assert ("reply", "Voice transcript: changed words") not in calls
+
+
+def test_operator_request_edit_updates_a_running_talk_loop(monkeypatch, runtime):
+    from test_operator_mode import Talk
+
+    _, config_path = runtime
+    talk = Talk(monkeypatch)
+    incoming = Inbound("signal", "text", text="hello", identity="1")
+    talk.bridge.add(incoming)
+    monkeypatch.setattr(cli, "OperatorServer", OperatorServer)
+    queued, _ = watch_commands(monkeypatch, talk.review)
+    result = {}
+
+    def launch(on_wait):
+        def request():
+            result["ok"] = operator_request(
+                config_path, "edit", text="changed words", timeout=5, log=Mock()
+            )
+
+        result["thread"] = threading.Thread(target=request)
+        result["thread"].start()
+        assert queued.wait(3)
+        on_wait()
+
+    def finished(on_wait):
+        result["thread"].join(timeout=5)
+        assert result["ok"] is True
+        item = talk.review._waiting[0]
+        assert item.incoming is incoming
+        assert item.edited == "changed words"
+        on_wait()
+
+    talk.events = [launch, finished]
+    assert cli.main(["-c", str(config_path), "talk", "--capture"]) == 130
+    talk.transmit.assert_not_called()
+    talk.bridge.send_text.assert_not_called()
+
+
+def _interactive(monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+
+@pytest.mark.parametrize("edited", [None, "hello", "  hello  ", ""])
+def test_operator_edit_prompt_is_prefilled_and_unchanged_text_is_not_sent(
+    control, monkeypatch, capsys, edited
+):
+    bridge, _, config_path = control
+    bridge.add(Inbound("signal", "text", text="hello", identity="1"))
+    _interactive(monkeypatch)
+
+    def prompt(current):
+        assert current == "hello"
+        return edited
+
+    monkeypatch.setattr(cli, "prompt_edit", prompt)
+    cli.operator_edit(config_path, None, 2)
+    assert "Edit cancelled; message unchanged." in capsys.readouterr().out
+    assert not bridge.operator.has_commands()
+    assert bridge.operator._waiting[0].edited is None
+
+
+def test_operator_edit_prompt_uses_a_voice_transcript(runtime, monkeypatch, capsys):
+    _, config_path = runtime
+    mode = MessagingMode(wake="nana", to="123", sender_alias="Nana", transcribe_voice=True)
+    bridge = MessageBridge(Config(messaging_operator_mode=True, signal=mode))
+    server = OperatorServer(bridge.operator, config_path)
+    server.start()
+    try:
+        item = bridge.operator.add(
+            "signal",
+            incoming=Inbound(
+                "signal",
+                "voice",
+                text="Attachment caption",
+                audio_path=Path("voice.ogg"),
+                identity="1",
+            ),
+        )
+        bridge.operator.mark_previewed(item, "spoken words")
+        _interactive(monkeypatch)
+
+        def prompt(current):
+            assert current == "spoken words"
+            return None
+
+        monkeypatch.setattr(cli, "prompt_edit", prompt)
+        cli.operator_edit(config_path, None, 2)
+        assert "Attachment caption" not in capsys.readouterr().out
+        assert not bridge.operator.has_commands()
+    finally:
+        server.close()
+
+
+def test_operator_edit_prompt_submits_the_replacement(control, monkeypatch):
+    bridge, _, config_path = control
+    incoming = Inbound("signal", "text", text="hello", identity="1")
+    bridge.add(incoming)
+    review = bridge.operator
+    queued, requests = watch_commands(monkeypatch, review)
+    _interactive(monkeypatch)
+
+    def prompt(current):
+        assert current == "hello"
+        return "changed words"
+
+    monkeypatch.setattr(cli, "prompt_edit", prompt)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(cli.operator_edit, config_path, None, 2)
+        assert queued.wait(2)
+        command, item, stale = review.next_command()
+        assert command == "edit" and item.incoming is incoming and not stale
+        assert review.command_text() == "changed words"
+        assert requests[0].revision == review.snapshot()["revision"]
+        review.edit(item, review.command_text())
+        review.complete_command(True)
+        result.result(timeout=2)
+    assert item.edited == "changed words"
+
+
+def test_operator_edit_stale_revision_reports_the_unsent_text(control, monkeypatch, capsys):
+    bridge, _, config_path = control
+    item = bridge.operator.add("signal", text="hello")
+    _interactive(monkeypatch)
+
+    def prompt(current):
+        assert current == "hello"
+        bridge.operator.mark_previewed(item, "different words")
+        return "changed words"
+
+    monkeypatch.setattr(cli, "prompt_edit", prompt)
+    with pytest.raises(WalkietalkError, match="did not complete"):
+        cli.operator_edit(config_path, None, 2)
+    assert "Unsent edit: changed words" in capsys.readouterr().err
+    assert item.edited is None
+
+
+def test_operator_edit_without_a_terminal_requires_text(monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    with pytest.raises(WalkietalkError, match="use --text"):
+        cli.operator_edit(Path("unused"), None, 2)
+
+
+def test_operator_edit_timeout_keeps_the_unsent_text(monkeypatch, capsys):
+    def request(*args, **kwargs):
+        raise WalkietalkError("Operator command timed out.")
+
+    monkeypatch.setattr(cli, "operator_request", request)
+    with pytest.raises(WalkietalkError, match="timed out"):
+        cli.operator_edit(Path("unused"), "changed words", 2)
+    assert "Unsent edit: changed words" in capsys.readouterr().err
+
+
+def test_operator_edit_prompt_timeout_keeps_the_unsent_text(monkeypatch, capsys):
+    _interactive(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "operator_snapshot",
+        lambda path: {
+            "revision": 3,
+            "item": {
+                "number": 1,
+                "direction": "incoming",
+                "service": "signal",
+                "alias": "Nana",
+                "kind": "text",
+                "text": "hello",
+                "transcript": None,
+                "edit_block": None,
+            },
+        },
+    )
+
+    def request(*args, **kwargs):
+        raise WalkietalkError("Operator connection closed; check status before retrying.")
+
+    monkeypatch.setattr(cli, "prompt_edit", lambda current: "changed words")
+    monkeypatch.setattr(cli, "operator_request", request)
+    with pytest.raises(WalkietalkError, match="connection closed"):
+        cli.operator_edit(Path("unused"), None, 2)
+    assert "Unsent edit: changed words" in capsys.readouterr().err
+
+
+def test_operator_edit_tolerates_a_snapshot_without_edit_block(monkeypatch, capsys):
+    _interactive(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "operator_snapshot",
+        lambda path: {
+            "revision": 1,
+            "item": {
+                "number": 1,
+                "direction": "incoming",
+                "service": "signal",
+                "alias": "Nana",
+                "kind": "text",
+                "text": "hello",
+                "transcript": None,
+            },
+        },
+    )
+    monkeypatch.setattr(cli, "prompt_edit", lambda current: None)
+    cli.operator_edit(Path("unused"), None, 2)
+    assert "Edit cancelled; message unchanged." in capsys.readouterr().out
+
+
+def test_operator_edit_text_flag_skips_the_prompt(monkeypatch):
+    seen = {}
+
+    def request(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(cli, "operator_request", request)
+    monkeypatch.setattr(cli, "prompt_edit", lambda current: pytest.fail("prompted"))
+    cli.operator_edit(Path("unused"), "changed words", 2)
+    assert seen["args"][1] == "edit"
+    assert seen["kwargs"]["text"] == "changed words"
+
+
+def test_text_flag_applies_only_to_operator_edit(capsys):
+    assert cli.main(["operator", "read", "--text", "x"]) == 1
+    assert "--text applies only to operator edit" in capsys.readouterr().err
+
+
+def test_operator_edit_approved_is_rejected_before_connecting(capsys):
+    assert cli.main(["operator", "edit", "--approved"]) == 1
+    assert "Approved messages can't be edited; deny to drop it" in capsys.readouterr().err
