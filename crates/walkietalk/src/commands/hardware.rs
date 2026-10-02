@@ -57,9 +57,8 @@ pub fn ptt(config: &Config, consent: Option<TransmitConsent>, seconds: f64) -> a
         "--seconds must be greater than 0 and at most radio.max_tx_seconds ({max})"
     );
     let radio = radio(config, consent)?;
-    let ptt = radio.ptt();
     let deadline = Instant::now() + radio.timing().max_tx;
-    let keyed = Keyed::new(&ptt, deadline)?;
+    let keyed = Keyed::new(radio.ptt(), deadline)?;
     let until = Instant::now() + Duration::from_secs_f64(seconds);
     while Instant::now() < until && !signals::stop_requested() {
         std::thread::sleep(Duration::from_millis(20).min(until.saturating_duration_since(Instant::now())));
