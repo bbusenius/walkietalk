@@ -10,13 +10,25 @@ use crate::xai::Auth;
 use crate::stt::{self, Transcriber};
 use crate::tts::{self, Shaping, Voice};
 
-pub fn text_agent(config: &Config, _creds: &Credentials) -> anyhow::Result<Box<dyn TextAgent>> {
-    Ok(match config.agent.backend {
+pub fn text_agent(config: &Config, creds: &Credentials) -> anyhow::Result<Box<dyn TextAgent>> {
+    let a = &config.agent;
+    Ok(match a.backend {
         AgentBackend::Stub => Box::new(agent::Stub),
+        AgentBackend::Hermes => Box::new(agent::hermes::Hermes::new(&a.hermes.url, &a.hermes.token_env, creds.clone(), a.timeout())),
+        AgentBackend::Codex => Box::new(agent::codex::Codex::new(a.codex.clone(), a.timeout())),
+        AgentBackend::Grok => Box::new(agent::grok_cli::GrokCli::new(a.grok.clone(), a.timeout())),
+        AgentBackend::Claude => Box::new(agent::claude_cli::ClaudeCli::new(a.claude.clone(), a.timeout())),
+        AgentBackend::ClaudeApi => Box::new(agent::claude_api::ClaudeApi::new(
+            &a.claude_api.key_env,
+            creds.clone(),
+            &a.claude_api.model,
+            a.claude_api.reasoning_effort,
+            a.max_reply_chars,
+            a.timeout(),
+        )),
         AgentBackend::GrokRealtime => bail!(
             "agent.backend grok-realtime is a speech-to-speech session, not a text agent; use voice-agent-check or talk"
         ),
-        other => bail!("agent.backend {other} is not available yet"),
     })
 }
 

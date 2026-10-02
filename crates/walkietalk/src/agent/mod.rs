@@ -5,6 +5,12 @@
 //! it after the reply was actually delivered. A failed or unheard turn is
 //! simply dropped. Backends never fall back to one another.
 
+pub mod claude_api;
+pub mod claude_cli;
+mod cli;
+pub mod codex;
+pub mod grok_cli;
+pub mod hermes;
 pub mod instructions;
 
 use std::collections::VecDeque;
