@@ -43,7 +43,7 @@ pub async fn utterance_from_device(
     config: &Config,
     wait: Option<Duration>,
 ) -> anyhow::Result<Utterance> {
-    let mut capture = Capture::open(&config.audio.input)?;
+    let mut capture = Capture::open(&config.audio.input).await?;
     ui::meter!(
         "Listening on {} at {} Hz",
         config.audio.input,
@@ -171,6 +171,7 @@ pub async fn voice_agent_check(
         Some(path) => utterance_from_wav(config, &path)?,
         None => utterance_from_device(config, Some(Duration::from_secs(60))).await?,
     };
+    let live = consent.is_some();
     let radio = if supervised {
         Some(std::sync::Arc::new(crate::commands::hardware::radio(
             config, consent,
@@ -182,7 +183,10 @@ pub async fn voice_agent_check(
         "Sending {:.1}s of audio to the voice agent (billed API)...",
         utterance.audio.seconds()
     );
-    let reply = crate::realtime::single_turn(&settings, &utterance.audio, radio).await?;
+    let reply = crate::realtime::single_turn(&settings, &utterance.audio, radio.clone()).await?;
+    if let Some(radio) = radio.filter(|_| live && reply.audible) {
+        station_id_after(config, &settings, radio).await?;
+    }
     if !reply.heard.is_empty() {
         ui::transcript!("Heard: {}", reply.heard);
     }
@@ -205,6 +209,34 @@ pub async fn voice_agent_check(
     }
     if !supervised {
         ui::status!("No playback or PTT.");
+    }
+    Ok(())
+}
+
+/// Identify after model speech went on the air, in its own transmission.
+async fn station_id_after(
+    config: &Config,
+    settings: &crate::realtime::Settings,
+    radio: std::sync::Arc<crate::radio::Radio>,
+) -> anyhow::Result<()> {
+    let id = &config.radio.station_id;
+    if !id.enabled() {
+        return Ok(());
+    }
+    ui::status!("Station ID follows in its own transmission.");
+    tokio::time::sleep(crate::radio::station_id::GAP).await;
+    match id.method {
+        crate::config::StationIdMethod::Morse => {
+            let clip = crate::audio::morse::morse(&id.callsign)?;
+            tokio::task::spawn_blocking(move || radio.transmit(&clip)).await??;
+        }
+        crate::config::StationIdMethod::Voice => {
+            let reply = crate::realtime::speak(settings, &id.callsign, Some(radio)).await?;
+            anyhow::ensure!(
+                reply.audible && !reply.truncated,
+                "the station ID was not transmitted in full"
+            );
+        }
     }
     Ok(())
 }

@@ -19,8 +19,9 @@ use crate::credentials::Secret;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Events kept in memory before the turn is abandoned.
-const INBOX: usize = 256;
+/// Events kept in memory before the turn is abandoned. Speech can arrive
+/// faster than real time while earlier audio drains, so this is generous.
+const INBOX: usize = 4096;
 /// Longest wait for the socket to accept one command.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 

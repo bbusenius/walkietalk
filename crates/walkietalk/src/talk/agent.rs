@@ -53,6 +53,11 @@ impl Talk {
                 Ok(())
             }
             Err(AirError::NotSent(err)) => Err(err.context("the reply was not transmitted")),
+            Err(AirError::Playback(err)) if !self.once => {
+                ui::error!("Playback failed while transmitting: {err:#}");
+                ui::status!("The reply may have been partly heard; it is not kept as context.");
+                Ok(())
+            }
             Err(AirError::Playback(err)) => {
                 Err(err.context("playback failed while transmitting; the transmitter was released"))
             }

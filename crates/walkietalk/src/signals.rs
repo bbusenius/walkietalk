@@ -48,6 +48,8 @@ pub fn install() -> anyhow::Result<()> {
             for _ in signals.forever() {
                 release_all();
                 if state().stopping.swap(true, Ordering::SeqCst) {
+                    // No normal cleanup will run: stop helper programs too.
+                    crate::exec::kill_all_groups();
                     std::process::exit(130);
                 }
                 crate::ui::warning!("Stopping; press Ctrl+C again to exit immediately.");

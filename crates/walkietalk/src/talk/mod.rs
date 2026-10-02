@@ -413,7 +413,7 @@ impl Talk {
                 Ok(Some(Event::Heard(utterance)))
             }
             Input::Capture => {
-                let source = Source::Device(Capture::open(&self.config.audio.input)?);
+                let source = Source::Device(Capture::open(&self.config.audio.input).await?);
                 self.capture(source).await.1
             }
             #[cfg(test)]

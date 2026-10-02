@@ -474,3 +474,32 @@ async fn stale_operator_commands_are_refused() {
     assert!(!finished_ok(&mut approve));
     assert!(crate::operator::lock(&shared).review.is_waiting(1));
 }
+
+#[tokio::test]
+async fn playback_failures_are_survived_until_they_repeat() {
+    let out = FakeOut {
+        fail_playback: true,
+        ..Default::default()
+    };
+    let mut r = rig(
+        "",
+        vec!["charlotte one", "charlotte two", "charlotte three"],
+        out,
+    );
+    for _ in 0..3 {
+        speak(&r.frames).await;
+    }
+    let err = run(&mut r).await.unwrap_err();
+    assert!(err.to_string().contains("3 times"), "{err}");
+    let seen = r.agent.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen.len(),
+        3,
+        "listening continued after the first failures"
+    );
+    assert!(
+        seen.iter().all(|(history, _)| history.is_empty()),
+        "failed replies are never context"
+    );
+    assert!(!r.line.keyed());
+}

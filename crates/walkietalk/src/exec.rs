@@ -275,6 +275,28 @@ async fn read_capped(
     }
 }
 
+/// Process groups of running children, so an immediate exit can kill them.
+fn live_groups() -> &'static std::sync::Mutex<std::collections::HashSet<i32>> {
+    static GROUPS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<i32>>> =
+        std::sync::OnceLock::new();
+    GROUPS.get_or_init(Default::default)
+}
+
+/// Kill every child process group still running (used just before exiting
+/// without the normal cleanup).
+pub fn kill_all_groups() {
+    for pgid in live_groups()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .drain()
+    {
+        // SAFETY: killpg only sends a signal.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+}
+
 /// A child's process group, killed on request or when dropped.
 pub struct Group {
     pgid: Option<i32>,
@@ -282,9 +304,30 @@ pub struct Group {
 
 impl Group {
     pub fn of(child: &Child) -> Group {
-        Group {
-            pgid: child.id().map(|id| id as i32),
+        let pgid = child.id().map(|id| id as i32);
+        if let Some(pgid) = pgid {
+            live_groups()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(pgid);
         }
+        Group { pgid }
+    }
+
+    fn forget(&mut self) {
+        if let Some(pgid) = self.pgid.take() {
+            live_groups()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&pgid);
+        }
+    }
+
+    /// Whether any process in the group is still alive.
+    fn alive(&self) -> bool {
+        // SAFETY: signal 0 only checks for existence.
+        self.pgid
+            .is_some_and(|pgid| unsafe { libc::killpg(pgid, 0) } == 0)
     }
 
     fn signal(&self, signal: i32) {
@@ -296,18 +339,26 @@ impl Group {
         }
     }
 
-    /// Ask the group to stop, then kill whatever remains.
+    /// Ask the group to stop, then kill whatever remains after a moment.
     pub async fn terminate(mut self) {
-        self.signal(libc::SIGTERM);
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        if self.alive() {
+            self.signal(libc::SIGTERM);
+            for _ in 0..10 {
+                if !self.alive() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
         self.signal(libc::SIGKILL);
-        self.pgid = None;
+        self.forget();
     }
 }
 
 impl Drop for Group {
     fn drop(&mut self) {
         self.signal(libc::SIGKILL);
+        self.forget();
     }
 }
 

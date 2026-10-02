@@ -189,7 +189,9 @@ impl Signal {
             let (contact, client2) = (contact.clone(), client.clone());
             tasks.push(tokio::spawn(async move {
                 loop {
-                    if let Ok(response) = client2.get(&url).send().await {
+                    let connect =
+                        tokio::time::timeout(Duration::from_secs(10), client2.get(&url).send());
+                    if let Ok(Ok(response)) = connect.await {
                         let mut lines = response.bytes_stream();
                         let mut buffer = Vec::new();
                         // A missed keepalive, error, or end of stream reconnects.
@@ -329,12 +331,14 @@ impl Signal {
                 let (tx, rx) = oneshot::channel();
                 pending.lock().await.insert(id, tx);
                 let line = format!("{request}\n");
-                if stdin.lock().await.write_all(line.as_bytes()).await.is_err() {
-                    pending.lock().await.remove(&id);
-                    bail!("Message not sent.");
-                }
-                match tokio::time::timeout(SEND_TIMEOUT, rx).await {
-                    Ok(Ok(reply)) => reply,
+                // Writing and waiting share one deadline; a stuck signal-cli
+                // cannot hold up the radio.
+                let exchange = async {
+                    stdin.lock().await.write_all(line.as_bytes()).await.ok()?;
+                    rx.await.ok()
+                };
+                match tokio::time::timeout(SEND_TIMEOUT, exchange).await {
+                    Ok(Some(reply)) => reply,
                     _ => {
                         pending.lock().await.remove(&id);
                         bail!("Message not sent.");
