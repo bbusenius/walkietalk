@@ -2,6 +2,7 @@
 
 mod agent;
 mod audio;
+mod backends;
 mod cli;
 mod commands;
 mod config;
@@ -13,6 +14,7 @@ mod radio;
 mod setup;
 mod signals;
 mod stt;
+mod tts;
 mod sys;
 mod ui;
 
