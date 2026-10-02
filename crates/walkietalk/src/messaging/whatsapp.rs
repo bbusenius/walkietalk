@@ -28,6 +28,94 @@ pub struct WhatsApp {
     poller: tokio::task::JoinHandle<()>,
 }
 
+/// The process holding the store's lock, from wacli's `LOCK` file.
+fn lock_holder(lock: &str) -> Option<u32> {
+    lock.lines()
+        .find_map(|line| line.strip_prefix("pid=")?.trim().parse().ok())
+}
+
+/// A `wacli` process (other than ours) that holds the store, if any.
+fn external_sync(store: &std::path::Path) -> Option<u32> {
+    let pid = lock_holder(&std::fs::read_to_string(store.join("LOCK")).ok()?)?;
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    String::from_utf8_lossy(&cmdline)
+        .contains("wacli")
+        .then_some(pid)
+}
+
+/// Keeps a sync running: ours, or one that was already running for the
+/// same store (wacli allows only one).
+enum SyncState {
+    Ours(Daemon),
+    External(u32),
+    WaitUntil(tokio::time::Instant),
+}
+
+struct SyncKeeper {
+    program: std::path::PathBuf,
+    store: std::path::PathBuf,
+    state: SyncState,
+}
+
+impl SyncKeeper {
+    fn start(program: std::path::PathBuf, store: std::path::PathBuf) -> SyncKeeper {
+        let state = SyncState::WaitUntil(tokio::time::Instant::now());
+        let mut keeper = SyncKeeper {
+            program,
+            store,
+            state,
+        };
+        keeper.tick();
+        keeper
+    }
+
+    fn launch(&mut self) -> SyncState {
+        if let Some(pid) = external_sync(&self.store) {
+            ui::status!("WhatsApp: using the wacli sync already running (pid {pid}).");
+            return SyncState::External(pid);
+        }
+        match sync(&self.program, &self.store) {
+            Ok(daemon) => SyncState::Ours(daemon),
+            Err(err) => {
+                ui::error!("Cannot start wacli sync: {err:#}; retrying in 30 s.");
+                SyncState::WaitUntil(tokio::time::Instant::now() + Duration::from_secs(30))
+            }
+        }
+    }
+
+    fn tick(&mut self) {
+        let ours_exited = match &mut self.state {
+            SyncState::Ours(daemon) => !matches!(daemon.child.try_wait(), Ok(None)),
+            _ => false,
+        };
+        let next = match &self.state {
+            SyncState::Ours(_) if ours_exited => match external_sync(&self.store) {
+                Some(pid) => {
+                    ui::status!(
+                        "WhatsApp: another wacli sync (pid {pid}) holds the store; using it."
+                    );
+                    Some(SyncState::External(pid))
+                }
+                None => {
+                    ui::error!("wacli sync stopped; restarting it in 10 s.");
+                    Some(SyncState::WaitUntil(
+                        tokio::time::Instant::now() + Duration::from_secs(10),
+                    ))
+                }
+            },
+            SyncState::External(pid) if !std::path::Path::new(&format!("/proc/{pid}")).exists() => {
+                ui::status!("WhatsApp: the other wacli sync stopped; starting our own.");
+                Some(self.launch())
+            }
+            SyncState::WaitUntil(at) if tokio::time::Instant::now() >= *at => Some(self.launch()),
+            _ => None,
+        };
+        if let Some(next) = next {
+            self.state = next;
+        }
+    }
+}
+
 /// Start `wacli sync --follow`, which keeps the local store current.
 fn sync(program: &std::path::Path, store: &std::path::Path) -> anyhow::Result<Daemon> {
     let mut command = Job::new(program.to_path_buf(), "wacli")
@@ -212,35 +300,11 @@ impl WhatsApp {
                 poller.seen.insert(row.msg_id);
             }
         }
-        let mut daemon = Some(sync(&program, &store)?);
-        let sync_store = store.clone();
+        let mut keeper = SyncKeeper::start(program, store.clone());
         let poller = tokio::spawn(async move {
-            let mut restart_at: Option<tokio::time::Instant> = None;
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                // Keep the sync running; report and restart it if it exits.
-                if let Some(d) = daemon.as_mut()
-                    && !matches!(d.child.try_wait(), Ok(None))
-                {
-                    ui::error!("wacli sync stopped; restarting it in 10 s.");
-                    daemon = None;
-                    restart_at = Some(tokio::time::Instant::now() + Duration::from_secs(10));
-                }
-                if daemon.is_none()
-                    && restart_at.is_some_and(|at| tokio::time::Instant::now() >= at)
-                {
-                    match sync(&program, &sync_store) {
-                        Ok(started) => {
-                            daemon = Some(started);
-                            restart_at = None;
-                        }
-                        Err(err) => {
-                            ui::error!("Cannot restart wacli sync: {err:#}");
-                            restart_at =
-                                Some(tokio::time::Instant::now() + Duration::from_secs(30));
-                        }
-                    }
-                }
+                keeper.tick();
                 let (next, found) = tokio::task::spawn_blocking(move || {
                     let found = poller.poll();
                     (poller, found)
@@ -407,6 +471,15 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].content, Content::Text("hello".into()));
         assert!(p.poll().is_empty(), "messages are delivered once");
+    }
+
+    #[test]
+    fn the_lock_names_its_holder() {
+        assert_eq!(
+            lock_holder("pid=2344946\nacquired_at=2026-09-28T17:11:55Z\n"),
+            Some(2344946)
+        );
+        assert_eq!(lock_holder("garbage"), None);
     }
 
     #[test]
