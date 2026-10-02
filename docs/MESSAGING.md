@@ -143,7 +143,8 @@ walkietalk -c ~/.config/walkietalk/config.toml talk --capture --transmit --panel
 ```
 
 The panel shows the live radio log above fixed review controls in the same
-terminal (at least 60x20). Keys: **R** read, **E** edit, **A** approve,
+terminal (at least 60x20). The keys that work at the moment are always shown at
+the bottom, as `[R] Read  [E] Edit ...`. Keys: **R** read, **E** edit, **A** approve,
 **T** transmit, **D** deny, **S** sleep, **Tab** switch between the review and
 approved views, **Up/Down/PgUp/PgDn/Home/End** scroll the message, **Ctrl+C**
 stop. The editor accepts typing, **Left/Right**, **Home/End**, **Ctrl+A/E**,

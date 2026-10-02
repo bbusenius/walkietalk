@@ -280,11 +280,7 @@ fn run(
             approved_view: false,
             scroll: 0,
             editor: None,
-            status: (
-                Kind::Status,
-                "R read  E edit  A approve  T transmit  D deny  S sleep  Tab view  Ctrl+C stop"
-                    .into(),
-            ),
+            status: (Kind::Status, "Ready.".into()),
             pending: None,
         };
         while !stop.load(Ordering::SeqCst) {
@@ -523,7 +519,7 @@ fn draw(
         return;
     }
     let [log_area, review_area] =
-        Layout::vertical([Constraint::Min(5), Constraint::Length(12)]).areas(area);
+        Layout::vertical([Constraint::Min(5), Constraint::Length(14)]).areas(area);
     let height = log_area.height.saturating_sub(2) as usize;
     let shown: Vec<Line> = lines
         .iter()
@@ -535,6 +531,57 @@ fn draw(
         log_area,
     );
     draw_review(frame, review_area, snapshot, delivery, state);
+}
+
+/// The keys that work right now, always shown under the review controls.
+fn hints(state: &State) -> &'static [(&'static str, &'static str)] {
+    if state.editor.is_some() {
+        &[
+            ("Enter", "Save"),
+            ("Esc", "Cancel"),
+            ("Left/Right", "Move"),
+            ("Home/End", "Jump"),
+            ("Ctrl+U", "Clear"),
+        ]
+    } else if state.approved_view {
+        &[
+            ("R", "Read"),
+            ("T", "Transmit"),
+            ("D", "Deny"),
+            ("S", "Sleep"),
+            ("Tab", "Review view"),
+            ("Up/Down", "Scroll"),
+            ("Ctrl+C", "Stop"),
+        ]
+    } else {
+        &[
+            ("R", "Read"),
+            ("E", "Edit"),
+            ("A", "Approve"),
+            ("T", "Transmit"),
+            ("D", "Deny"),
+            ("S", "Sleep"),
+            ("Tab", "Approved view"),
+            ("Up/Down", "Scroll"),
+            ("Ctrl+C", "Stop"),
+        ]
+    }
+}
+
+/// "[R] Read  [E] Edit ...", with the keys in bold.
+fn hint_line(hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (key, action)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            format!("[{key}]"),
+            Style::new().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(" {action}")));
+    }
+    Line::from(spans)
 }
 
 fn draw_review(frame: &mut Frame, area: Rect, snapshot: &Snapshot, delivery: &str, state: &State) {
@@ -550,12 +597,17 @@ fn draw_review(frame: &mut Frame, area: Rect, snapshot: &Snapshot, delivery: &st
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [head, body, foot] = Layout::vertical([
+    let [head, body, foot, keys] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(2),
+        Constraint::Length(2),
     ])
     .areas(inner);
+    frame.render_widget(
+        Paragraph::new(hint_line(hints(state))).wrap(Wrap { trim: true }),
+        keys,
+    );
     let item = if state.approved_view {
         &snapshot.approved_item
     } else {
@@ -587,10 +639,6 @@ fn draw_review(frame: &mut Frame, area: Rect, snapshot: &Snapshot, delivery: &st
                     Span::styled("|", Style::new().fg(Color::Yellow)),
                     Span::raw(after),
                 ]));
-                text.push(Line::styled(
-                    "Enter saves, Esc cancels.",
-                    Style::new().fg(Color::DarkGray),
-                ));
             } else if !item.readable {
                 text.push(Line::raw("Voice message: press R to read its transcript."));
             } else {
@@ -640,6 +688,55 @@ mod tests {
         log.push(Kind::Meter, "RMS 0.030");
         let lines: Vec<&str> = log.lines.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(lines, ["RMS 0.020", "Speech started", "RMS 0.030"]);
+    }
+
+    #[test]
+    fn key_hints_are_bracketed_and_follow_the_mode() {
+        let mut state = State {
+            approved_view: false,
+            scroll: 0,
+            editor: None,
+            status: (Kind::Status, String::new()),
+            pending: None,
+        };
+        let text = |state: &State| hint_line(hints(state)).to_string();
+        assert!(
+            text(&state).starts_with("[R] Read  [E] Edit  [A] Approve  [T] Transmit  [D] Deny")
+        );
+        state.approved_view = true;
+        assert!(
+            !text(&state).contains("[E]"),
+            "approved messages can't be edited"
+        );
+        state.editor = Some(Editor::new("x", 1));
+        assert!(text(&state).starts_with("[Enter] Save  [Esc] Cancel"));
+    }
+
+    #[test]
+    fn hints_stay_visible_at_the_smallest_size_and_after_an_action() {
+        let state = State {
+            approved_view: false,
+            scroll: 0,
+            editor: None,
+            status: (
+                Kind::Status,
+                "Message approved; waiting for radio delivery.".into(),
+            ),
+            pending: None,
+        };
+        let mut term =
+            Terminal::new(ratatui::backend::TestBackend::new(MIN_COLS, MIN_ROWS)).unwrap();
+        term.draw(|f| draw(f, &Snapshot::default(), "", &[], &state))
+            .unwrap();
+        let screen: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("[R] Read"), "{screen}");
+        assert!(screen.contains("Message approved"));
     }
 
     #[test]
