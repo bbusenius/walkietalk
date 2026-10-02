@@ -130,7 +130,15 @@ impl Air {
     /// Transmit a reply, with the station ID when due, then the
     /// post-transmit mute. The ID is marked sent only after it airs.
     pub async fn send(&mut self, reply: Clip) -> Result<(), AirError> {
-        let id = self.due_id().await?;
+        self.send_with_id(reply, true).await
+    }
+
+    async fn send_with_id(&mut self, reply: Clip, id_allowed: bool) -> Result<(), AirError> {
+        let id = if id_allowed {
+            self.due_id().await?
+        } else {
+            None
+        };
         let bursts = match &id {
             Some(id_clip) => {
                 station_id::plan(reply, id_clip.clone(), self.budget).map_err(|err| {
@@ -194,7 +202,10 @@ impl Air {
                 return Ok(false);
             }
         };
-        match self.send(clip).await {
+        // Confirmations carry an ID only when an interval ID is due;
+        // end-of-reply IDs belong to replies.
+        let interval = self.station_id.config().mode == crate::config::StationIdMode::Interval;
+        match self.send_with_id(clip, interval).await {
             Ok(()) => Ok(true),
             Err(AirError::NotSent(err)) => {
                 ui::error!("{what} was not transmitted: {err:#}");
