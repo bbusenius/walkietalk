@@ -8,7 +8,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::config::Config;
 use crate::credentials::{self, Credentials};
-use crate::commands::hardware;
+use crate::commands::{hardware, speech};
 use crate::radio::TransmitConsent;
 use crate::{paths, setup, signals, ui};
 
@@ -67,6 +67,16 @@ enum Command {
         #[arg(long)]
         transmit: bool,
     },
+    /// Download the local Whisper model
+    Models,
+    /// Transcribe one utterance from a WAV or the radio (never transmits)
+    Listen {
+        #[command(flatten)]
+        input: Input,
+        /// Seconds to wait for speech with --capture
+        #[arg(long, default_value_t = 60.0, value_name = "N")]
+        timeout: f64,
+    },
     /// Play a WAV over the radio (simulated unless --transmit)
     Play {
         wav: PathBuf,
@@ -74,6 +84,17 @@ enum Command {
         #[arg(long)]
         transmit: bool,
     },
+}
+
+/// Audio input: a WAV file or live capture.
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+struct Input {
+    /// Read the utterance from this WAV file
+    wav: Option<PathBuf>,
+    /// Listen on the configured capture device
+    #[arg(long)]
+    capture: bool,
 }
 
 /// Where the config came from. Only an explicitly named file may key the radio.
@@ -187,6 +208,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let (source, config) = global.load_config()?;
             let consent = TransmitConsent::grant(transmit, &source)?;
             blocking(move || hardware::ptt(&config, consent, seconds)).await
+        }
+        Command::Models => {
+            let (_, config) = global.load_config()?;
+            speech::models(&config).await
+        }
+        Command::Listen { input, timeout } => {
+            let (source, config) = global.load_config()?;
+            let creds = global.load_credentials(&source)?;
+            speech::listen(&config, &creds, input.wav, timeout).await
         }
         Command::Play { wav, transmit } => {
             let (source, config) = global.load_config()?;

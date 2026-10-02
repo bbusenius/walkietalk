@@ -3,6 +3,7 @@
 pub mod capture;
 pub mod clip;
 pub mod device;
+pub mod listener;
 pub mod morse;
 pub mod playback;
 pub mod vad;
