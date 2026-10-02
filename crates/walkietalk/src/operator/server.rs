@@ -272,9 +272,16 @@ mod tests {
         });
         let stream = UnixStream::connect(&path).await.unwrap();
         assert!(
-            exchange(stream, Action::Approve, false, None, Duration::from_secs(5))
-                .await
-                .unwrap()
+            exchange(
+                stream,
+                Action::Approve,
+                false,
+                None,
+                None,
+                Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
         );
         loop_task.await.unwrap();
     }
@@ -284,15 +291,29 @@ mod tests {
         let (_dir, path, _rx, _server) = serve(shared()).await;
         let stream = UnixStream::connect(&path).await.unwrap();
         assert!(
-            exchange(stream, Action::Status, false, None, Duration::from_secs(5))
-                .await
-                .unwrap()
+            exchange(
+                stream,
+                Action::Status,
+                false,
+                None,
+                None,
+                Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
         );
         let stream = UnixStream::connect(&path).await.unwrap();
         assert!(
-            !exchange(stream, Action::Approve, false, None, Duration::from_secs(5))
-                .await
-                .unwrap()
+            !exchange(
+                stream,
+                Action::Approve,
+                false,
+                None,
+                None,
+                Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
         );
     }
 
@@ -311,6 +332,7 @@ mod tests {
                 Action::Edit,
                 false,
                 Some("words".into()),
+                None,
                 Duration::from_secs(5)
             )
             .await

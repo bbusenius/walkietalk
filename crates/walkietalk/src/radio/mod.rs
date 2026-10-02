@@ -72,9 +72,11 @@ impl Timing {
         }
     }
 
-    /// Audio that fits after the settle delay.
+    /// Audio that fits after the settle delay and the drain margin.
     pub fn speech_budget(&self) -> Duration {
-        self.max_tx.saturating_sub(self.settle)
+        self.max_tx
+            .saturating_sub(self.settle)
+            .saturating_sub(crate::config::DRAIN_MARGIN)
     }
 }
 
@@ -318,6 +320,17 @@ pub mod tests {
     }
 
     #[test]
+    fn speech_that_fills_the_budget_finishes_before_the_cap() {
+        let line = FakeLine::default();
+        let timing = timing(1500);
+        // Real-time playback, so the full budget plus settle must fit.
+        let radio = Radio::with_parts(Box::new(line.clone()), Box::new(DryOut), timing);
+        let full = Clip::silence(timing.speech_budget(), 48_000);
+        radio.transmit(&full).unwrap();
+        assert!(!line.keyed());
+    }
+
+    #[test]
     fn hung_playback_is_cut_off_at_the_cap() {
         let line = FakeLine::default();
         let out = FakeOut {
@@ -325,7 +338,7 @@ pub mod tests {
             ..Default::default()
         };
         let started = Instant::now();
-        let err = radio(&line, &out, 200).transmit(&clip(100)).unwrap_err();
+        let err = radio(&line, &out, 1000).transmit(&clip(100)).unwrap_err();
         assert!(matches!(err, TxError::Playback(_)));
         assert!(!line.keyed());
         let (_, released_at) = *line
@@ -335,7 +348,7 @@ pub mod tests {
             .iter()
             .find(|(k, _)| !*k)
             .unwrap();
-        assert!(released_at.duration_since(started) < Duration::from_millis(400));
+        assert!(released_at.duration_since(started) < Duration::from_millis(1200));
     }
 
     #[test]

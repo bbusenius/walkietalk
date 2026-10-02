@@ -131,7 +131,7 @@ impl StreamTx {
         };
         let timing = live.radio.timing();
         let remaining = timing.max_tx.saturating_sub(live.airtime);
-        if remaining <= timing.settle {
+        if remaining <= timing.settle + crate::config::DRAIN_MARGIN {
             self.truncated = true;
             return Ok(false);
         }
@@ -145,8 +145,8 @@ impl StreamTx {
             drop(keyed);
             return Err(TxError::Playback(err));
         }
-        live.samples_left =
-            ((remaining - timing.settle).as_secs_f64() * RADIO_RATE as f64) as usize;
+        let room = remaining - timing.settle - crate::config::DRAIN_MARGIN;
+        live.samples_left = (room.as_secs_f64() * RADIO_RATE as f64) as usize;
         live.keyed = Some((keyed, feed, playback));
         Ok(true)
     }
@@ -251,14 +251,17 @@ mod tests {
     #[tokio::test]
     async fn total_airtime_is_capped_across_segments() {
         let (line, out) = (FakeLine::default(), FakeOut::default());
-        let mut tx = StreamTx::new(Some(Arc::new(radio(&line, &out, 300))));
+        let mut tx = StreamTx::new(Some(Arc::new(radio(&line, &out, 1500))));
         tx.audio(tone(100, 5000)).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(line.keyed());
+        tokio::time::sleep(Duration::from_millis(700)).await;
         tx.end_segment().await.unwrap();
-        // Only ~100 ms remain; more speech than that is cut off.
-        tx.audio(tone(1000, 5000)).await.unwrap();
+        assert!(!tx.truncated);
+        // About 0.8 s remain; a second stretch keys again but is cut short.
+        tx.audio(tone(2000, 5000)).await.unwrap();
         assert!(tx.truncated);
         assert!(!line.keyed());
+        assert_eq!(line.changes().iter().filter(|k| **k).count(), 2);
     }
 
     #[tokio::test]

@@ -221,7 +221,10 @@ where
                 }
             },
             move |err| {
-                let _ = error_done.send(Err(err.to_string()));
+                // An underrun is a brief gap that the stream recovers from.
+                if err.kind() != cpal::ErrorKind::Xrun {
+                    let _ = error_done.send(Err(err.to_string()));
+                }
             },
             None,
         )

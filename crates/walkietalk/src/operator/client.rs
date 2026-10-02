@@ -108,18 +108,22 @@ pub async fn request(
     action: Action,
     approved: bool,
     text: Option<String>,
+    bound: Option<u64>,
     timeout: Duration,
 ) -> anyhow::Result<bool> {
     let stream = connect(config).await?;
-    exchange(stream, action, approved, text, timeout).await
+    exchange(stream, action, approved, text, bound, timeout).await
 }
 
 /// Run one request over an open control connection.
+/// `bound` pins the request to a revision seen earlier (an edit started on a
+/// previous connection); otherwise it binds to this connection's snapshot.
 pub async fn exchange(
     stream: UnixStream,
     action: Action,
     approved: bool,
     text: Option<String>,
+    bound: Option<u64>,
     timeout: Duration,
 ) -> anyhow::Result<bool> {
     let work = async {
@@ -133,11 +137,12 @@ pub async fn exchange(
             bail!("invalid response from the operator controls");
         };
         summary(&snapshot, action, approved);
-        let revision = (action != Action::Sleep).then_some(if approved {
+        let shown = if approved {
             snapshot.approved_revision
         } else {
             snapshot.revision
-        });
+        };
+        let revision = (action != Action::Sleep).then_some(bound.unwrap_or(shown));
         let request = Request {
             action,
             approved,
@@ -178,8 +183,8 @@ fn kind_of(kind: &str) -> ui::Kind {
     }
 }
 
-/// The current review head, for prefilling the editor.
-pub async fn current_text(config: Option<&Path>) -> anyhow::Result<ItemView> {
+/// The current review head and its revision, for prefilling the editor.
+pub async fn current_text(config: Option<&Path>) -> anyhow::Result<(ItemView, u64)> {
     let stream = connect(config).await?;
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -201,7 +206,7 @@ pub async fn current_text(config: Option<&Path>) -> anyhow::Result<ItemView> {
     if let Some(block) = &item.edit_block {
         bail!("{block}");
     }
-    Ok(item)
+    Ok((item, snapshot.revision))
 }
 
 /// Prompt for new words, prefilled with the current ones. `None` cancels.
