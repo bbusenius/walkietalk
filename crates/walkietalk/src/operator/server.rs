@@ -223,3 +223,114 @@ fn validate(request: &Request, snapshot: &super::review::Snapshot) -> Result<(),
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Service};
+    use crate::operator::client::exchange;
+    use crate::operator::review::Review;
+    use crate::operator::{Board, lock};
+
+    fn shared() -> Shared {
+        let text = format!(
+            "{}\n[messaging]\noperator_mode = true\n[messaging.signal]\nwake = \"grandma\"\nto = \"+1555\"\n",
+            crate::config::tests_support::MINIMAL
+        );
+        let config = Config::parse(&text, "/".into()).unwrap();
+        std::sync::Arc::new(std::sync::Mutex::new(Board {
+            review: Review::new(&config),
+            conversation: "asleep".into(),
+            delivery: String::new(),
+        }))
+    }
+
+    async fn serve(
+        shared: Shared,
+    ) -> (tempfile::TempDir, PathBuf, mpsc::Receiver<Command>, Server) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.sock");
+        let lock = File::create(dir.path().join("test.lock")).unwrap();
+        lock.try_lock().unwrap();
+        let (tx, rx) = mpsc::channel(4);
+        let server = Server::start((path.clone(), lock), shared, tx).unwrap();
+        (dir, path, rx, server)
+    }
+
+    #[tokio::test]
+    async fn commands_reach_the_loop_and_report_back() {
+        let board = shared();
+        lock(&board)
+            .review
+            .add_incoming(Service::Signal, "1", false, "hello");
+        let (_dir, path, mut rx, _server) = serve(board).await;
+        let loop_task = tokio::spawn(async move {
+            let command = rx.recv().await.unwrap();
+            assert_eq!(command.action, Action::Approve);
+            command.say("status", "Message approved.");
+            command.finish(true);
+        });
+        let stream = UnixStream::connect(&path).await.unwrap();
+        assert!(
+            exchange(stream, Action::Approve, false, None, Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+        loop_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_needs_no_loop_and_empty_queue_is_refused() {
+        let (_dir, path, _rx, _server) = serve(shared()).await;
+        let stream = UnixStream::connect(&path).await.unwrap();
+        assert!(
+            exchange(stream, Action::Status, false, None, Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+        let stream = UnixStream::connect(&path).await.unwrap();
+        assert!(
+            !exchange(stream, Action::Approve, false, None, Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn edits_are_validated_before_queueing() {
+        let board = shared();
+        lock(&board)
+            .review
+            .add_incoming(Service::Signal, "v", true, "");
+        let (_dir, path, mut rx, _server) = serve(board).await;
+        let stream = UnixStream::connect(&path).await.unwrap();
+        // An unread voice note cannot be edited.
+        assert!(
+            !exchange(
+                stream,
+                Action::Edit,
+                false,
+                Some("words".into()),
+                Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
+        );
+        assert!(rx.try_recv().is_err(), "nothing was queued");
+    }
+
+    #[tokio::test]
+    async fn the_socket_is_private_and_a_second_instance_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path, _rx, server) = serve(shared()).await;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let again = File::options()
+            .append(true)
+            .open(dir.path().join("test.lock"))
+            .unwrap();
+        assert!(again.try_lock().is_err(), "the instance lock is held");
+        drop(server);
+        assert!(!path.exists(), "the socket is removed on exit");
+    }
+}
