@@ -78,6 +78,19 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
+    /// One realtime speech-to-speech turn saved to a new WAV (grok-realtime)
+    VoiceAgentCheck {
+        #[command(flatten)]
+        input: Input,
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+        /// Run the transmit logic too (simulated unless --transmit)
+        #[arg(long)]
+        supervised: bool,
+        /// With --supervised: really key the radio (requires --config)
+        #[arg(long, requires = "supervised")]
+        transmit: bool,
+    },
     /// Download the local Whisper model
     Models,
     /// Transcribe one utterance from a WAV or the radio (never transmits)
@@ -243,6 +256,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let (source, config) = global.load_config()?;
             let creds = global.load_credentials(&source)?;
             speech::tts_check(&config, &creds, &text, &output).await
+        }
+        Command::VoiceAgentCheck { input, output, supervised, transmit } => {
+            let (source, config) = global.load_config()?;
+            let creds = global.load_credentials(&source)?;
+            let consent = TransmitConsent::grant(transmit, &source)?;
+            speech::voice_agent_check(&config, &creds, input.wav, &output, supervised, consent).await
         }
         Command::Models => {
             let (_, config) = global.load_config()?;

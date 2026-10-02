@@ -273,14 +273,15 @@ impl Session {
     }
 
     pub fn connected(&self) -> bool {
-        self.client.is_some()
+        self.client.as_ref().is_some_and(Client::alive)
     }
 
     /// Connect and configure, if not already connected.
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-        if self.client.is_some() {
+        if self.connected() {
             return Ok(());
         }
+        self.reset().await;
         let mut client = self.settings.connect().await?;
         let session = self.settings.session(Some(&self.settings.instructions), true, true);
         client.configure(session, self.settings.rt.connect_timeout()).await?;

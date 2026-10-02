@@ -126,6 +126,11 @@ impl Client {
         })
     }
 
+    /// Whether the connection is still open.
+    pub fn alive(&self) -> bool {
+        !self.reader.is_finished() || !self.inbox.is_empty()
+    }
+
     pub async fn send(&mut self, command: Value) -> anyhow::Result<()> {
         self.sink
             .send(Message::Text(command.to_string().into()))
