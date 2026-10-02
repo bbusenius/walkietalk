@@ -209,7 +209,7 @@ async fn read_capped(mut pipe: impl AsyncRead + Unpin, budget: std::sync::Arc<st
             return Ok(Some(data));
         }
         let ok = budget
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(n))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(n))
             .is_ok();
         if !ok {
             return Ok(None);

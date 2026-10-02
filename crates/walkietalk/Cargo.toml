@@ -41,7 +41,7 @@ which = "8"
 whisper-rs = "0.16"
 
 [dev-dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 
 [lints]
 workspace = true

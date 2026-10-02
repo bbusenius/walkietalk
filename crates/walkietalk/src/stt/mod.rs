@@ -1,6 +1,7 @@
 //! Speech recognition backends. They turn audio into text and nothing
 //! more; wake matching and replies happen elsewhere.
 
+pub mod grok;
 pub mod models;
 pub mod whisper;
 

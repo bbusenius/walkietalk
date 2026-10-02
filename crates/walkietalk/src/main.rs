@@ -9,6 +9,8 @@ mod config;
 mod credentials;
 mod exec;
 mod gate;
+mod grok_login;
+mod http;
 mod paths;
 mod phrases;
 mod radio;
@@ -19,6 +21,7 @@ mod talk;
 mod tts;
 mod sys;
 mod ui;
+mod xai;
 
 fn main() -> std::process::ExitCode {
     cli::main()

@@ -1,6 +1,8 @@
 //! Speech synthesis backends. They turn final text into radio-ready audio
 //! and never touch playback or PTT.
 
+pub mod grok;
+pub mod hermes;
 pub mod piper;
 
 use std::time::Duration;
