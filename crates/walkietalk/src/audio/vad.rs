@@ -18,14 +18,24 @@ pub fn frame_len(rate: u32) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VadEvent {
     /// No speech yet.
-    Waiting { level: f64 },
+    Waiting {
+        level: f64,
+    },
     /// Speech began with this frame.
-    Started { level: f64 },
-    Speaking { level: f64 },
+    Started {
+        level: f64,
+    },
+    Speaking {
+        level: f64,
+    },
     /// A short burst ended before it counted as speech; it was dropped.
-    Discarded { level: f64 },
+    Discarded {
+        level: f64,
+    },
     /// The utterance is complete.
-    Finished { reason: EndReason },
+    Finished {
+        reason: EndReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +47,6 @@ pub enum EndReason {
 #[derive(Debug, Clone)]
 pub struct Vad {
     threshold: f64,
-    frame: usize,
     hangover_frames: usize,
     max_frames: usize,
     min_voiced: usize,
@@ -51,12 +60,11 @@ pub struct Vad {
 }
 
 impl Vad {
-    pub fn new(threshold: f64, hangover_ms: u32, max_seconds: f64, rate: u32) -> Vad {
+    pub fn new(threshold: f64, hangover_ms: u32, max_seconds: f64) -> Vad {
         let per_second = 1000 / FRAME_MS as usize;
         let hangover_frames = (hangover_ms / FRAME_MS).max(1) as usize;
         Vad {
             threshold,
-            frame: frame_len(rate),
             hangover_frames,
             max_frames: ((max_seconds * per_second as f64).round() as usize).max(1),
             min_voiced: (MIN_VOICED_MS / FRAME_MS) as usize,
@@ -68,10 +76,6 @@ impl Vad {
             captured: Vec::new(),
             preroll: VecDeque::with_capacity(hangover_frames),
         }
-    }
-
-    pub fn frame_len(&self) -> usize {
-        self.frame
     }
 
     pub fn speaking(&self) -> bool {
@@ -122,7 +126,9 @@ impl Vad {
         self.captured.extend_from_slice(frame);
         self.frames += 1;
         if self.frames >= self.max_frames {
-            return VadEvent::Finished { reason: EndReason::MaxLength };
+            return VadEvent::Finished {
+                reason: EndReason::MaxLength,
+            };
         }
         if loud {
             self.voiced += 1;
@@ -140,7 +146,9 @@ impl Vad {
             self.voiced = 0;
             return VadEvent::Discarded { level };
         }
-        VadEvent::Finished { reason: EndReason::Silence }
+        VadEvent::Finished {
+            reason: EndReason::Silence,
+        }
     }
 }
 
@@ -151,7 +159,9 @@ mod tests {
     const RATE: u32 = 8000;
 
     fn frame(amplitude: i16) -> Vec<i16> {
-        (0..frame_len(RATE)).map(|i| if i % 2 == 0 { amplitude } else { -amplitude }).collect()
+        (0..frame_len(RATE))
+            .map(|i| if i % 2 == 0 { amplitude } else { -amplitude })
+            .collect()
     }
 
     fn run(vad: &mut Vad, frames: &[(i16, usize)]) -> Vec<VadEvent> {
@@ -164,17 +174,22 @@ mod tests {
 
     #[test]
     fn speech_ends_after_hangover_and_keeps_lead_in() {
-        let mut vad = Vad::new(0.1, 100, 10.0, RATE);
+        let mut vad = Vad::new(0.1, 100, 10.0);
         let events = run(&mut vad, &[(0, 10), (10_000, 20), (0, 5)]);
         assert!(matches!(events[10], VadEvent::Started { .. }));
-        assert_eq!(events.last(), Some(&VadEvent::Finished { reason: EndReason::Silence }));
+        assert_eq!(
+            events.last(),
+            Some(&VadEvent::Finished {
+                reason: EndReason::Silence
+            })
+        );
         // 5 frames of lead-in, 20 loud, 5 quiet.
         assert_eq!(vad.captured().len(), 30 * frame_len(RATE));
     }
 
     #[test]
     fn short_noise_is_discarded() {
-        let mut vad = Vad::new(0.1, 60, 10.0, RATE);
+        let mut vad = Vad::new(0.1, 60, 10.0);
         let events = run(&mut vad, &[(10_000, 3), (0, 3)]);
         assert!(matches!(events.last(), Some(VadEvent::Discarded { .. })));
         assert!(!vad.speaking());
@@ -183,10 +198,18 @@ mod tests {
 
     #[test]
     fn long_speech_stops_at_the_maximum() {
-        let mut vad = Vad::new(0.1, 100, 1.0, RATE);
+        let mut vad = Vad::new(0.1, 100, 1.0);
         let events = run(&mut vad, &[(10_000, 100)]);
-        let end = events.iter().position(|e| matches!(e, VadEvent::Finished { .. })).unwrap();
-        assert_eq!(events[end], VadEvent::Finished { reason: EndReason::MaxLength });
+        let end = events
+            .iter()
+            .position(|e| matches!(e, VadEvent::Finished { .. }))
+            .unwrap();
+        assert_eq!(
+            events[end],
+            VadEvent::Finished {
+                reason: EndReason::MaxLength
+            }
+        );
         assert_eq!(end, 49);
     }
 }

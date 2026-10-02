@@ -10,7 +10,6 @@
 pub mod ptt;
 pub mod station_id;
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::audio::playback::{AudioOut, DeviceOut, DryOut, Feed, Playback};
@@ -84,7 +83,6 @@ pub struct Radio {
     owner: PttOwner,
     out: Box<dyn AudioOut>,
     timing: Timing,
-    live: bool,
 }
 
 impl Radio {
@@ -100,27 +98,25 @@ impl Radio {
             Box::new(line),
             Box::new(DeviceOut::new(&config.audio.output)),
             Timing::from_config(config),
-            true,
         ))
     }
 
     /// Simulated keying and playback.
     pub fn dry(config: &Config) -> Radio {
         ui::status!("DRY RUN: no serial port or audio device will be opened");
-        Radio::with_parts(Box::new(DryLine::default()), Box::new(DryOut), Timing::from_config(config), false)
+        Radio::with_parts(
+            Box::new(DryLine::default()),
+            Box::new(DryOut),
+            Timing::from_config(config),
+        )
     }
 
-    pub fn with_parts(line: Box<dyn PttLine>, out: Box<dyn AudioOut>, timing: Timing, live: bool) -> Radio {
+    pub fn with_parts(line: Box<dyn PttLine>, out: Box<dyn AudioOut>, timing: Timing) -> Radio {
         Radio {
             owner: PttOwner::start(line),
             out,
             timing,
-            live,
         }
-    }
-
-    pub fn is_live(&self) -> bool {
-        self.live
     }
 
     pub fn timing(&self) -> Timing {
@@ -179,7 +175,11 @@ impl Keyed {
             let _ = ptt.release();
             return Err(TxError::Ptt(err));
         }
-        Ok(Keyed { ptt, deadline, released: false })
+        Ok(Keyed {
+            ptt,
+            deadline,
+            released: false,
+        })
     }
 
     /// Wait out the key-up delay, never past the deadline.
@@ -201,22 +201,19 @@ impl Keyed {
 
 impl Drop for Keyed {
     fn drop(&mut self) {
-        if !self.released {
-            if let Err(err) = self.ptt.release() {
-                ui::error!("PTT release failed: {err:#}. Turn the radio off.");
-            }
+        if !self.released
+            && let Err(err) = self.ptt.release()
+        {
+            ui::error!("PTT release failed: {err:#}. Turn the radio off.");
         }
     }
 }
-
-/// Shared ownership for use across threads and tasks.
-pub type SharedRadio = Arc<Radio>;
 
 #[cfg(test)]
 pub mod tests {
     use super::ptt::fake::FakeLine;
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// Plays instantly, hangs, or fails, as configured.
     #[derive(Clone, Default)]
@@ -235,12 +232,21 @@ pub mod tests {
     impl AudioOut for FakeOut {
         fn prepare(&self, clip: &Clip) -> anyhow::Result<Box<dyn Playback>> {
             anyhow::ensure!(!self.fail_prepare, "simulated device failure");
-            Ok(Box::new(FakePlayback { out: self.clone(), len: clip.len() }))
+            Ok(Box::new(FakePlayback {
+                out: self.clone(),
+                len: clip.len(),
+            }))
         }
 
         fn prepare_stream(&self) -> anyhow::Result<(Feed, Box<dyn Playback>)> {
             anyhow::ensure!(!self.fail_prepare, "simulated device failure");
-            Ok((Feed::default(), Box::new(FakePlayback { out: self.clone(), len: 0 })))
+            Ok((
+                Feed::default(),
+                Box::new(FakePlayback {
+                    out: self.clone(),
+                    len: 0,
+                }),
+            ))
         }
     }
 
@@ -252,7 +258,9 @@ pub mod tests {
         fn wait(&mut self, deadline: Instant) -> anyhow::Result<bool> {
             anyhow::ensure!(!self.out.fail_playback, "simulated underrun");
             if self.out.hang {
-                std::thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(50));
+                std::thread::sleep(
+                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(50),
+                );
                 return Ok(false);
             }
             self.out.played.lock().unwrap().push(self.len);
@@ -269,7 +277,11 @@ pub mod tests {
     }
 
     pub fn radio(line: &FakeLine, out: &FakeOut, max_ms: u64) -> Radio {
-        Radio::with_parts(Box::new(line.clone()), Box::new(out.clone()), timing(max_ms), true)
+        Radio::with_parts(
+            Box::new(line.clone()),
+            Box::new(out.clone()),
+            timing(max_ms),
+        )
     }
 
     fn clip(ms: u64) -> Clip {
@@ -288,7 +300,10 @@ pub mod tests {
     #[test]
     fn preparation_failure_never_keys() {
         let line = FakeLine::default();
-        let out = FakeOut { fail_prepare: true, ..Default::default() };
+        let out = FakeOut {
+            fail_prepare: true,
+            ..Default::default()
+        };
         let err = radio(&line, &out, 1000).transmit(&clip(100)).unwrap_err();
         assert!(matches!(err, TxError::NotKeyed(_)));
         assert!(!line.changes().contains(&true));
@@ -305,19 +320,31 @@ pub mod tests {
     #[test]
     fn hung_playback_is_cut_off_at_the_cap() {
         let line = FakeLine::default();
-        let out = FakeOut { hang: true, ..Default::default() };
+        let out = FakeOut {
+            hang: true,
+            ..Default::default()
+        };
         let started = Instant::now();
         let err = radio(&line, &out, 200).transmit(&clip(100)).unwrap_err();
         assert!(matches!(err, TxError::Playback(_)));
         assert!(!line.keyed());
-        let (_, released_at) = *line.events.lock().unwrap().iter().find(|(k, _)| !*k).unwrap();
+        let (_, released_at) = *line
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| !*k)
+            .unwrap();
         assert!(released_at.duration_since(started) < Duration::from_millis(400));
     }
 
     #[test]
     fn playback_error_still_releases() {
         let line = FakeLine::default();
-        let out = FakeOut { fail_playback: true, ..Default::default() };
+        let out = FakeOut {
+            fail_playback: true,
+            ..Default::default()
+        };
         let err = radio(&line, &out, 1000).transmit(&clip(100)).unwrap_err();
         assert!(matches!(err, TxError::Playback(_)));
         assert!(!line.keyed());
@@ -327,7 +354,9 @@ pub mod tests {
     fn ptt_fault_is_fatal() {
         let line = FakeLine::default();
         *line.fail_key.lock().unwrap() = true;
-        let err = radio(&line, &FakeOut::default(), 1000).transmit(&clip(100)).unwrap_err();
+        let err = radio(&line, &FakeOut::default(), 1000)
+            .transmit(&clip(100))
+            .unwrap_err();
         assert!(err.is_fatal());
         assert!(!line.keyed());
     }

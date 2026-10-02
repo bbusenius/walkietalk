@@ -12,7 +12,9 @@ use crate::{realtime, ui};
 impl Talk {
     /// Ask the text agent and deliver its reply.
     pub(super) async fn answer(&mut self, text: &str) -> anyhow::Result<()> {
-        let Brain::Text { conversation, .. } = &mut self.brain else { unreachable!("text agent") };
+        let Brain::Text { conversation, .. } = &mut self.brain else {
+            unreachable!("text agent")
+        };
         ui::meter!("Asking the agent...");
         let reply = match conversation.ask(text).await {
             Ok(reply) => reply,
@@ -51,8 +53,13 @@ impl Talk {
                 Ok(())
             }
             Err(AirError::NotSent(err)) => Err(err.context("the reply was not transmitted")),
-            Err(AirError::Playback(err)) => Err(err.context("playback failed while transmitting; the transmitter was released")),
-            Err(AirError::Fatal { message, reply_sent }) => {
+            Err(AirError::Playback(err)) => {
+                Err(err.context("playback failed while transmitting; the transmitter was released"))
+            }
+            Err(AirError::Fatal {
+                message,
+                reply_sent,
+            }) => {
                 if reply_sent {
                     conversation.commit(reply);
                 }
@@ -63,12 +70,18 @@ impl Talk {
 
     /// Ask the realtime voice to answer the committed audio.
     pub(super) async fn answer_realtime(&mut self) -> anyhow::Result<()> {
-        let Brain::Realtime(session) = &mut self.brain else { unreachable!("realtime") };
+        let Brain::Realtime(session) = &mut self.brain else {
+            unreachable!("realtime")
+        };
         let radio = self.air.as_ref().map(|air| air.radio().clone());
         ui::meter!("Voice turn; the transmitter keys only when speech arrives...");
         let reply = match session.respond(radio).await {
             Ok(reply) => reply,
-            Err(err) if realtime::is_ptt_fault(&err) || realtime::is_auth_error(&err) || self.once => return Err(err),
+            Err(err)
+                if realtime::is_ptt_fault(&err) || realtime::is_auth_error(&err) || self.once =>
+            {
+                return Err(err);
+            }
             Err(err) => {
                 ui::error!("Voice agent failed: {err:#}");
                 ui::status!("Still listening; say the wake phrase and try again.");
@@ -82,12 +95,23 @@ impl Talk {
             if self.once {
                 bail!("the voice agent returned no audible reply");
             }
-            ui::warning!("The voice agent returned no audible reply; the follow-up window stays closed.");
+            ui::warning!(
+                "The voice agent returned no audible reply; the follow-up window stays closed."
+            );
             return Ok(());
         }
-        ui::reply!("Reply: {}", if reply.said.is_empty() { "(audio only)" } else { &reply.said });
+        ui::reply!(
+            "Reply: {}",
+            if reply.said.is_empty() {
+                "(audio only)"
+            } else {
+                &reply.said
+            }
+        );
         if reply.truncated {
-            ui::warning!("The transmit cap cut the reply short; the next turn starts a fresh conversation.");
+            ui::warning!(
+                "The transmit cap cut the reply short; the next turn starts a fresh conversation."
+            );
         }
         if self.air.is_some() {
             self.realtime_station_id().await?;
@@ -103,7 +127,9 @@ impl Talk {
 
     /// A due station ID after a realtime reply, in its own transmission.
     async fn realtime_station_id(&mut self) -> anyhow::Result<()> {
-        let (Some(air), Brain::Realtime(session)) = (self.air.as_mut(), &self.brain) else { return Ok(()) };
+        let (Some(air), Brain::Realtime(session)) = (self.air.as_mut(), &self.brain) else {
+            return Ok(());
+        };
         if !air.station_id().due(Instant::now()) {
             return Ok(());
         }
@@ -116,9 +142,13 @@ impl Talk {
             }
             crate::config::StationIdMethod::Voice => {
                 let callsign = air.station_id().callsign().to_string();
-                match realtime::speak(session.settings(), &callsign, Some(air.radio().clone())).await {
+                match realtime::speak(session.settings(), &callsign, Some(air.radio().clone()))
+                    .await
+                {
                     Ok(reply) if reply.audible && !reply.truncated => Ok(()),
-                    Ok(_) => Err(anyhow::anyhow!("the station ID was not transmitted in full")),
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "the station ID was not transmitted in full"
+                    )),
                     Err(err) => Err(err),
                 }
             }
@@ -159,6 +189,8 @@ impl Talk {
                 }
             };
         }
-        air.say(text, what).await.map_err(|err| anyhow::anyhow!("{err}"))
+        air.say(text, what)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
     }
 }

@@ -41,8 +41,18 @@ pub fn store_dir() -> PathBuf {
 
 fn env() -> HashMap<String, String> {
     exec::inherit(&[
-        "HOME", "PATH", "LANG", "LC_ALL", "TZ", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-        "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "HOME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
     ])
 }
 
@@ -68,7 +78,10 @@ struct Poller {
 
 impl Poller {
     fn query(&self) -> rusqlite::Result<Vec<Row>> {
-        let conn = rusqlite::Connection::open_with_flags(&self.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let conn = rusqlite::Connection::open_with_flags(
+            &self.db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
         conn.busy_timeout(Duration::from_millis(500))?;
         let columns = "rowid, msg_id, chat_jid, from_me, coalesce(text, display_text, ''), coalesce(media_type, ''), coalesce(local_path, ''), ts";
         let map = |r: &rusqlite::Row| {
@@ -84,12 +97,19 @@ impl Poller {
             })
         };
         let mut rows: Vec<Row> = conn
-            .prepare(&format!("SELECT {columns} FROM messages WHERE rowid > ?1 ORDER BY rowid"))?
+            .prepare(&format!(
+                "SELECT {columns} FROM messages WHERE rowid > ?1 ORDER BY rowid"
+            ))?
             .query_map([self.last_rowid], map)?
             .collect::<Result<_, _>>()?;
-        let mut again = conn.prepare(&format!("SELECT {columns} FROM messages WHERE rowid = ?1"))?;
+        let mut again =
+            conn.prepare(&format!("SELECT {columns} FROM messages WHERE rowid = ?1"))?;
         for rowid in self.waiting.keys() {
-            rows.extend(again.query_map([rowid], map)?.collect::<Result<Vec<_>, _>>()?);
+            rows.extend(
+                again
+                    .query_map([rowid], map)?
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
         rows.sort_by_key(|r| (r.ts, r.rowid));
         Ok(rows)
@@ -100,11 +120,17 @@ impl Poller {
         if !self.db.is_file() {
             return Vec::new();
         }
-        let Ok(rows) = self.query() else { return Vec::new() };
+        let Ok(rows) = self.query() else {
+            return Vec::new();
+        };
         let mut found = Vec::new();
         for row in rows {
             self.last_rowid = self.last_rowid.max(row.rowid);
-            if row.from_me || row.msg_id.is_empty() || !same_contact(&self.to, &row.chat) || self.seen.contains(&row.msg_id) {
+            if row.from_me
+                || row.msg_id.is_empty()
+                || !same_contact(&self.to, &row.chat)
+                || self.seen.contains(&row.msg_id)
+            {
                 continue;
             }
             // History can arrive in later batches; the cutoff applies to all of it.
@@ -121,7 +147,9 @@ impl Poller {
                     if first.elapsed() < MEDIA_WAIT {
                         continue;
                     }
-                    ui::error!("A WhatsApp voice message did not download within a minute; skipped.");
+                    ui::error!(
+                        "A WhatsApp voice message did not download within a minute; skipped."
+                    );
                     None
                 }
             } else if row.media.is_empty() && !row.text.trim().is_empty() {
@@ -132,7 +160,11 @@ impl Poller {
             self.waiting.remove(&row.rowid);
             self.seen.insert(row.msg_id.clone());
             if let Some(content) = content {
-                found.push(Inbound { service: Service::WhatsApp, id: row.msg_id, content });
+                found.push(Inbound {
+                    service: Service::WhatsApp,
+                    id: row.msg_id,
+                    content,
+                });
             }
         }
         found
@@ -140,7 +172,10 @@ impl Poller {
 }
 
 impl WhatsApp {
-    pub async fn start(contact: &ContactConfig, inbox: mpsc::Sender<Inbound>) -> anyhow::Result<WhatsApp> {
+    pub async fn start(
+        contact: &ContactConfig,
+        inbox: mpsc::Sender<Inbound>,
+    ) -> anyhow::Result<WhatsApp> {
         let program = exec::find("wacli").context("WhatsApp messaging needs wacli on PATH")?;
         let store = store_dir();
         let started = jiff::Timestamp::now().as_second();
@@ -153,12 +188,12 @@ impl WhatsApp {
             seen: HashSet::new(),
         };
         // Everything already stored is history.
-        if poller.db.is_file() {
-            if let Ok(rows) = poller.query() {
-                for row in rows {
-                    poller.last_rowid = poller.last_rowid.max(row.rowid);
-                    poller.seen.insert(row.msg_id);
-                }
+        if poller.db.is_file()
+            && let Ok(rows) = poller.query()
+        {
+            for row in rows {
+                poller.last_rowid = poller.last_rowid.max(row.rowid);
+                poller.seen.insert(row.msg_id);
             }
         }
         let mut command = Job::new(program, "wacli")
@@ -167,7 +202,10 @@ impl WhatsApp {
             .args(["sync", "--follow", "--download-media"])
             .env(env())
             .command();
-        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let daemon = Daemon::spawn(command, "wacli")?;
         let poller = tokio::spawn(async move {
             loop {
@@ -215,7 +253,14 @@ impl WhatsApp {
     }
 
     pub async fn send_text(&self, text: &str) -> anyhow::Result<()> {
-        self.send(&["text".as_ref(), "--to".as_ref(), self.to.as_ref(), "--message".as_ref(), text.as_ref()]).await
+        self.send(&[
+            "text".as_ref(),
+            "--to".as_ref(),
+            self.to.as_ref(),
+            "--message".as_ref(),
+            text.as_ref(),
+        ])
+        .await
     }
 
     pub async fn send_voice(&self, file: &Path) -> anyhow::Result<()> {
@@ -253,7 +298,10 @@ mod tests {
         path
     }
 
-    fn insert(path: &Path, id: &str, chat: &str, ts: i64, from_me: bool, text: &str, media: &str, local: &str) {
+    /// (id, chat, ts, from_me, text, media, local_path)
+    type TestRow<'a> = (&'a str, &'a str, i64, bool, &'a str, &'a str, &'a str);
+
+    fn insert(path: &Path, (id, chat, ts, from_me, text, media, local): TestRow) {
         let conn = rusqlite::Connection::open(path).unwrap();
         conn.execute(
             "INSERT INTO messages (chat_jid, msg_id, ts, from_me, text, media_type, local_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -263,17 +311,68 @@ mod tests {
     }
 
     fn poller(db: PathBuf, started: i64) -> Poller {
-        Poller { db, to: "+1 (555) 123-4567".into(), started, last_rowid: 0, waiting: HashMap::new(), seen: HashSet::new() }
+        Poller {
+            db,
+            to: "+1 (555) 123-4567".into(),
+            started,
+            last_rowid: 0,
+            waiting: HashMap::new(),
+            seen: HashSet::new(),
+        }
     }
 
     #[test]
     fn only_new_messages_from_the_contact_are_delivered() {
         let dir = tempfile::tempdir().unwrap();
         let path = db(dir.path());
-        insert(&path, "old", "15551234567@s.whatsapp.net", 50, false, "history", "", "");
-        insert(&path, "mine", "15551234567@s.whatsapp.net", 200, true, "from me", "", "");
-        insert(&path, "other", "19998887777@s.whatsapp.net", 200, false, "someone else", "", "");
-        insert(&path, "new", "15551234567@s.whatsapp.net", 200, false, "hello", "", "");
+        insert(
+            &path,
+            (
+                "old",
+                "15551234567@s.whatsapp.net",
+                50,
+                false,
+                "history",
+                "",
+                "",
+            ),
+        );
+        insert(
+            &path,
+            (
+                "mine",
+                "15551234567@s.whatsapp.net",
+                200,
+                true,
+                "from me",
+                "",
+                "",
+            ),
+        );
+        insert(
+            &path,
+            (
+                "other",
+                "19998887777@s.whatsapp.net",
+                200,
+                false,
+                "someone else",
+                "",
+                "",
+            ),
+        );
+        insert(
+            &path,
+            (
+                "new",
+                "15551234567@s.whatsapp.net",
+                200,
+                false,
+                "hello",
+                "",
+                "",
+            ),
+        );
         let mut p = poller(path.clone(), 100);
         let found = p.poll();
         assert_eq!(found.len(), 1);
@@ -286,7 +385,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = db(dir.path());
         let audio = dir.path().join("note.ogg");
-        insert(&path, "v", "15551234567@s.whatsapp.net", 200, false, "", "ptt", audio.to_str().unwrap());
+        insert(
+            &path,
+            (
+                "v",
+                "15551234567@s.whatsapp.net",
+                200,
+                false,
+                "",
+                "ptt",
+                audio.to_str().unwrap(),
+            ),
+        );
         let mut p = poller(path, 100);
         assert!(p.poll().is_empty());
         std::fs::write(&audio, b"ogg").unwrap();

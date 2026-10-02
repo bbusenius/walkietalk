@@ -43,8 +43,10 @@ pub struct StreamTx {
     pub audio: Vec<i16>,
 }
 
-fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> impl Future<Output = T> {
-    async move { tokio::task::spawn_blocking(f).await.expect("transmit worker panicked") }
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    tokio::task::spawn_blocking(f)
+        .await
+        .expect("transmit worker panicked")
 }
 
 impl StreamTx {
@@ -82,10 +84,14 @@ impl StreamTx {
 
     /// Open the playback device ahead of time, with the transmitter off.
     pub async fn prepare(&mut self) -> Result<(), TxError> {
-        let Some(live) = self.live.as_mut() else { return Ok(()) };
+        let Some(live) = self.live.as_mut() else {
+            return Ok(());
+        };
         if live.prepared.is_none() && live.keyed.is_none() {
             let radio = live.radio.clone();
-            let prepared = blocking(move || radio.prepare_stream()).await.map_err(TxError::NotKeyed)?;
+            let prepared = blocking(move || radio.prepare_stream())
+                .await
+                .map_err(TxError::NotKeyed)?;
             live.prepared = Some(prepared);
         }
         Ok(())
@@ -120,7 +126,9 @@ impl StreamTx {
     /// Key for the airtime that remains. Returns false if none remains.
     async fn key(&mut self) -> Result<bool, TxError> {
         self.prepare().await?;
-        let Some(live) = self.live.as_mut() else { return Ok(true) };
+        let Some(live) = self.live.as_mut() else {
+            return Ok(true);
+        };
         let timing = live.radio.timing();
         let remaining = timing.max_tx.saturating_sub(live.airtime);
         if remaining <= timing.settle {
@@ -137,20 +145,29 @@ impl StreamTx {
             drop(keyed);
             return Err(TxError::Playback(err));
         }
-        live.samples_left = ((remaining - timing.settle).as_secs_f64() * RADIO_RATE as f64) as usize;
+        live.samples_left =
+            ((remaining - timing.settle).as_secs_f64() * RADIO_RATE as f64) as usize;
         live.keyed = Some((keyed, feed, playback));
         Ok(true)
     }
 
     async fn push(&mut self, chunk: &[i16]) -> Result<(), TxError> {
-        let Some(live) = self.live.as_mut() else { return Ok(()) };
-        let Some((_, feed, _)) = live.keyed.as_ref() else { return Ok(()) };
+        let Some(live) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let Some((_, feed, _)) = live.keyed.as_ref() else {
+            return Ok(());
+        };
         let gain = live.radio.timing().gain;
         let up: Vec<i16> = live
             .upsample
             .push(chunk)
             .into_iter()
-            .map(|s| (s as f64 * gain).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16)
+            .map(|s| {
+                (s as f64 * gain)
+                    .round()
+                    .clamp(i16::MIN as f64, i16::MAX as f64) as i16
+            })
             .collect();
         let take = up.len().min(live.samples_left);
         feed.push(&up[..take]);
@@ -166,8 +183,12 @@ impl StreamTx {
     pub async fn end_segment(&mut self) -> Result<(), TxError> {
         self.armed = false;
         self.lead_in.clear();
-        let Some(live) = self.live.as_mut() else { return Ok(()) };
-        let Some((keyed, feed, mut playback)) = live.keyed.take() else { return Ok(()) };
+        let Some(live) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let Some((keyed, feed, mut playback)) = live.keyed.take() else {
+            return Ok(());
+        };
         feed.push(&live.upsample.flush());
         feed.finish();
         let deadline = keyed.deadline();
@@ -205,7 +226,9 @@ mod tests {
     use crate::radio::tests::{FakeOut, radio};
 
     fn tone(ms: usize, level: i16) -> Vec<i16> {
-        (0..RATE as usize * ms / 1000).map(|i| if i % 2 == 0 { level } else { -level }).collect()
+        (0..RATE as usize * ms / 1000)
+            .map(|i| if i % 2 == 0 { level } else { -level })
+            .collect()
     }
 
     #[tokio::test]
@@ -214,7 +237,10 @@ mod tests {
         let mut tx = StreamTx::new(Some(Arc::new(radio(&line, &out, 2000))));
         tx.audio(tone(100, 0)).await.unwrap();
         tx.audio(tone(100, 10)).await.unwrap();
-        assert!(line.changes().is_empty(), "silence and near-silence never key");
+        assert!(
+            line.changes().is_empty(),
+            "silence and near-silence never key"
+        );
         tx.audio(tone(100, 5000)).await.unwrap();
         assert!(line.keyed());
         tx.end_segment().await.unwrap();

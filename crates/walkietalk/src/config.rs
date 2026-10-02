@@ -1159,10 +1159,10 @@ impl Config {
                 {
                     v.fail("messaging.signal.account must be a number in +countrycode format");
                 }
-                if let Some(dir) = &contact.attachments_dir {
-                    if !crate::paths::expand_home(dir).is_absolute() {
-                        v.fail("messaging.signal.attachments_dir must be an absolute path or start with ~/");
-                    }
+                if let Some(dir) = &contact.attachments_dir
+                    && !crate::paths::expand_home(dir).is_absolute()
+                {
+                    v.fail("messaging.signal.attachments_dir must be an absolute path or start with ~/");
                 }
             }
         }

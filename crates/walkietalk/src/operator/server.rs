@@ -26,7 +26,10 @@ pub struct Server {
 pub fn reserve(config: &Path) -> anyhow::Result<(PathBuf, File)> {
     let path = super::socket_path(config)?;
     let lock_path = path.with_extension("lock");
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&lock_path)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&lock_path)?;
     if file.try_lock().is_err() {
         bail!("operator mode is already running for this config");
     }
@@ -34,22 +37,35 @@ pub fn reserve(config: &Path) -> anyhow::Result<(PathBuf, File)> {
 }
 
 impl Server {
-    pub fn start(reserved: (PathBuf, File), shared: Shared, commands: mpsc::Sender<Command>) -> anyhow::Result<Server> {
+    pub fn start(
+        reserved: (PathBuf, File),
+        shared: Shared,
+        commands: mpsc::Sender<Command>,
+    ) -> anyhow::Result<Server> {
         use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
         let (path, lock) = reserved;
         if let Ok(meta) = std::fs::symlink_metadata(&path) {
             // The lock proves any existing socket is stale.
-            anyhow::ensure!(meta.file_type().is_socket() && meta.uid() == crate::sys::current_uid(), "unexpected file at {}", path.display());
+            anyhow::ensure!(
+                meta.file_type().is_socket() && meta.uid() == crate::sys::current_uid(),
+                "unexpected file at {}",
+                path.display()
+            );
             std::fs::remove_file(&path)?;
         }
-        let listener = UnixListener::bind(&path).with_context(|| format!("cannot create {}", path.display()))?;
+        let listener = UnixListener::bind(&path)
+            .with_context(|| format!("cannot create {}", path.display()))?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(serve(stream, shared.clone(), commands.clone()));
             }
         });
-        Ok(Server { path, _lock: lock, task })
+        Ok(Server {
+            path,
+            _lock: lock,
+            task,
+        })
     }
 
     /// Whether the server stopped unexpectedly.
@@ -65,14 +81,21 @@ impl Drop for Server {
     }
 }
 
-async fn send(stream: &mut (impl AsyncWriteExt + Unpin), response: &Response) -> std::io::Result<()> {
+async fn send(
+    stream: &mut (impl AsyncWriteExt + Unpin),
+    response: &Response,
+) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(response).expect("responses serialize");
     line.push(b'\n');
     stream.write_all(&line).await
 }
 
 fn done(ok: bool, message: &str) -> Response {
-    Response::Done { done: true, ok, message: Some(message.into()) }
+    Response::Done {
+        done: true,
+        ok,
+        message: Some(message.into()),
+    }
 }
 
 async fn serve(stream: UnixStream, shared: Shared, commands: mpsc::Sender<Command>) {
@@ -81,7 +104,15 @@ async fn serve(stream: UnixStream, shared: Shared, commands: mpsc::Sender<Comman
         let board = lock(&shared);
         board.review.snapshot(board.conversation.clone())
     };
-    if send(&mut write, &Response::Snapshot { snapshot: snapshot.clone() }).await.is_err() {
+    if send(
+        &mut write,
+        &Response::Snapshot {
+            snapshot: Box::new(snapshot.clone()),
+        },
+    )
+    .await
+    .is_err()
+    {
         return;
     }
     let mut reader = BufReader::new(read.take(MAX_REQUEST));
@@ -96,21 +127,37 @@ async fn serve(stream: UnixStream, shared: Shared, commands: mpsc::Sender<Comman
     };
     let reply = match validate(&request, &snapshot) {
         Err(message) => Some(done(false, &message)),
-        Ok(_) if request.action == Action::Status => Some(Response::Done { done: true, ok: true, message: None }),
+        Ok(_) if request.action == Action::Status => Some(Response::Done {
+            done: true,
+            ok: true,
+            message: None,
+        }),
         Ok(_) => None,
     };
     if let Some(reply) = reply {
         let _ = send(&mut write, &reply).await;
         return;
     }
-    let revision = request.revision.unwrap_or(if request.approved { snapshot.approved_revision } else { snapshot.revision });
+    let revision = request.revision.unwrap_or(if request.approved {
+        snapshot.approved_revision
+    } else {
+        snapshot.revision
+    });
     let text = request.text.as_deref().map(normalize);
-    let (command, mut replies, cancelled) = Command::new(request.action, request.approved, revision, text);
+    let (command, mut replies, cancelled) =
+        Command::new(request.action, request.approved, revision, text);
     if commands.send(command).await.is_err() {
         let _ = send(&mut write, &done(false, "talk stopped")).await;
         return;
     }
-    let _ = send(&mut write, &Response::Line { kind: "status".into(), message: "Command queued; waiting for the radio to be idle.".into() }).await;
+    let _ = send(
+        &mut write,
+        &Response::Line {
+            kind: "status".into(),
+            message: "Command queued; waiting for the radio to be idle.".into(),
+        },
+    )
+    .await;
     let mut hangup = reader.into_inner().into_inner();
     let mut probe = [0u8; 1];
     loop {
@@ -143,7 +190,9 @@ fn validate(request: &Request, snapshot: &super::review::Snapshot) -> Result<(),
         }
         let text = request.text.as_deref().map(normalize).unwrap_or_default();
         if text.is_empty() || text.chars().count() > MAX_EDIT_CHARS {
-            return Err(format!("edit needs text of 1 to {MAX_EDIT_CHARS} characters"));
+            return Err(format!(
+                "edit needs text of 1 to {MAX_EDIT_CHARS} characters"
+            ));
         }
     } else if request.text.is_some() {
         return Err("--text applies only to edit".into());
@@ -160,12 +209,17 @@ fn validate(request: &Request, snapshot: &super::review::Snapshot) -> Result<(),
         return Err("the displayed item changed; review it again".into());
     }
     let Some(item) = item else {
-        return Err(if request.approved { "no approved incoming message is waiting" } else { "no message is waiting for review" }.into());
-    };
-    if request.action == Action::Edit {
-        if let Some(block) = &item.edit_block {
-            return Err(block.clone());
+        return Err(if request.approved {
+            "no approved incoming message is waiting"
+        } else {
+            "no message is waiting for review"
         }
+        .into());
+    };
+    if request.action == Action::Edit
+        && let Some(block) = &item.edit_block
+    {
+        return Err(block.clone());
     }
     Ok(())
 }

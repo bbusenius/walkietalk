@@ -32,8 +32,18 @@ const ATTACHMENT_WAIT: Duration = Duration::from_secs(60);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum Link {
-    Http { base: String, client: reqwest::Client },
-    Rpc { stdin: Mutex<ChildStdin>, pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>, daemon: Daemon },
+    Http {
+        base: String,
+        client: reqwest::Client,
+    },
+    Rpc(Box<Rpc>),
+}
+
+/// Our own `signal-cli jsonRpc` process.
+struct Rpc {
+    stdin: Mutex<ChildStdin>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
+    daemon: Daemon,
 }
 
 pub struct Signal {
@@ -54,9 +64,21 @@ pub fn attachments_dir(contact: &ContactConfig) -> PathBuf {
 /// Turn one event into an inbound message, if it is a text or voice note
 /// from the configured contact. Calls, groups, reactions, and copies of our
 /// own sent messages are ignored.
-pub fn parse_event(payload: &Value, contact: &ContactConfig, attachments: &Path) -> Option<Inbound> {
-    let params = if payload["method"] == "receive" { &payload["params"] } else { payload };
-    if !contact.account.is_empty() && params.get("account").is_some_and(|a| a != contact.account.as_str()) {
+pub fn parse_event(
+    payload: &Value,
+    contact: &ContactConfig,
+    attachments: &Path,
+) -> Option<Inbound> {
+    let params = if payload["method"] == "receive" {
+        &payload["params"]
+    } else {
+        payload
+    };
+    if !contact.account.is_empty()
+        && params
+            .get("account")
+            .is_some_and(|a| a != contact.account.as_str())
+    {
         return None;
     }
     let envelope = params.get("envelope").unwrap_or(params);
@@ -64,14 +86,25 @@ pub fn parse_event(payload: &Value, contact: &ContactConfig, attachments: &Path)
         return None;
     }
     let data = envelope.get("dataMessage")?;
-    let source = envelope["sourceNumber"].as_str().or(envelope["source"].as_str()).unwrap_or("");
-    if !same_contact(&contact.to, source) || data.get("groupInfo").is_some() || data.get("reaction").is_some() {
+    let source = envelope["sourceNumber"]
+        .as_str()
+        .or(envelope["source"].as_str())
+        .unwrap_or("");
+    if !same_contact(&contact.to, source)
+        || data.get("groupInfo").is_some()
+        || data.get("reaction").is_some()
+    {
         return None;
     }
-    let stamp = envelope["timestamp"].as_i64().map(|t| t.to_string()).unwrap_or_else(|| source.to_string());
+    let stamp = envelope["timestamp"]
+        .as_i64()
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| source.to_string());
     for attachment in data["attachments"].as_array().into_iter().flatten() {
         let voice = attachment["isVoiceNote"] == true
-            || attachment["contentType"].as_str().is_some_and(|t| t.starts_with("audio/"));
+            || attachment["contentType"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("audio/"));
         let id = attachment["id"].as_str().unwrap_or("");
         let safe = !id.is_empty() && id != "." && id != ".." && !id.contains('/');
         if voice && safe {
@@ -83,7 +116,11 @@ pub fn parse_event(payload: &Value, contact: &ContactConfig, attachments: &Path)
         }
     }
     let text = data["message"].as_str().unwrap_or("").trim();
-    (!text.is_empty()).then(|| Inbound { service: Service::Signal, id: stamp, content: Content::Text(text.to_string()) })
+    (!text.is_empty()).then(|| Inbound {
+        service: Service::Signal,
+        id: stamp,
+        content: Content::Text(text.to_string()),
+    })
 }
 
 /// A sentence for a refused send.
@@ -106,7 +143,9 @@ fn forward(found: Inbound, inbox: &mpsc::Sender<Inbound>) {
             let deadline = tokio::time::Instant::now() + ATTACHMENT_WAIT;
             while !path.is_file() {
                 if tokio::time::Instant::now() >= deadline {
-                    ui::error!("A Signal voice message never appeared on disk; check messaging.signal.attachments_dir.");
+                    ui::error!(
+                        "A Signal voice message never appeared on disk; check messaging.signal.attachments_dir."
+                    );
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
@@ -117,11 +156,18 @@ fn forward(found: Inbound, inbox: &mpsc::Sender<Inbound>) {
 }
 
 impl Signal {
-    pub async fn start(contact: &ContactConfig, inbox: mpsc::Sender<Inbound>) -> anyhow::Result<Signal> {
+    pub async fn start(
+        contact: &ContactConfig,
+        inbox: mpsc::Sender<Inbound>,
+    ) -> anyhow::Result<Signal> {
         Signal::start_with(contact, inbox, DAEMON).await
     }
 
-    pub async fn start_with(contact: &ContactConfig, inbox: mpsc::Sender<Inbound>, daemon_url: &str) -> anyhow::Result<Signal> {
+    pub async fn start_with(
+        contact: &ContactConfig,
+        inbox: mpsc::Sender<Inbound>,
+        daemon_url: &str,
+    ) -> anyhow::Result<Signal> {
         let attachments = attachments_dir(contact);
         let client = reqwest::Client::builder().no_proxy().build()?;
         let daemon_up = client
@@ -143,26 +189,26 @@ impl Signal {
                     if let Ok(response) = client2.get(&url).send().await {
                         let mut lines = response.bytes_stream();
                         let mut buffer = Vec::new();
-                        loop {
-                            match tokio::time::timeout(STREAM_TIMEOUT, lines.next()).await {
-                                Ok(Some(Ok(chunk))) => {
-                                    buffer.extend_from_slice(&chunk);
-                                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                                        let line: Vec<u8> = buffer.drain(..=pos).collect();
-                                        let line = String::from_utf8_lossy(&line);
-                                        let Some(data) = line.trim().strip_prefix("data:") else { continue };
-                                        if let Ok(payload) = serde_json::from_str::<Value>(data.trim()) {
-                                            if let Some(found) = parse_event(&payload, &contact, &attachments) {
-                                                forward(found, &inbox);
-                                            }
-                                        }
-                                    }
-                                    if buffer.len() > 1024 * 1024 {
-                                        buffer.clear();
-                                    }
+                        // A missed keepalive, error, or end of stream reconnects.
+                        while let Ok(Some(Ok(chunk))) =
+                            tokio::time::timeout(STREAM_TIMEOUT, lines.next()).await
+                        {
+                            buffer.extend_from_slice(&chunk);
+                            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                                let line: Vec<u8> = buffer.drain(..=pos).collect();
+                                let line = String::from_utf8_lossy(&line);
+                                let Some(data) = line.trim().strip_prefix("data:") else {
+                                    continue;
+                                };
+                                if let Ok(payload) = serde_json::from_str::<Value>(data.trim())
+                                    && let Some(found) =
+                                        parse_event(&payload, &contact, &attachments)
+                                {
+                                    forward(found, &inbox);
                                 }
-                                // Missed keepalive, error, or end: reconnect.
-                                _ => break,
+                            }
+                            if buffer.len() > 1024 * 1024 {
+                                buffer.clear();
                             }
                         }
                     }
@@ -172,19 +218,41 @@ impl Signal {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }));
-            Link::Http { base: daemon_url.to_string(), client }
+            Link::Http {
+                base: daemon_url.to_string(),
+                client,
+            }
         } else {
-            let program = exec::find("signal-cli").context("Signal messaging needs signal-cli on PATH")?;
+            let program =
+                exec::find("signal-cli").context("Signal messaging needs signal-cli on PATH")?;
             let mut job = Job::new(program, "signal-cli").env(exec::inherit(&[
-                "HOME", "PATH", "LANG", "LC_ALL", "TZ", "JAVA_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+                "HOME",
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "TZ",
+                "JAVA_HOME",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_CACHE_HOME",
             ]));
             if !contact.account.is_empty() {
                 job = job.args(["-a", &contact.account]);
             }
             let mut command = job
-                .args(["jsonRpc", "--receive-mode", "on-start", "--ignore-stories", "--ignore-avatars", "--ignore-stickers"])
+                .args([
+                    "jsonRpc",
+                    "--receive-mode",
+                    "on-start",
+                    "--ignore-stories",
+                    "--ignore-avatars",
+                    "--ignore-stickers",
+                ])
                 .command();
-            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
             let mut daemon = Daemon::spawn(command, "signal-cli")?;
             let stdin = daemon.child.stdin.take().context("signal-cli stdin")?;
             let stdout = daemon.child.stdout.take().context("signal-cli stdout")?;
@@ -193,7 +261,9 @@ impl Signal {
             tasks.push(tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let Ok(payload) = serde_json::from_str::<Value>(&line) else { continue };
+                    let Ok(payload) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
                     if let Some(id) = payload["id"].as_u64() {
                         if let Some(waiter) = waiters.lock().await.remove(&id) {
                             let _ = waiter.send(payload);
@@ -205,7 +275,11 @@ impl Signal {
                 ui::error!("signal-cli stopped; Signal messages are unavailable until restart.");
             }));
             ui::status!("Signal: started signal-cli jsonRpc.");
-            Link::Rpc { stdin: Mutex::new(stdin), pending, daemon }
+            Link::Rpc(Box::new(Rpc {
+                stdin: Mutex::new(stdin),
+                pending,
+                daemon,
+            }))
         };
         Ok(Signal {
             link,
@@ -243,9 +317,12 @@ impl Signal {
                     .send()
                     .await
                     .map_err(|_| anyhow::anyhow!("Message not sent."))?;
-                crate::http::json(response, 1024 * 1024, "signal-cli").await.map_err(|_| anyhow::anyhow!("Message not sent."))?
+                crate::http::json(response, 1024 * 1024, "signal-cli")
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Message not sent."))?
             }
-            Link::Rpc { stdin, pending, .. } => {
+            Link::Rpc(rpc) => {
+                let Rpc { stdin, pending, .. } = rpc.as_ref();
                 let (tx, rx) = oneshot::channel();
                 pending.lock().await.insert(id, tx);
                 let line = format!("{request}\n");
@@ -280,10 +357,16 @@ impl Signal {
             // A separate daemon may not see our temporary files; embed the audio.
             Link::Http { .. } => {
                 let bytes = std::fs::read(file)?;
-                anyhow::ensure!(!bytes.is_empty() && bytes.len() as u64 <= MAX_UPLOAD_BYTES, "Message not sent. Voice message too large.");
-                format!("data:audio/ogg;filename=voice.ogg;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+                anyhow::ensure!(
+                    !bytes.is_empty() && bytes.len() as u64 <= MAX_UPLOAD_BYTES,
+                    "Message not sent. Voice message too large."
+                );
+                format!(
+                    "data:audio/ogg;filename=voice.ogg;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                )
             }
-            Link::Rpc { .. } => file.display().to_string(),
+            Link::Rpc(_) => file.display().to_string(),
         };
         self.call(self.params(None, Some(attachment))).await
     }
@@ -292,8 +375,8 @@ impl Signal {
         for task in &self.tasks {
             task.abort();
         }
-        if let Link::Rpc { daemon, .. } = self.link {
-            daemon.stop().await;
+        if let Link::Rpc(rpc) = self.link {
+            rpc.daemon.stop().await;
         }
     }
 }

@@ -31,7 +31,10 @@ pub fn path(model: WhisperModel) -> PathBuf {
 }
 
 pub fn installed(model: WhisperModel) -> Option<u64> {
-    std::fs::metadata(path(model)).ok().filter(|m| m.is_file()).map(|m| m.len())
+    std::fs::metadata(path(model))
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
 }
 
 /// Download the model unless it is already present. The file is checked
@@ -45,13 +48,21 @@ pub async fn download(model: WhisperModel) -> anyhow::Result<PathBuf> {
     let dir = dest.parent().expect("model path has a parent");
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let url = format!("{BASE_URL}/{}", file_name(model));
-    ui::status!("Downloading Whisper {model} (about {} MB) to {}", approx_mb(model), dest.display());
+    ui::status!(
+        "Downloading Whisper {model} (about {} MB) to {}",
+        approx_mb(model),
+        dest.display()
+    );
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(60))
         .build()?;
     let expected = published_checksum(&url).await;
-    let response = client.get(&url).send().await.context("cannot reach the model server")?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .context("cannot reach the model server")?;
     if !response.status().is_success() {
         bail!("model download failed: HTTP {}", response.status());
     }

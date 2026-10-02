@@ -46,7 +46,11 @@ impl Shaping {
     /// Resample, fit, and level a synthesized clip.
     pub fn finish(&self, clip: Clip, fit: Fit) -> anyhow::Result<Clip> {
         let clip = clip.to_radio().fit(self.budget, fit)?;
-        Ok(if self.peak_normalize { clip.peak_normalized() } else { clip })
+        Ok(if self.peak_normalize {
+            clip.peak_normalized()
+        } else {
+            clip
+        })
     }
 
     /// The most audio worth decoding: anything far beyond the budget is refused.

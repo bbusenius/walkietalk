@@ -19,13 +19,19 @@ pub enum ExecError {
     #[error("{program} not found; install it or set its executable path in the config")]
     NotFound { program: String },
     #[error("cannot start {program}: {source}")]
-    Spawn { program: String, source: std::io::Error },
+    Spawn {
+        program: String,
+        source: std::io::Error,
+    },
     #[error("{program} timed out after {:.0}s", .after.as_secs_f64())]
     Timeout { program: String, after: Duration },
     #[error("{program} produced more output than allowed; discarded")]
     TooLarge { program: String },
     #[error("{program} I/O failed: {source}")]
-    Io { program: String, source: std::io::Error },
+    Io {
+        program: String,
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug)]
@@ -60,7 +66,9 @@ pub fn find(name: &str) -> Result<PathBuf, ExecError> {
     } else {
         which::which(name).ok()
     };
-    found.ok_or_else(|| ExecError::NotFound { program: name.to_string() })
+    found.ok_or_else(|| ExecError::NotFound {
+        program: name.to_string(),
+    })
 }
 
 /// Variables passed through from our environment when present.
@@ -106,6 +114,7 @@ impl Job {
         self
     }
 
+    #[cfg(test)]
     pub fn set_env(mut self, key: &str, value: &str) -> Job {
         self.env.insert(key.to_string(), value.to_string());
         self
@@ -151,10 +160,16 @@ impl Job {
         let label = self.label.clone();
         let mut command = self.command();
         command
-            .stdin(if self.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdin(if self.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|source| spawn_error(&label, source))?;
+        let mut child = spawn(&mut command)
+            .await
+            .map_err(|source| spawn_error(&label, source))?;
         let group = Group::of(&child);
         let work = collect(&mut child, self.stdin, self.max_output, &label);
         let result = match tokio::time::timeout(self.timeout, work).await {
@@ -169,16 +184,44 @@ impl Job {
     }
 }
 
-fn spawn_error(label: &str, source: std::io::Error) -> ExecError {
-    if source.kind() == std::io::ErrorKind::NotFound {
-        ExecError::NotFound { program: label.to_string() }
-    } else {
-        ExecError::Spawn { program: label.to_string(), source }
+/// Spawn, retrying briefly when the executable was just written and another
+/// thread's fork still holds it open ("text file busy").
+async fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && attempts < 10 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            other => return other,
+        }
     }
 }
 
-async fn collect(child: &mut Child, stdin: Option<Vec<u8>>, max: usize, label: &str) -> Result<Output, ExecError> {
-    let io = |source| ExecError::Io { program: label.to_string(), source };
+fn spawn_error(label: &str, source: std::io::Error) -> ExecError {
+    if source.kind() == std::io::ErrorKind::NotFound {
+        ExecError::NotFound {
+            program: label.to_string(),
+        }
+    } else {
+        ExecError::Spawn {
+            program: label.to_string(),
+            source,
+        }
+    }
+}
+
+async fn collect(
+    child: &mut Child,
+    stdin: Option<Vec<u8>>,
+    max: usize,
+    label: &str,
+) -> Result<Output, ExecError> {
+    let io = |source| ExecError::Io {
+        program: label.to_string(),
+        source,
+    };
     if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
         // A program that never reads its input must not block us, and one
         // that exits early is not an error here.
@@ -190,16 +233,28 @@ async fn collect(child: &mut Child, stdin: Option<Vec<u8>>, max: usize, label: &
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let budget = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(max));
-    let (out, err) = tokio::join!(read_capped(stdout, budget.clone()), read_capped(stderr, budget));
-    let too_large = || ExecError::TooLarge { program: label.to_string() };
+    let (out, err) = tokio::join!(
+        read_capped(stdout, budget.clone()),
+        read_capped(stderr, budget)
+    );
+    let too_large = || ExecError::TooLarge {
+        program: label.to_string(),
+    };
     let stdout = out.map_err(io)?.ok_or_else(too_large)?;
     let stderr = err.map_err(io)?.ok_or_else(too_large)?;
     let status = child.wait().await.map_err(io)?;
-    Ok(Output { status, stdout, stderr })
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// Read to the end, or `None` once the shared budget is exhausted.
-async fn read_capped(mut pipe: impl AsyncRead + Unpin, budget: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> std::io::Result<Option<Vec<u8>>> {
+async fn read_capped(
+    mut pipe: impl AsyncRead + Unpin,
+    budget: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> std::io::Result<Option<Vec<u8>>> {
     use std::sync::atomic::Ordering;
     let mut data = Vec::new();
     let mut buf = [0u8; 8192];
@@ -209,7 +264,9 @@ async fn read_capped(mut pipe: impl AsyncRead + Unpin, budget: std::sync::Arc<st
             return Ok(Some(data));
         }
         let ok = budget
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(n))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(n)
+            })
             .is_ok();
         if !ok {
             return Ok(None);
@@ -263,7 +320,9 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn spawn(mut command: Command, label: &str) -> Result<Daemon, ExecError> {
-        let child = command.spawn().map_err(|source| spawn_error(label, source))?;
+        let child = command
+            .spawn()
+            .map_err(|source| spawn_error(label, source))?;
         let group = Group::of(&child);
         Ok(Daemon { child, group })
     }
@@ -295,7 +354,11 @@ pub mod tests {
     #[tokio::test]
     async fn collects_output_and_status() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "echo", "read line; echo \"got $line\"; echo oops >&2; exit 3");
+        let path = script(
+            dir.path(),
+            "echo",
+            "read line; echo \"got $line\"; echo oops >&2; exit 3",
+        );
         let out = job(path).stdin(b"hello\n".to_vec()).run().await.unwrap();
         assert_eq!(out.stdout, b"got hello\n");
         assert_eq!(out.stderr, b"oops\n");
@@ -309,7 +372,11 @@ pub mod tests {
         let body = format!("(sleep 1; touch {}) &\nsleep 30", marker.display());
         let path = script(dir.path(), "hang", &body);
         let started = std::time::Instant::now();
-        let err = job(path).timeout(Duration::from_millis(200)).run().await.unwrap_err();
+        let err = job(path)
+            .timeout(Duration::from_millis(200))
+            .run()
+            .await
+            .unwrap_err();
         assert!(matches!(err, ExecError::Timeout { .. }));
         assert!(started.elapsed() < Duration::from_secs(2));
         tokio::time::sleep(Duration::from_millis(1300)).await;
@@ -336,8 +403,14 @@ pub mod tests {
 
     #[tokio::test]
     async fn missing_program_is_reported() {
-        let err = job(PathBuf::from("/nonexistent/prog")).run().await.unwrap_err();
+        let err = job(PathBuf::from("/nonexistent/prog"))
+            .run()
+            .await
+            .unwrap_err();
         assert!(matches!(err, ExecError::NotFound { .. }));
-        assert!(matches!(find("definitely-not-a-real-program-xyz"), Err(ExecError::NotFound { .. })));
+        assert!(matches!(
+            find("definitely-not-a-real-program-xyz"),
+            Err(ExecError::NotFound { .. })
+        ));
     }
 }

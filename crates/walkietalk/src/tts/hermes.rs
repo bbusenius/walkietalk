@@ -44,11 +44,20 @@ impl HermesTts {
             }))
             .send()
             .await
-            .map_err(|err| anyhow::anyhow!("Hermes speech {}; check tts.hermes.url and that the companion is running", http::without_url(&err)))?;
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "Hermes speech {}; check tts.hermes.url and that the companion is running",
+                    http::without_url(&err)
+                )
+            })?;
         match response.status() {
             StatusCode::OK => {}
             s @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
-                bail!("Hermes speech refused the service token (HTTP {}); check {}", s.as_u16(), self.token_env)
+                bail!(
+                    "Hermes speech refused the service token (HTTP {}); check {}",
+                    s.as_u16(),
+                    self.token_env
+                )
             }
             StatusCode::PAYLOAD_TOO_LARGE => bail!(TooLong {
                 actual: self.shaping.budget + Duration::from_millis(1),
@@ -56,7 +65,10 @@ impl HermesTts {
             }),
             StatusCode::SERVICE_UNAVAILABLE => bail!("Hermes speech is busy with another request"),
             StatusCode::GATEWAY_TIMEOUT => bail!("Hermes speech timed out"),
-            s => bail!("Hermes speech failed (HTTP {}); check the companion and its Hermes provider", s.as_u16()),
+            s => bail!(
+                "Hermes speech failed (HTTP {}); check the companion and its Hermes provider",
+                s.as_u16()
+            ),
         }
         let max = (self.shaping.decode_limit().as_secs_f64() * 48_000.0 * 2.0) as usize + 64 * 1024;
         let body = http::body(response, max, "Hermes speech").await?;

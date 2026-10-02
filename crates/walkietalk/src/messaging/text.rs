@@ -16,7 +16,11 @@ pub fn normalize(text: &str) -> String {
             }
         })
         .collect();
-    cleaned.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+    cleaned
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Unicode "format" characters that render as nothing (zero-width joiners,
@@ -36,16 +40,27 @@ pub fn split(text: &str, max: usize) -> (String, String) {
     let window = &text[..limit];
     let sentence = window
         .char_indices()
-        .filter(|&(i, c)| matches!(c, '.' | '!' | '?') && text[i + c.len_utf8()..].starts_with(char::is_whitespace))
+        .filter(|&(i, c)| {
+            matches!(c, '.' | '!' | '?')
+                && text[i + c.len_utf8()..].starts_with(char::is_whitespace)
+        })
         .map(|(i, c)| i + c.len_utf8())
-        .last();
-    let cut = sentence.or_else(|| window.rfind(char::is_whitespace).filter(|&i| i > 0)).unwrap_or(limit);
-    (text[..cut].trim_end().to_string(), text[cut..].trim_start().to_string())
+        .next_back();
+    let cut = sentence
+        .or_else(|| window.rfind(char::is_whitespace).filter(|&i| i > 0))
+        .unwrap_or(limit);
+    (
+        text[..cut].trim_end().to_string(),
+        text[cut..].trim_start().to_string(),
+    )
 }
 
 /// The final piece of a text reply ends with "over".
 pub fn with_over(body: &str) -> String {
-    format!("{}, over", body.trim().trim_end_matches([' ', ',', '.', '!', '?']))
+    format!(
+        "{}, over",
+        body.trim().trim_end_matches([' ', ',', '.', '!', '?'])
+    )
 }
 
 #[cfg(test)]
@@ -54,7 +69,10 @@ mod tests {
 
     #[test]
     fn controls_and_invisible_characters_are_removed() {
-        assert_eq!(normalize("Hi\u{200B} there\n\tfriend\u{7}"), "Hi there friend");
+        assert_eq!(
+            normalize("Hi\u{200B} there\n\tfriend\u{7}"),
+            "Hi there friend"
+        );
         assert_eq!(normalize("  \u{3000}  "), "");
     }
 

@@ -26,7 +26,12 @@ impl GrokTts {
         GrokTts::with_base(auth, crate::xai::API_BASE.into(), voice, shaping)
     }
 
-    pub fn with_base(auth: Auth, base: String, voice: GrokVoiceConfig, shaping: Shaping) -> GrokTts {
+    pub fn with_base(
+        auth: Auth,
+        base: String,
+        voice: GrokVoiceConfig,
+        shaping: Shaping,
+    ) -> GrokTts {
         GrokTts {
             auth,
             base,
@@ -40,7 +45,11 @@ impl GrokTts {
         (self.shaping.decode_limit().as_secs_f64() * 48_000.0 * 2.0) as usize + 64 * 1024
     }
 
-    async fn post(&self, text: &str, token: &Secret) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
+    async fn post(
+        &self,
+        text: &str,
+        token: &Secret,
+    ) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
         let response = self
             .client
             .post(format!("{}/v1/tts", self.base))
@@ -61,7 +70,13 @@ impl GrokTts {
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.split(';').next().unwrap_or("").trim().to_ascii_lowercase());
+            .map(|v| {
+                v.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+            });
         let body = http::body(response, self.max_bytes(), "Grok voice").await?;
         Ok((status, kind, body))
     }
@@ -69,15 +84,19 @@ impl GrokTts {
     async fn run(&self, text: &str, fit: Fit) -> anyhow::Result<Clip> {
         let token = self.auth.token(&self.client).await?;
         let (mut status, mut kind, mut body) = self.post(text, &token).await?;
-        if status == StatusCode::UNAUTHORIZED {
-            if let Some(token) = self.auth.retry_token(&self.client).await {
-                (status, kind, body) = self.post(text, &token?).await?;
-            }
+        if status == StatusCode::UNAUTHORIZED
+            && let Some(token) = self.auth.retry_token(&self.client).await
+        {
+            (status, kind, body) = self.post(text, &token?).await?;
         }
         match status {
             s if s.is_success() => {}
             s @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
-                bail!("Grok voice refused access (HTTP {}); {}", s.as_u16(), self.auth.remedy())
+                bail!(
+                    "Grok voice refused access (HTTP {}); {}",
+                    s.as_u16(),
+                    self.auth.remedy()
+                )
             }
             s => bail!(
                 "Grok voice failed (HTTP {}); check tts.grok voice, language, and speed. Details withheld",
@@ -99,7 +118,12 @@ impl GrokTts {
 #[async_trait]
 impl Voice for GrokTts {
     fn label(&self) -> String {
-        format!("grok ({}, speed {}; {})", self.voice.voice, self.voice.speed, self.auth.describe())
+        format!(
+            "grok ({}, speed {}; {})",
+            self.voice.voice,
+            self.voice.speed,
+            self.auth.describe()
+        )
     }
 
     async fn prepare(&self) -> anyhow::Result<()> {

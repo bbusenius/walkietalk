@@ -29,7 +29,12 @@ fn state() -> &'static State {
 }
 
 fn release_all() {
-    for ptt in state().ptts.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+    for ptt in state()
+        .ptts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+    {
         ptt.stop();
     }
 }
@@ -37,16 +42,18 @@ fn release_all() {
 /// Install the handlers. Call once at startup.
 pub fn install() -> anyhow::Result<()> {
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
-    std::thread::Builder::new().name("signals".into()).spawn(move || {
-        for _ in signals.forever() {
-            release_all();
-            if state().stopping.swap(true, Ordering::SeqCst) {
-                std::process::exit(130);
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            for _ in signals.forever() {
+                release_all();
+                if state().stopping.swap(true, Ordering::SeqCst) {
+                    std::process::exit(130);
+                }
+                crate::ui::warning!("Stopping; press Ctrl+C again to exit immediately.");
+                state().token.cancel();
             }
-            crate::ui::warning!("Stopping; press Ctrl+C again to exit immediately.");
-            state().token.cancel();
-        }
-    })?;
+        })?;
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         release_all();
@@ -66,7 +73,11 @@ pub fn request_stop() {
 
 /// Release this transmitter on any stop signal or panic.
 pub fn protect(ptt: Ptt) {
-    state().ptts.lock().unwrap_or_else(|e| e.into_inner()).push(ptt);
+    state()
+        .ptts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(ptt);
 }
 
 pub fn stop_requested() -> bool {

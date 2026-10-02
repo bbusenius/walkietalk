@@ -15,7 +15,9 @@ pub fn devices(all: bool) -> anyhow::Result<()> {
     let listings = device::list()?;
     let shown: Vec<_> = listings.iter().filter(|d| all || d.recommended()).collect();
     if shown.is_empty() {
-        ui::status!("No sound cards found by name. Connect the interface, or use --all to see every ALSA device.");
+        ui::status!(
+            "No sound cards found by name. Connect the interface, or use --all to see every ALSA device."
+        );
     }
     for d in &shown {
         let dirs = match (d.input, d.output) {
@@ -24,7 +26,12 @@ pub fn devices(all: bool) -> anyhow::Result<()> {
             (false, true) => "playback",
             (false, false) => "-",
         };
-        ui::status!("{:<44} {:<17} {}", d.name, dirs, d.description.lines().next().unwrap_or(""));
+        ui::status!(
+            "{:<44} {:<17} {}",
+            d.name,
+            dirs,
+            d.description.lines().next().unwrap_or("")
+        );
     }
     let by_id = Path::new("/dev/serial/by-id");
     let mut ports: Vec<_> = std::fs::read_dir(by_id)
@@ -61,7 +68,9 @@ pub fn ptt(config: &Config, consent: Option<TransmitConsent>, seconds: f64) -> a
     let keyed = Keyed::new(radio.ptt(), deadline)?;
     let until = Instant::now() + Duration::from_secs_f64(seconds);
     while Instant::now() < until && !signals::stop_requested() {
-        std::thread::sleep(Duration::from_millis(20).min(until.saturating_duration_since(Instant::now())));
+        std::thread::sleep(
+            Duration::from_millis(20).min(until.saturating_duration_since(Instant::now())),
+        );
     }
     keyed.release()?;
     ui::status!("Finished; transmitter released.");
@@ -71,9 +80,17 @@ pub fn ptt(config: &Config, consent: Option<TransmitConsent>, seconds: f64) -> a
 pub fn play(config: &Config, consent: Option<TransmitConsent>, wav: &Path) -> anyhow::Result<()> {
     let budget = config.radio.speech_budget();
     let clip = Clip::read_wav(wav, budget).with_context(|| {
-        format!("the WAV must fit in {:.1}s (max_tx_seconds minus settle_seconds)", budget.as_secs_f64())
+        format!(
+            "the WAV must fit in {:.1}s (max_tx_seconds minus settle_seconds)",
+            budget.as_secs_f64()
+        )
     })?;
-    ui::status!("WAV: {} Hz mono, {:.2}s, gain {}", clip.rate(), clip.seconds(), config.audio.gain);
+    ui::status!(
+        "WAV: {} Hz mono, {:.2}s, gain {}",
+        clip.rate(),
+        clip.seconds(),
+        config.audio.gain
+    );
     let radio = radio(config, consent)?;
     radio.transmit(&clip)?;
     ui::status!("Finished; transmitter released.");

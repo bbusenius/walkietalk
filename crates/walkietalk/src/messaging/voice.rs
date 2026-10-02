@@ -24,14 +24,26 @@ fn env() -> std::collections::HashMap<String, String> {
 pub async fn decode(path: &Path, rate: u32, max: Duration, fit: Fit) -> anyhow::Result<Clip> {
     let limit = (max.as_secs_f64() * rate as f64) as usize;
     anyhow::ensure!(limit > 0, "no room for the voice message");
-    let dir = tempfile::Builder::new().prefix("walkietalk-voice-").tempdir()?;
+    let dir = tempfile::Builder::new()
+        .prefix("walkietalk-voice-")
+        .tempdir()?;
     let out = dir.path().join("voice.wav");
     let ffmpeg = exec::find("ffmpeg").context("ffmpeg is required for voice messages")?;
     let output = Job::new(ffmpeg, "ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-i"])
         .arg(path.as_os_str())
-        .args(["-af".to_string(), format!("aresample={rate},atrim=end_sample={}", limit + 1)])
-        .args(["-ac".to_string(), "1".into(), "-ar".into(), rate.to_string(), "-c:a".into(), "pcm_s16le".into()])
+        .args([
+            "-af".to_string(),
+            format!("aresample={rate},atrim=end_sample={}", limit + 1),
+        ])
+        .args([
+            "-ac".to_string(),
+            "1".into(),
+            "-ar".into(),
+            rate.to_string(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+        ])
         .arg(out.as_os_str())
         .env(env())
         .cwd(dir.path())
@@ -42,9 +54,15 @@ pub async fn decode(path: &Path, rate: u32, max: Duration, fit: Fit) -> anyhow::
     if !output.success() {
         bail!("cannot decode the voice message");
     }
-    let clip = Clip::read_wav(&out, Duration::from_secs_f64((limit + 1) as f64 / rate as f64))?;
+    let clip = Clip::read_wav(
+        &out,
+        Duration::from_secs_f64((limit + 1) as f64 / rate as f64),
+    )?;
     if clip.len() > limit && fit == Fit::Strict {
-        bail!(TooLong { actual: clip.duration(), limit: max });
+        bail!(TooLong {
+            actual: clip.duration(),
+            limit: max
+        });
     }
     Ok(clip.fit(max, Fit::Crop)?)
 }
@@ -58,7 +76,16 @@ pub async fn encode(clip: &Clip, dir: &Path) -> anyhow::Result<std::path::PathBu
     let output = Job::new(ffmpeg, "ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-i"])
         .arg(source.as_os_str())
-        .args(["-ac", "1", "-c:a", "libopus", "-b:a", "32k", "-application", "voip"])
+        .args([
+            "-ac",
+            "1",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "32k",
+            "-application",
+            "voip",
+        ])
         .arg(out.as_os_str())
         .env(env())
         .cwd(dir)
@@ -70,6 +97,9 @@ pub async fn encode(clip: &Clip, dir: &Path) -> anyhow::Result<std::path::PathBu
     if !output.success() || size == 0 {
         bail!("cannot encode the voice message (ffmpeg needs the libopus encoder)");
     }
-    anyhow::ensure!(size <= MAX_UPLOAD_BYTES, "the voice message is larger than 1 MiB");
+    anyhow::ensure!(
+        size <= MAX_UPLOAD_BYTES,
+        "the voice message is larger than 1 MiB"
+    );
     Ok(out)
 }

@@ -39,11 +39,22 @@ impl SerialLine {
         let mut port = serialport::new(name, 9600)
             .timeout(Duration::from_millis(500))
             .open_native()
-            .map_err(|err| anyhow::anyhow!("cannot open PTT port {name}: {err}; check the path and your permissions"))?;
-        port.set_exclusive(true)
-            .map_err(|err| anyhow::anyhow!("PTT port {name} is in use by another program: {err}"))?;
-        let mut serial = SerialLine { port, line, keyed: false };
-        serial.release().context("PTT lines could not be set low after opening")?;
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "cannot open PTT port {name}: {err}; check the path and your permissions"
+                )
+            })?;
+        port.set_exclusive(true).map_err(|err| {
+            anyhow::anyhow!("PTT port {name} is in use by another program: {err}")
+        })?;
+        let mut serial = SerialLine {
+            port,
+            line,
+            keyed: false,
+        };
+        serial
+            .release()
+            .context("PTT lines could not be set low after opening")?;
         Ok(serial)
     }
 
@@ -52,7 +63,10 @@ impl SerialLine {
         // SAFETY: TIOCMGET writes one c_int through the pointer, which is valid.
         let rc = unsafe { libc::ioctl(self.port.as_raw_fd(), libc::TIOCMGET, &mut bits) };
         if rc != 0 {
-            bail!("cannot read modem lines: {}", std::io::Error::last_os_error());
+            bail!(
+                "cannot read modem lines: {}",
+                std::io::Error::last_os_error()
+            );
         }
         Ok(bits)
     }
@@ -121,8 +135,13 @@ impl PttLine for DryLine {
 }
 
 enum Command {
-    Key { deadline: Instant, reply: mpsc::Sender<anyhow::Result<()>> },
-    Release { reply: mpsc::Sender<anyhow::Result<bool>> },
+    Key {
+        deadline: Instant,
+        reply: mpsc::Sender<anyhow::Result<()>>,
+    },
+    Release {
+        reply: mpsc::Sender<anyhow::Result<bool>>,
+    },
     /// Release now and never key again.
     Stop,
 }
@@ -210,11 +229,13 @@ fn supervise(mut line: Box<dyn PttLine>, commands: mpsc::Receiver<Command>) {
     let mut fault: Option<String> = None;
     loop {
         let command = match keyed_until {
-            Some(deadline) => match commands.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok(c) => Some(c),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => Some(Command::Stop),
-            },
+            Some(deadline) => {
+                match commands.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(c) => Some(c),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => Some(Command::Stop),
+                }
+            }
             None => match commands.recv() {
                 Ok(c) => Some(c),
                 Err(_) => Some(Command::Stop),
@@ -227,7 +248,9 @@ fn supervise(mut line: Box<dyn PttLine>, commands: mpsc::Receiver<Command>) {
                 capped = true;
                 if let Err(err) = line.release() {
                     fault = Some(format!("release at the transmit cap failed: {err:#}"));
-                    ui::error!("PTT release failed at the transmit cap: {err:#}. Turn the radio off.");
+                    ui::error!(
+                        "PTT release failed at the transmit cap: {err:#}. Turn the radio off."
+                    );
                 }
             }
             Some(Command::Key { deadline, reply }) => {
@@ -288,7 +311,12 @@ pub mod fake {
         }
 
         pub fn changes(&self) -> Vec<bool> {
-            self.events.lock().unwrap().iter().map(|(k, _)| *k).collect()
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, _)| *k)
+                .collect()
         }
     }
 
@@ -341,7 +369,10 @@ mod tests {
         assert!(ptt.key(soon(1000)).is_err());
         assert!(!line.keyed());
         *line.fail_key.lock().unwrap() = false;
-        assert!(ptt.key(soon(1000)).is_err(), "a faulted line never keys again");
+        assert!(
+            ptt.key(soon(1000)).is_err(),
+            "a faulted line never keys again"
+        );
     }
 
     #[test]

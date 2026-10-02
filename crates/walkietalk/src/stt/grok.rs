@@ -27,16 +27,37 @@ pub struct GrokStt {
 }
 
 impl GrokStt {
-    pub fn new(auth: Auth, timeout: Duration, max_response: usize, keyterms: Vec<String>) -> GrokStt {
-        GrokStt::with_base(auth, crate::xai::API_BASE.into(), timeout, max_response, keyterms)
+    pub fn new(
+        auth: Auth,
+        timeout: Duration,
+        max_response: usize,
+        keyterms: Vec<String>,
+    ) -> GrokStt {
+        GrokStt::with_base(
+            auth,
+            crate::xai::API_BASE.into(),
+            timeout,
+            max_response,
+            keyterms,
+        )
     }
 
-    pub fn with_base(auth: Auth, base: String, timeout: Duration, max_response: usize, keyterms: Vec<String>) -> GrokStt {
+    pub fn with_base(
+        auth: Auth,
+        base: String,
+        timeout: Duration,
+        max_response: usize,
+        keyterms: Vec<String>,
+    ) -> GrokStt {
         let mut seen = std::collections::HashSet::new();
         let keyterms = keyterms
             .into_iter()
             .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-            .filter(|t| !t.is_empty() && t.chars().count() <= MAX_KEYTERM_CHARS && seen.insert(t.to_lowercase()))
+            .filter(|t| {
+                !t.is_empty()
+                    && t.chars().count() <= MAX_KEYTERM_CHARS
+                    && seen.insert(t.to_lowercase())
+            })
             .take(MAX_KEYTERMS)
             .collect();
         GrokStt {
@@ -57,7 +78,9 @@ impl GrokStt {
         for term in &self.keyterms {
             form = form.text("keyterm", term.clone());
         }
-        let file = Part::bytes(wav.to_vec()).file_name("utterance.wav").mime_str("audio/wav")?;
+        let file = Part::bytes(wav.to_vec())
+            .file_name("utterance.wav")
+            .mime_str("audio/wav")?;
         form = form.part("file", file);
         let response = self
             .client
@@ -76,20 +99,27 @@ impl GrokStt {
         let wav = audio.to_wav_bytes();
         let token = self.auth.token(&self.client).await?;
         let (mut status, mut body) = self.post(&wav, &token).await?;
-        if status == StatusCode::UNAUTHORIZED {
-            if let Some(token) = self.auth.retry_token(&self.client).await {
-                (status, body) = self.post(&wav, &token?).await?;
-            }
+        if status == StatusCode::UNAUTHORIZED
+            && let Some(token) = self.auth.retry_token(&self.client).await
+        {
+            (status, body) = self.post(&wav, &token?).await?;
         }
         match status {
             s if s.is_success() => {}
             s @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
-                bail!("Grok speech-to-text refused access (HTTP {}); {}", s.as_u16(), self.auth.remedy())
+                bail!(
+                    "Grok speech-to-text refused access (HTTP {}); {}",
+                    s.as_u16(),
+                    self.auth.remedy()
+                )
             }
-            s => bail!("Grok speech-to-text failed (HTTP {}); details withheld", s.as_u16()),
+            s => bail!(
+                "Grok speech-to-text failed (HTTP {}); details withheld",
+                s.as_u16()
+            ),
         }
-        let payload: serde_json::Value =
-            serde_json::from_slice(&body).map_err(|_| anyhow::anyhow!("Grok speech-to-text returned malformed JSON"))?;
+        let payload: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|_| anyhow::anyhow!("Grok speech-to-text returned malformed JSON"))?;
         match payload.get("text").and_then(|t| t.as_str()) {
             Some(text) => Ok(text.trim().to_string()),
             None => bail!("Grok speech-to-text returned no transcript"),
@@ -152,12 +182,18 @@ mod tests {
             post(move |headers: HeaderMap, mut form: Multipart| {
                 let record = record.clone();
                 async move {
-                    record.lock().unwrap().push(headers["authorization"].to_str().unwrap().to_string());
+                    record
+                        .lock()
+                        .unwrap()
+                        .push(headers["authorization"].to_str().unwrap().to_string());
                     while let Some(field) = form.next_field().await.unwrap() {
                         let name = field.name().unwrap().to_string();
                         let data = field.bytes().await.unwrap();
                         if name == "keyterm" {
-                            record.lock().unwrap().push(String::from_utf8(data.to_vec()).unwrap());
+                            record
+                                .lock()
+                                .unwrap()
+                                .push(String::from_utf8(data.to_vec()).unwrap());
                         }
                     }
                     Json(serde_json::json!({"text": " Charlotte, hello "}))
@@ -165,7 +201,17 @@ mod tests {
             }),
         );
         let base = serve(app).await;
-        let stt = GrokStt::with_base(key_auth(), base, Duration::from_secs(5), 1 << 20, vec!["Charlotte".into(), "charlotte".into(), "go to  sleep".into()]);
+        let stt = GrokStt::with_base(
+            key_auth(),
+            base,
+            Duration::from_secs(5),
+            1 << 20,
+            vec![
+                "Charlotte".into(),
+                "charlotte".into(),
+                "go to  sleep".into(),
+            ],
+        );
         assert_eq!(stt.transcribe(&clip()).await.unwrap(), "Charlotte, hello");
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0], "Bearer test-key");
@@ -198,10 +244,16 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_key_is_not_retried_and_hides_details() {
-        let app = Router::new().route("/v1/stt", post(|| async { (axum::http::StatusCode::UNAUTHORIZED, "secret diagnostics") }));
+        let app = Router::new().route(
+            "/v1/stt",
+            post(|| async { (axum::http::StatusCode::UNAUTHORIZED, "secret diagnostics") }),
+        );
         let base = serve(app).await;
         let stt = GrokStt::with_base(key_auth(), base, Duration::from_secs(5), 1000, vec![]);
         let err = stt.transcribe(&clip()).await.unwrap_err().to_string();
-        assert!(err.contains("401") && !err.contains("secret diagnostics"), "{err}");
+        assert!(
+            err.contains("401") && !err.contains("secret diagnostics"),
+            "{err}"
+        );
     }
 }

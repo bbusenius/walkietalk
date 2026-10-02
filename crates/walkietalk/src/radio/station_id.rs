@@ -18,7 +18,10 @@ pub struct StationId {
 
 impl StationId {
     pub fn new(config: StationIdConfig) -> StationId {
-        StationId { config, last_sent: None }
+        StationId {
+            config,
+            last_sent: None,
+        }
     }
 
     pub fn callsign(&self) -> &str {
@@ -96,7 +99,10 @@ mod tests {
         id.mark_sent(Instant::now());
         assert!(id.due(Instant::now()));
         assert!(!StationId::new(config(StationIdMode::Off)).due(Instant::now()));
-        let empty = StationIdConfig { callsign: String::new(), ..config(StationIdMode::EndOfReply) };
+        let empty = StationIdConfig {
+            callsign: String::new(),
+            ..config(StationIdMode::EndOfReply)
+        };
         assert!(!StationId::new(empty).due(Instant::now()));
     }
 
@@ -111,7 +117,10 @@ mod tests {
     fn id_gets_its_own_burst_when_it_does_not_fit() {
         let bursts = plan(secs(9.0), secs(2.0), Duration::from_secs(10)).unwrap();
         assert_eq!(bursts.len(), 2);
-        assert!((bursts[1].seconds() - 2.0).abs() < 0.001, "the ID is never cropped");
+        assert!(
+            (bursts[1].seconds() - 2.0).abs() < 0.001,
+            "the ID is never cropped"
+        );
     }
 
     #[test]

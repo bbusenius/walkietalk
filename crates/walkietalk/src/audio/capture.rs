@@ -76,8 +76,15 @@ impl Capture {
         match self.frames.recv().await {
             Some(frame) if !frame.is_empty() => Ok(frame),
             _ => {
-                let reason = self.failure.lock().unwrap_or_else(|e| e.into_inner()).take();
-                bail!("capture stopped: {}", reason.unwrap_or_else(|| "device closed".into()))
+                let reason = self
+                    .failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                bail!(
+                    "capture stopped: {}",
+                    reason.unwrap_or_else(|| "device closed".into())
+                )
             }
         }
     }
