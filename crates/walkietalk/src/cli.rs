@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::credentials::{self, Credentials};
 use crate::commands::{hardware, speech};
 use crate::radio::TransmitConsent;
-use crate::{paths, setup, signals, ui};
+use crate::{paths, setup, signals, talk, ui};
 
 #[derive(Parser)]
 #[command(
@@ -87,6 +87,20 @@ enum Command {
         /// Seconds to wait for speech with --capture
         #[arg(long, default_value_t = 60.0, value_name = "N")]
         timeout: f64,
+    },
+    /// Listen, wake-gate, and answer (speaks on the radio only with --transmit)
+    Talk {
+        #[command(flatten)]
+        input: Input,
+        /// Speak replies on the radio (requires --config)
+        #[arg(long)]
+        transmit: bool,
+        /// Handle one utterance, then exit
+        #[arg(long)]
+        once: bool,
+        /// With --capture --once: seconds to wait for speech
+        #[arg(long, value_name = "N")]
+        timeout: Option<f64>,
     },
     /// Play a WAV over the radio (simulated unless --transmit)
     Play {
@@ -238,6 +252,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let (source, config) = global.load_config()?;
             let creds = global.load_credentials(&source)?;
             speech::listen(&config, &creds, input.wav, timeout).await
+        }
+        Command::Talk { input, transmit, once, timeout } => {
+            let (source, config) = global.load_config()?;
+            let creds = global.load_credentials(&source)?;
+            let consent = TransmitConsent::grant(transmit, &source)?;
+            let options = talk::Options { wav: input.wav, consent, once, timeout };
+            talk::run(config, creds, options).await
         }
         Command::Play { wav, transmit } => {
             let (source, config) = global.load_config()?;
