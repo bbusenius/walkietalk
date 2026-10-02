@@ -59,7 +59,7 @@ listening continues. A failed or unspoken reply is not kept as context.
 | --- | --- |
 | First word clipped | Raise `[radio] settle_seconds` a little. |
 | Replies quiet | Raise `[audio] gain` (above 1 can clip) or set `[tts] peak_normalize = true`. |
-| Replies cut off at the end | They exceed `max_tx_seconds - settle_seconds`; ask for shorter answers or raise `max_tx_seconds`. |
+| Replies cut off at the end | They exceed the speech budget (`max_tx_seconds` minus `settle_seconds` minus 0.35 s); ask for shorter answers or raise `max_tx_seconds`. |
 | The bridge hears its own reply | Raise `[radio] post_tx_mute_seconds`. |
 | "PTT fault" | A key or release failed. Turn the radio off, check the cable and port, then restart. |
 | Station ID error stops `talk` | A due ID could not be prepared or sent. For Morse, use only letters, digits, and spaces. |

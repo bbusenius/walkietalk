@@ -58,10 +58,11 @@ are refused: pick the radio interface itself.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `max_tx_seconds` | `10` | Hard limit on one transmission, settle included |
-| `settle_seconds` | `0.2` | Delay between keying and audio, so the first word is not clipped (up to 2, less than the limit) |
+| `settle_seconds` | `0.2` | Delay between keying and audio, so the first word is not clipped (up to 2; `max_tx_seconds` must be at least 1 s longer) |
 | `post_tx_mute_seconds` | `2` | Listening pause after the transmitter is released (0 to 30) |
 
-Speech must fit in `max_tx_seconds - settle_seconds`. Longer agent replies are
+Speech must fit the speech budget: `max_tx_seconds - settle_seconds`, less
+0.35 s kept free for the audio device to drain. Longer agent replies are
 cropped at that point; station IDs are never cropped.
 
 ### `[radio.station_id]`
