@@ -116,6 +116,23 @@ enum Command {
         /// With --capture --once: seconds to wait for speech
         #[arg(long, value_name = "N")]
         timeout: Option<f64>,
+        /// Show the operator panel (operator mode only)
+        #[arg(long)]
+        panel: bool,
+    },
+    /// Control a running operator-mode talk from another terminal
+    Operator {
+        #[arg(value_enum, default_value = "status")]
+        action: crate::operator::Action,
+        /// Act on the oldest approved incoming message instead of the review head
+        #[arg(long)]
+        approved: bool,
+        /// New words for `edit` (otherwise an editor opens)
+        #[arg(long, value_name = "T")]
+        text: Option<String>,
+        /// Seconds to wait for the command to finish
+        #[arg(long, default_value_t = 120.0, value_name = "N")]
+        timeout: f64,
     },
     /// Play a WAV over the radio (simulated unless --transmit)
     Play {
@@ -279,19 +296,48 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let creds = global.load_credentials(&source)?;
             speech::listen(&config, &creds, input.wav, timeout).await
         }
-        Command::Talk { input, transmit, once, timeout } => {
+        Command::Talk { input, transmit, once, timeout, panel } => {
             let (source, config) = global.load_config()?;
             let creds = global.load_credentials(&source)?;
             let consent = TransmitConsent::grant(transmit, &source)?;
-            let options = talk::Options { wav: input.wav, consent, once, timeout };
+            let options = talk::Options { wav: input.wav, consent, once, timeout, config_path: source.path().to_path_buf(), panel };
             talk::run(config, creds, options).await
         }
+        Command::Operator { action, approved, text, timeout } => operator(global, action, approved, text, timeout).await,
         Command::Play { wav, transmit } => {
             let (source, config) = global.load_config()?;
             let consent = TransmitConsent::grant(transmit, &source)?;
             blocking(move || hardware::play(&config, consent, &wav)).await
         }
     }
+}
+
+async fn operator(global: &Global, action: crate::operator::Action, approved: bool, text: Option<String>, timeout: f64) -> anyhow::Result<()> {
+    use crate::operator::{Action, client};
+    anyhow::ensure!(timeout > 0.0 && timeout <= 600.0, "--timeout must be greater than 0 and at most 600");
+    anyhow::ensure!(text.is_none() || action == Action::Edit, "--text applies only to edit");
+    anyhow::ensure!(!(approved && action == Action::Edit), "approved messages can't be edited; deny to drop it");
+    let config = global.config.as_deref().map(paths::expand_home);
+    let config = config.as_deref();
+    let timeout = std::time::Duration::from_secs_f64(timeout);
+    let text = match (action, text) {
+        (Action::Edit, None) => {
+            let item = client::current_text(config).await?;
+            let current = item.content.clone();
+            match tokio::task::spawn_blocking(move || client::prompt_edit(&current)).await?? {
+                Some(text) => Some(text),
+                None => {
+                    ui::status!("Edit cancelled.");
+                    return Ok(());
+                }
+            }
+        }
+        (_, text) => text,
+    };
+    if !client::request(config, action, approved, text, timeout).await? {
+        bail!("the operator command did not complete; see above");
+    }
+    Ok(())
 }
 
 /// Run blocking work off the async threads.

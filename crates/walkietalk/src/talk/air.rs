@@ -19,6 +19,10 @@ pub enum AirError {
     /// The reply never went out; listening can continue.
     #[error("{0:#}")]
     NotSent(anyhow::Error),
+    /// The transmitter was keyed but the audio failed; it has been released
+    /// and part of the reply may have been heard.
+    #[error("{0:#}")]
+    Playback(anyhow::Error),
     /// Stop the program: the hardware or a due station ID failed.
     #[error("{message}")]
     Fatal {
@@ -134,7 +138,7 @@ impl Air {
                     return Err(AirError::fatal(format!("station ID failed: {err}; stopping"), true));
                 }
                 Err(TxError::NotKeyed(err)) => return Err(AirError::NotSent(err)),
-                Err(err @ TxError::Playback(_)) => return Err(AirError::fatal(err.to_string(), false)),
+                Err(TxError::Playback(err)) => return Err(AirError::Playback(err)),
             }
         }
         if with_id {
@@ -169,7 +173,7 @@ impl Air {
                 ui::error!("{what} was not transmitted: {err:#}");
                 Ok(false)
             }
-            Err(fatal) => Err(fatal),
+            Err(other) => Err(other),
         }
     }
 }
