@@ -175,7 +175,16 @@ impl Talk {
             let result = realtime::speak(session.settings(), text, Some(air.radio().clone())).await;
             return match result {
                 Ok(reply) if reply.audible && !reply.truncated => {
-                    air.mute().await;
+                    // As with the text path, a confirmation carries an ID only
+                    // when an interval ID is due.
+                    let interval =
+                        air.station_id().config().mode == crate::config::StationIdMode::Interval;
+                    if interval {
+                        self.realtime_station_id().await?;
+                    }
+                    if let Some(air) = &self.air {
+                        air.mute().await;
+                    }
                     Ok(true)
                 }
                 Ok(_) => {

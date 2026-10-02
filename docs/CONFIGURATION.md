@@ -81,6 +81,8 @@ If a due ID cannot be prepared or transmitted, `talk` stops with an error
 (after recording a reply that already went out). Morse is generated locally
 and accepts letters, digits, and spaces; a space separates a unit number.
 With the realtime voice, the ID always uses its own transmission.
+Replies and contact messages carry the ID when it is due; spoken confirmations
+(wake, sleep, shutdown, empty queue) carry it only when an `interval` ID is due.
 
 ## `[vad]` (voice detection)
 
