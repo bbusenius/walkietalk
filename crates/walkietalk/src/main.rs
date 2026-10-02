@@ -11,6 +11,8 @@ mod exec;
 mod gate;
 mod grok_login;
 mod http;
+mod messaging;
+mod operator;
 mod paths;
 mod phrases;
 mod radio;
