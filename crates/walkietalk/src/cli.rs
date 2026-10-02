@@ -234,9 +234,10 @@ pub fn main() -> ExitCode {
         if talk {
             return run(cli).await;
         }
+        let stop = signals::token();
         tokio::select! {
             result = run(cli) => result,
-            _ = signals::token().cancelled() => Err(anyhow::anyhow!("stopped")),
+            _ = stop.cancelled() => Err(anyhow::anyhow!("stopped")),
         }
     });
     // A worker stuck in a driver call must not keep the process alive.
