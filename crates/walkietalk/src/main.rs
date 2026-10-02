@@ -13,6 +13,7 @@ mod grok_login;
 mod http;
 mod messaging;
 mod operator;
+mod panel;
 mod paths;
 mod phrases;
 mod radio;

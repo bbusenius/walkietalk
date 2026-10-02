@@ -58,13 +58,13 @@ pub fn same_contact(configured: &str, candidate: &str) -> bool {
 
 /// The running messaging services.
 pub struct Bridge {
-    inbox: mpsc::Receiver<Inbound>,
     whatsapp: Option<whatsapp::WhatsApp>,
     signal: Option<signal::Signal>,
 }
 
 impl Bridge {
-    pub async fn start(config: &Config) -> anyhow::Result<Bridge> {
+    /// Start the configured services; incoming messages arrive on the receiver.
+    pub async fn start(config: &Config) -> anyhow::Result<(Bridge, mpsc::Receiver<Inbound>)> {
         let (tx, inbox) = mpsc::channel(256);
         let whatsapp = match &config.messaging.whatsapp {
             Some(contact) => Some(whatsapp::WhatsApp::start(contact, tx.clone()).await?),
@@ -82,11 +82,7 @@ impl Bridge {
             },
             None => None,
         };
-        Ok(Bridge { inbox, whatsapp, signal })
-    }
-
-    pub async fn recv(&mut self) -> Option<Inbound> {
-        self.inbox.recv().await
+        Ok((Bridge { whatsapp, signal }, inbox))
     }
 
     pub async fn send_text(&self, service: Service, text: &str) -> anyhow::Result<()> {
@@ -160,6 +156,10 @@ impl Queues {
         self.queues.get(&service).and_then(VecDeque::front)
     }
 
+    pub fn get(&self, service: Service, id: &str) -> Option<&Inbound> {
+        self.queues.get(&service)?.iter().find(|m| m.id == id)
+    }
+
     pub fn len(&self, service: Service) -> usize {
         self.queues.get(&service).map_or(0, VecDeque::len)
     }
@@ -190,6 +190,8 @@ pub struct Progress {
 /// One prepared transmission of a text message.
 pub struct Piece {
     pub audio: Clip,
+    /// The words this piece speaks (after the sender introduction).
+    pub said: String,
     /// Text left for later transmissions.
     pub rest: String,
 }
@@ -213,7 +215,8 @@ impl Progress {
                     let rate = line.chars().count() as f64 / audio.seconds().max(0.1);
                     let estimate = (rate * budget.as_secs_f64() * 0.9) as usize;
                     self.chunk_chars = Some(estimate.saturating_sub(prefix.len() + 6).clamp(1, room));
-                    return Ok(Piece { audio, rest });
+                    let said = if rest.is_empty() { text::with_over(&body) } else { body };
+                    return Ok(Piece { audio, said, rest });
                 }
                 Err(err) if err.downcast_ref::<TooLong>().is_some() && body.chars().count() > 1 => {
                     size = (body.chars().count() / 2).max(1);

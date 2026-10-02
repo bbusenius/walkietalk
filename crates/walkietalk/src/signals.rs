@@ -55,6 +55,15 @@ pub fn install() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Ask the program to stop, as Ctrl+C would (used by the panel, whose raw
+/// terminal mode turns Ctrl+C into a key press).
+pub fn request_stop() {
+    release_all();
+    if !state().stopping.swap(true, Ordering::SeqCst) {
+        state().token.cancel();
+    }
+}
+
 /// Release this transmitter on any stop signal or panic.
 pub fn protect(ptt: Ptt) {
     state().ptts.lock().unwrap_or_else(|e| e.into_inner()).push(ptt);

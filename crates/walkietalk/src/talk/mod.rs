@@ -5,8 +5,12 @@
 //! user consented to transmit. Capture is closed while processing and
 //! transmitting. Recoverable failures are reported and listening resumes.
 
+mod agent;
 mod air;
+mod contacts;
+mod operator;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,14 +21,15 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Conversation;
 use crate::audio::capture::Capture;
 use crate::audio::listener::{Heard, Listener, Utterance};
-use crate::config::Config;
+use crate::config::{Config, Service};
 use crate::credentials::Credentials;
 use crate::gate::{Control, Decision, Destination, Gate, Shutdown};
+use crate::messaging::{Bridge, Progress, Queues};
+use crate::operator::Command;
 use crate::radio::{Radio, TransmitConsent};
 use crate::stt::Transcriber;
-use crate::realtime;
-use crate::{backends, signals, ui};
-use air::{Air, AirError};
+use crate::{backends, realtime, signals, ui};
+use air::Air;
 
 pub struct Options {
     pub wav: Option<PathBuf>,
@@ -32,6 +37,9 @@ pub struct Options {
     pub once: bool,
     /// Wait-for-speech limit for a single capture.
     pub timeout: Option<f64>,
+    /// The config file, which names the operator control socket.
+    pub config_path: PathBuf,
+    pub panel: bool,
 }
 
 enum Input {
@@ -48,29 +56,66 @@ enum Brain {
     Realtime(Box<realtime::Session>),
 }
 
+/// WhatsApp and Signal state.
+struct Messaging {
+    bridge: Bridge,
+    inbox: tokio::sync::mpsc::Receiver<crate::messaging::Inbound>,
+    queues: Queues,
+    progress: HashMap<(Service, String), Progress>,
+    /// No message is delivered before this moment.
+    next_at: Instant,
+    /// Recognizer for incoming voice notes.
+    notes: Option<Arc<dyn Transcriber>>,
+    operator: Option<operator::Operator>,
+}
+
 struct Talk {
     config: Config,
+    creds: Credentials,
     air: Option<Air>,
     brain: Brain,
     gate: Gate,
     shutdown: Shutdown,
+    messaging: Option<Messaging>,
     input: Input,
     once: bool,
     wait: Option<Duration>,
     stop: CancellationToken,
 }
 
-/// What to do after handling an utterance.
+/// What interrupted listening.
+enum Event {
+    Heard(Utterance),
+    /// A queued message can be delivered now.
+    Deliver(Service),
+    Operator(Command),
+}
+
+/// What to do after handling an event.
 #[derive(PartialEq, Eq)]
 enum Next {
     Listen,
     Exit,
 }
 
+/// Capture ended early so the loop can reconnect.
+#[derive(Debug, thiserror::Error)]
+#[error("listening restarted")]
+struct Retry;
+
 pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow::Result<()> {
     let once = options.once || options.wav.is_some();
     if options.timeout.is_some() && !(options.once && options.wav.is_none()) {
         bail!("--timeout applies only to --capture --once; continuous listening has no idle limit");
+    }
+    if config.messaging.operator_mode && once {
+        bail!("operator mode needs continuous `talk --capture` (no WAV input or --once)");
+    }
+    if options.panel && !config.messaging.operator_mode {
+        bail!("--panel needs messaging.operator_mode = true");
+    }
+    if options.panel {
+        crate::panel::check_terminal()?;
     }
     let wait = match (once, options.wav.is_some()) {
         (true, false) => {
@@ -95,6 +140,13 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         Brain::Text { stt, conversation: Conversation::new(agent, &config, transmit) }
     };
 
+    // Reserve the config before starting anything else in operator mode.
+    let reserved = if config.messaging.operator_mode {
+        Some(crate::operator::server::reserve(&options.config_path)?)
+    } else {
+        None
+    };
+
     // Everything that can fail is checked before the serial port opens.
     let air = match options.consent {
         Some(consent) => {
@@ -102,7 +154,7 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
             // needed only for messaging.
             let voice: Option<Arc<dyn crate::tts::Voice>> = if !realtime || config.messaging_enabled() {
                 let voice: Arc<dyn crate::tts::Voice> = Arc::from(backends::voice(&config, &creds)?);
-                voice.prepare().await.context("voice is not ready; nothing was transmitted")?;
+                voice.prepare().await.context("the voice is not ready; nothing was transmitted")?;
                 ui::status!("Voice: {}", voice.label());
                 Some(voice)
             } else {
@@ -133,12 +185,52 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         ui::status!("Remote shutdown enabled: the phrase and code, together or in two transmissions.");
     }
 
+    let messaging = if config.messaging_enabled() {
+        let notes: Option<Arc<dyn Transcriber>> = match &brain {
+            Brain::Text { stt, .. } => Some(stt.clone()),
+            Brain::Realtime(_) if config.messaging.enabled().any(|(_, c)| c.transcribe_voice) => {
+                let stt: Arc<dyn Transcriber> = Arc::from(backends::transcriber(&config, &creds)?);
+                stt.prepare().await?;
+                ui::status!("Voice-note transcription: {}", stt.label());
+                Some(stt)
+            }
+            Brain::Realtime(_) => None,
+        };
+        let (bridge, inbox) = Bridge::start(&config).await?;
+        for (service, contact) in config.messaging.enabled() {
+            ui::status!("Messaging: {service} with \"{}\" (wake \"{}\").", contact.label(), contact.wake);
+        }
+        let operator = match reserved {
+            Some(reserved) => match operator::Operator::start(&config, reserved, options.panel) {
+                Ok(operator) => Some(operator),
+                Err(err) => {
+                    bridge.stop().await;
+                    return Err(err);
+                }
+            },
+            None => None,
+        };
+        Some(Messaging {
+            bridge,
+            inbox,
+            queues: Queues::default(),
+            progress: HashMap::new(),
+            next_at: Instant::now(),
+            notes,
+            operator,
+        })
+    } else {
+        None
+    };
+
     let mut talk = Talk {
         gate: Gate::new(&config),
         shutdown: Shutdown::new(&config),
         config,
+        creds,
         air,
         brain,
+        messaging,
         input: match options.wav {
             Some(path) => Input::Wav(Some(path)),
             None => Input::Capture,
@@ -147,34 +239,56 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         wait,
         stop: signals::token(),
     };
-    talk.run().await
+    let result = talk.run().await;
+    talk.close().await;
+    result
 }
 
 impl Talk {
-    async fn run(&mut self) -> anyhow::Result<()> {
-        let result = self.run_loop().await;
+    async fn close(&mut self) {
         if let Brain::Realtime(session) = &mut self.brain {
             session.reset().await;
         }
-        result
+        if let Some(messaging) = self.messaging.take() {
+            if let Some(op) = messaging.operator {
+                op.close();
+            }
+            messaging.bridge.stop().await;
+        }
     }
 
-    async fn run_loop(&mut self) -> anyhow::Result<()> {
+    async fn run(&mut self) -> anyhow::Result<()> {
         loop {
             if self.stop.is_cancelled() {
                 return Ok(());
+            }
+            self.refresh_operator()?;
+            if let Some(command) = self.pending_command() {
+                self.operator_command(command).await?;
+                continue;
             }
             if !self.ensure_realtime().await? {
                 continue;
             }
             ui::status!("{}", self.gate.status(Instant::now()));
-            let utterance = match self.next_utterance().await {
-                Ok(Some(utterance)) => utterance,
+            let event = match self.next_event().await {
+                Ok(Some(event)) => event,
                 Ok(None) => return Ok(()),
                 Err(err) if err.downcast_ref::<Retry>().is_some() => continue,
                 Err(err) => return Err(err),
             };
-            if self.handle(utterance).await? == Next::Exit || self.once {
+            let next = match event {
+                Event::Heard(utterance) => self.handle(utterance).await?,
+                Event::Deliver(service) => {
+                    self.deliver(service).await?;
+                    Next::Listen
+                }
+                Event::Operator(command) => {
+                    self.operator_command(command).await?;
+                    Next::Listen
+                }
+            };
+            if next == Next::Exit || self.once {
                 return Ok(());
             }
         }
@@ -183,11 +297,16 @@ impl Talk {
     /// Connect the realtime session before listening, retrying each second.
     /// Returns false when the caller should loop again.
     async fn ensure_realtime(&mut self) -> anyhow::Result<bool> {
-        let Brain::Realtime(session) = &mut self.brain else { return Ok(true) };
-        if session.connected() {
+        if !matches!(&self.brain, Brain::Realtime(s) if !s.connected()) {
             return Ok(true);
         }
+        // Contact messages do not depend on the voice service.
+        if let Some(service) = self.ready_service() {
+            self.deliver(service).await?;
+            return Ok(false);
+        }
         ui::meter!("Connecting the voice session...");
+        let Brain::Realtime(session) = &mut self.brain else { return Ok(true) };
         match session.connect().await {
             Ok(()) => Ok(true),
             Err(err) if realtime::is_auth_error(&err) || self.once => Err(err),
@@ -205,34 +324,46 @@ impl Talk {
         }
     }
 
-    /// The next utterance, or `None` when there is nothing more to hear.
-    async fn next_utterance(&mut self) -> anyhow::Result<Option<Utterance>> {
-        let utterance = match &mut self.input {
-            Input::Wav(path) => match path.take() {
-                Some(path) => Some(crate::commands::speech::utterance_from_wav(&self.config, &path)?),
-                None => None,
-            },
-            Input::Capture => self.capture().await?,
-        };
-        if let (Some(u), Brain::Realtime(session), Input::Wav(_)) = (&utterance, &mut self.brain, &self.input) {
-            // A file arrives all at once; stream it like live audio.
-            session.begin(u.audio.rate());
-            session.append(u.audio.samples()).await?;
+    async fn next_event(&mut self) -> anyhow::Result<Option<Event>> {
+        match &mut self.input {
+            Input::Wav(path) => {
+                let Some(path) = path.take() else { return Ok(None) };
+                let utterance = crate::commands::speech::utterance_from_wav(&self.config, &path)?;
+                if let Brain::Realtime(session) = &mut self.brain {
+                    // A file arrives all at once; stream it like live audio.
+                    session.begin(utterance.audio.rate());
+                    session.append(utterance.audio.samples()).await?;
+                }
+                Ok(Some(Event::Heard(utterance)))
+            }
+            Input::Capture => self.capture().await,
         }
-        Ok(utterance)
     }
 
-    async fn capture(&mut self) -> anyhow::Result<Option<Utterance>> {
+    async fn capture(&mut self) -> anyhow::Result<Option<Event>> {
         let mut capture = Capture::open(&self.config.audio.input)?;
         let mut listener = Listener::new(&self.config.vad, capture.rate(), true);
         if let Brain::Realtime(session) = &mut self.brain {
             session.begin(capture.rate());
         }
         let deadline = self.wait.map(|w| tokio::time::Instant::now() + w);
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
         loop {
-            tokio::select! {
-                frame = capture.next_frame() => {
+            let idle = !listener.speaking();
+            let (inbox, commands) = match self.messaging.as_mut() {
+                Some(m) => (Some(&mut m.inbox), m.operator.as_mut().map(|o| &mut o.commands)),
+                None => (None, None),
+            };
+            let result = tokio::select! {
+                frame = capture.next_frame() => Step::Frame(frame),
+                _ = self.stop.cancelled() => Step::Stop,
+                message = recv(inbox) => Step::Message(message),
+                command = recv(commands), if idle => Step::Command(command),
+                _ = tick.tick(), if idle => Step::Tick,
+                _ = sleep_until(deadline), if idle => Step::Timeout,
+            };
+            match result {
+                Step::Frame(frame) => {
                     let frame = frame.context("capture failed; check the audio interface")?;
                     if capture.take_overflow() {
                         ui::warning!("Capture overflow; some audio was lost.");
@@ -249,32 +380,38 @@ impl Talk {
                         if let Brain::Realtime(session) = &mut self.brain {
                             session.reset().await;
                         }
-                        return self.retry_capture();
+                        return Err(Retry.into());
                     }
                     if let Heard::Finished(utterance) = heard {
-                        return Ok(Some(utterance));
+                        return Ok(Some(Event::Heard(utterance)));
                     }
                 }
-                _ = self.stop.cancelled() => return Ok(None),
-                _ = tick.tick(), if !listener.speaking() => {
-                    self.housekeeping();
+                Step::Stop => return Ok(None),
+                Step::Message(Some(message)) => self.accept(message),
+                Step::Message(None) => bail!("the messaging services stopped"),
+                Step::Command(Some(command)) => {
+                    self.discard_realtime(false).await;
+                    return Ok(Some(Event::Operator(command)));
+                }
+                Step::Command(None) => bail!("the operator controls stopped unexpectedly"),
+                Step::Tick => {
+                    self.housekeeping()?;
+                    if let Some(service) = self.ready_service() {
+                        self.discard_realtime(false).await;
+                        return Ok(Some(Event::Deliver(service)));
+                    }
                     if matches!(&self.brain, Brain::Realtime(s) if !s.connected()) {
-                        // Reconnect before someone starts talking into a dead session.
-                        return self.retry_capture();
+                        // Reconnect before someone talks into a dead session.
+                        return Err(Retry.into());
                     }
                 }
-                _ = sleep_until(deadline), if !listener.speaking() => bail!(
+                Step::Timeout => bail!(
                     "no speech within the wait limit (peak RMS {:.3}, threshold {:.3})",
                     listener.peak(),
                     self.config.vad.threshold
                 ),
             }
         }
-    }
-
-    /// Leave capture so the loop reconnects and listens again.
-    fn retry_capture(&mut self) -> anyhow::Result<Option<Utterance>> {
-        Err(Retry.into())
     }
 
     /// Forward captured audio to the realtime session as it arrives.
@@ -288,7 +425,7 @@ impl Talk {
     }
 
     /// Timers that run while waiting for speech.
-    fn housekeeping(&mut self) {
+    fn housekeeping(&mut self) -> anyhow::Result<()> {
         let now = Instant::now();
         if self.shutdown.expire(now) {
             ui::warning!("Shutdown confirmation window expired; shutdown cancelled.");
@@ -297,6 +434,7 @@ impl Talk {
             ui::warning!("Follow-up window ended.");
             ui::status!("{}", self.gate.status(now));
         }
+        self.refresh_operator()
     }
 
     /// Text for an utterance, or `None` to skip it.
@@ -329,6 +467,9 @@ impl Talk {
     /// Remove a rejected or control utterance from the realtime conversation.
     async fn discard_realtime(&mut self, drop_connection: bool) {
         let Brain::Realtime(session) = &mut self.brain else { return };
+        if !session.connected() {
+            return;
+        }
         if let Err(err) = session.discard().await {
             ui::error!("Could not remove that audio from the voice session ({err:#}); starting a fresh session.");
             session.reset().await;
@@ -346,6 +487,7 @@ impl Talk {
             Control::None => {}
             control => {
                 self.discard_realtime(false).await;
+                self.cancel_dispatch();
                 return self.shutdown_control(control).await;
             }
         }
@@ -360,15 +502,13 @@ impl Talk {
         if !matches!(decision, Decision::Traffic { to: Destination::Agent, .. }) {
             self.discard_realtime(false).await;
         }
+        if let Decision::WakeOnly(to) | Decision::Traffic { to, .. } = &decision {
+            self.switched_to(*to);
+        }
         match decision {
             Decision::Empty => ui::ignored!("Ignored: no words recognized."),
             Decision::NeedsWake => ui::ignored!("Ignored: say \"{}\" first.", self.gate.wake_name()),
-            Decision::Sleep => {
-                self.shutdown.cancel();
-                ui::status!("Sleep heard; say \"{}\" to start again.", self.gate.wake_name());
-                let confirmation = self.config.sleep_confirmation().to_string();
-                self.say(&confirmation, "Sleep confirmation").await?;
-            }
+            Decision::Sleep => self.enter_sleep("Sleep heard", None).await?,
             Decision::WakeOnly(Destination::Agent) => {
                 ui::status!("Wake heard; listening for your request.");
                 let confirmation = self.config.wake.confirmation.clone();
@@ -383,8 +523,9 @@ impl Talk {
                     Brain::Realtime(_) => self.answer_realtime().await?,
                 }
             }
-            Decision::WakeOnly(Destination::Contact(service)) | Decision::Traffic { to: Destination::Contact(service), .. } => {
-                ui::warning!("Messaging with {service} is not available in this build.");
+            Decision::WakeOnly(Destination::Contact(service)) => self.contact_wake(service).await?,
+            Decision::Traffic { to: Destination::Contact(service), text: traffic, .. } => {
+                self.contact_traffic(service, &traffic, &text, &utterance).await?;
             }
         }
         Ok(Next::Listen)
@@ -416,166 +557,59 @@ impl Talk {
         }
     }
 
-    /// Ask the text agent and deliver its reply.
-    async fn answer(&mut self, text: &str) -> anyhow::Result<()> {
-        let Brain::Text { conversation, .. } = &mut self.brain else { unreachable!("text agent") };
-        ui::meter!("Asking the agent...");
-        let reply = match conversation.ask(text).await {
-            Ok(reply) => reply,
-            Err(err) if self.once => return Err(err.context("agent failed")),
-            Err(err) => {
-                ui::error!("Agent failed: {err:#}");
-                ui::status!("Still listening; say the wake phrase and try again.");
-                return Ok(());
-            }
-        };
-        let Some(air) = self.air.as_mut() else {
-            ui::reply!("Reply: {}", reply.text);
-            conversation.commit(reply);
-            self.gate.complete_turn(Instant::now());
-            return Ok(());
-        };
-        ui::meter!("Synthesizing the reply; transmitter off...");
-        let clip = match air.synthesize(&reply.text).await {
-            Ok(clip) => clip,
-            Err(err) if self.once => return Err(err.context("speech failed")),
-            Err(err) => {
-                ui::error!("Speech failed: {err:#}");
-                ui::status!("The reply was not spoken and is not kept as context.");
-                return Ok(());
-            }
-        };
-        ui::reply!("Reply: {}", reply.text);
-        match air.send(clip).await {
-            Ok(()) => {
-                conversation.commit(reply);
-                self.gate.complete_turn(Instant::now());
-                Ok(())
-            }
-            Err(AirError::NotSent(err)) if !self.once => {
-                ui::error!("The reply was not transmitted: {err:#}");
-                Ok(())
-            }
-            Err(AirError::NotSent(err)) => Err(err.context("the reply was not transmitted")),
-            Err(AirError::Fatal { message, reply_sent }) => {
-                if reply_sent {
-                    conversation.commit(reply);
-                }
-                bail!(message)
-            }
+    /// Close the conversation. `local` carries an operator command to answer.
+    async fn enter_sleep(&mut self, why: &str, local: Option<&Command>) -> anyhow::Result<()> {
+        self.gate.sleep();
+        if self.shutdown.armed(Instant::now()) {
+            self.shutdown.cancel();
+            log(local, "status", "Pending shutdown cancelled.");
         }
-    }
-
-    /// Ask the realtime voice to answer the committed audio.
-    async fn answer_realtime(&mut self) -> anyhow::Result<()> {
-        let Brain::Realtime(session) = &mut self.brain else { unreachable!("realtime") };
-        let radio = self.air.as_ref().map(|air| air.radio().clone());
-        ui::meter!("Voice turn; the transmitter keys only when speech arrives...");
-        let reply = match session.respond(radio).await {
-            Ok(reply) => reply,
-            Err(err) if realtime::is_ptt_fault(&err) || realtime::is_auth_error(&err) || self.once => return Err(err),
-            Err(err) => {
-                ui::error!("Voice agent failed: {err:#}");
-                ui::status!("Still listening; say the wake phrase and try again.");
-                return Ok(());
-            }
-        };
-        if !reply.heard.is_empty() {
-            ui::transcript!("Heard: {}", reply.heard);
+        if self.cancel_dispatch() {
+            log(local, "status", "Operator delivery paused; the rest of the message stays approved.");
         }
-        if !reply.audible {
-            if self.once {
-                bail!("the voice agent returned no audible reply");
-            }
-            ui::warning!("The voice agent returned no audible reply; the follow-up window stays closed.");
-            return Ok(());
-        }
-        ui::reply!("Reply: {}", if reply.said.is_empty() { "(audio only)" } else { &reply.said });
-        if reply.truncated {
-            ui::warning!("The transmit cap cut the reply short; the next turn starts a fresh conversation.");
-        }
-        if self.air.is_some() {
-            self.realtime_station_id().await?;
-            if let Some(air) = &self.air {
-                air.mute().await;
-            }
-        }
-        if !reply.truncated {
-            self.gate.complete_turn(Instant::now());
-        }
+        self.discard_realtime(false).await;
+        log(local, "status", &format!("{why}; say \"{}\" to start again.", self.gate.wake_name()));
+        let confirmation = self.config.sleep_confirmation().to_string();
+        self.say(&confirmation, "Sleep confirmation").await?;
+        self.refresh_operator()?;
         Ok(())
-    }
-
-    /// A due station ID after a realtime reply, in its own transmission.
-    async fn realtime_station_id(&mut self) -> anyhow::Result<()> {
-        let (Some(air), Brain::Realtime(session)) = (self.air.as_mut(), &self.brain) else { return Ok(()) };
-        if !air.station_id().due(Instant::now()) {
-            return Ok(());
-        }
-        ui::status!("Station ID follows in its own transmission.");
-        tokio::time::sleep(crate::radio::station_id::GAP).await;
-        let sent = match air.station_id().config().method {
-            crate::config::StationIdMethod::Morse => {
-                let clip = crate::audio::morse::morse(air.station_id().callsign())?;
-                air.transmit(clip).await.map_err(anyhow::Error::from)
-            }
-            crate::config::StationIdMethod::Voice => {
-                let callsign = air.station_id().callsign().to_string();
-                match realtime::speak(session.settings(), &callsign, Some(air.radio().clone())).await {
-                    Ok(reply) if reply.audible && !reply.truncated => Ok(()),
-                    Ok(_) => Err(anyhow::anyhow!("the station ID was not transmitted in full")),
-                    Err(err) => Err(err),
-                }
-            }
-        };
-        match sent {
-            Ok(()) => {
-                air.station_id_mut().mark_sent(Instant::now());
-                Ok(())
-            }
-            Err(err) => bail!("station ID failed: {err:#}; stopping"),
-        }
-    }
-
-    /// Speak a fixed phrase when transmitting; receive-only stays silent.
-    async fn say(&mut self, text: &str, what: &str) -> anyhow::Result<bool> {
-        if text.is_empty() {
-            return Ok(false);
-        }
-        let Some(air) = self.air.as_mut() else {
-            ui::meter!("{what} not spoken (receive only).");
-            return Ok(false);
-        };
-        if let Brain::Realtime(session) = &self.brain {
-            let result = realtime::speak(session.settings(), text, Some(air.radio().clone())).await;
-            return match result {
-                Ok(reply) if reply.audible && !reply.truncated => {
-                    air.mute().await;
-                    Ok(true)
-                }
-                Ok(_) => {
-                    ui::error!("{what} was not transmitted in full.");
-                    Ok(false)
-                }
-                Err(err) if realtime::is_ptt_fault(&err) => Err(err),
-                Err(err) => {
-                    ui::error!("{what} failed: {err:#}");
-                    Ok(false)
-                }
-            };
-        }
-        air.say(text, what).await.map_err(|err| anyhow::anyhow!("{err}"))
     }
 }
 
-/// Capture ended early so the loop can reconnect.
-#[derive(Debug, thiserror::Error)]
-#[error("listening restarted")]
-struct Retry;
+enum Step {
+    Frame(anyhow::Result<Vec<i16>>),
+    Stop,
+    Message(Option<crate::messaging::Inbound>),
+    Command(Option<Command>),
+    Tick,
+    Timeout,
+}
+
+/// Log a line, also sending it to an operator client when one asked.
+fn log(command: Option<&Command>, kind: &str, message: &str) {
+    if let Some(command) = command {
+        command.say(kind, message);
+    }
+    let kind = match kind {
+        "reply" => ui::Kind::Reply,
+        "warn" => ui::Kind::Warn,
+        "error" => ui::Kind::Error,
+        _ => ui::Kind::Status,
+    };
+    ui::emit(kind, message);
+}
 
 async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The next item on an optional channel; never resolves without one.
+async fn recv<T>(channel: Option<&mut tokio::sync::mpsc::Receiver<T>>) -> Option<T> {
+    match channel {
+        Some(rx) => rx.recv().await,
         None => std::future::pending().await,
     }
 }
