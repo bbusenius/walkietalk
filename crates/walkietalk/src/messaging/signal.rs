@@ -169,7 +169,10 @@ impl Signal {
         daemon_url: &str,
     ) -> anyhow::Result<Signal> {
         let attachments = attachments_dir(contact);
-        let client = reqwest::Client::builder().no_proxy().build()?;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(5))
+            .build()?;
         let daemon_up = client
             .get(format!("{daemon_url}/api/v1/check"))
             .timeout(Duration::from_millis(500))

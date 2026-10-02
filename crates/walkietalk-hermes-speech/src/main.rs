@@ -28,7 +28,11 @@ use speech::{Limits, Request, SpeechError};
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 
 #[derive(Parser)]
-#[command(name = "walkietalk-hermes-speech", version, about = "Speak text with a Hermes installation's TTS provider")]
+#[command(
+    name = "walkietalk-hermes-speech",
+    version,
+    about = "Speak text with a Hermes installation's TTS provider"
+)]
 struct Args {
     /// The Hermes source directory (added to Python's import path)
     #[arg(long, value_name = "DIR")]
@@ -62,16 +66,27 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let token = load_token(&args.token_env)?;
     anyhow::ensure!(
-        args.max_audio_seconds.is_finite() && args.max_audio_seconds > 0.0 && args.max_audio_seconds <= 600.0,
+        args.max_audio_seconds.is_finite()
+            && args.max_audio_seconds > 0.0
+            && args.max_audio_seconds <= 600.0,
         "--max-audio-seconds must be greater than 0 and at most 600"
     );
     anyhow::ensure!(
-        args.timeout_seconds.is_finite() && args.timeout_seconds > 0.0 && args.timeout_seconds <= 600.0,
+        args.timeout_seconds.is_finite()
+            && args.timeout_seconds > 0.0
+            && args.timeout_seconds <= 600.0,
         "--timeout-seconds must be greater than 0 and at most 600"
     );
-    let root = args.hermes_root.canonicalize().context("--hermes-root does not exist")?;
+    let root = args
+        .hermes_root
+        .canonicalize()
+        .context("--hermes-root does not exist")?;
     let python = args.python.unwrap_or_else(|| root.join(".venv/bin/python"));
-    anyhow::ensure!(python.is_file(), "Hermes's Python was not found at {}; pass --python", python.display());
+    anyhow::ensure!(
+        python.is_file(),
+        "Hermes's Python was not found at {}; pass --python",
+        python.display()
+    );
     let app = Arc::new(App {
         token,
         limits: Limits {
@@ -82,10 +97,16 @@ async fn main() -> anyhow::Result<()> {
         },
         busy: Semaphore::new(1),
     });
-    let address: SocketAddr = format!("{}:{}", args.host, args.port).parse().context("invalid --host or --port")?;
-    let listener = tokio::net::TcpListener::bind(address).await.with_context(|| format!("cannot listen on {address}"))?;
+    let address: SocketAddr = format!("{}:{}", args.host, args.port)
+        .parse()
+        .context("invalid --host or --port")?;
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .with_context(|| format!("cannot listen on {address}"))?;
     eprintln!("Hermes speech service listening on {address}");
-    axum::serve(listener, router(app)).with_graceful_shutdown(shutdown()).await?;
+    axum::serve(listener, router(app))
+        .with_graceful_shutdown(shutdown())
+        .await?;
     Ok(())
 }
 
@@ -114,7 +135,8 @@ fn load_token(name: &str) -> anyhow::Result<String> {
 }
 
 async fn shutdown() {
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("signal handler");
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("signal handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
@@ -140,7 +162,10 @@ fn plain(status: StatusCode, body: &'static str) -> Response {
 
 async fn speak(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let expected = format!("Bearer {}", app.token);
-    let given = headers.get(header::AUTHORIZATION).map(|v| v.as_bytes()).unwrap_or(b"");
+    let given = headers
+        .get(header::AUTHORIZATION)
+        .map(|v| v.as_bytes())
+        .unwrap_or(b"");
     if !same(given, expected.as_bytes()) {
         return plain(StatusCode::UNAUTHORIZED, "service token required");
     }
@@ -156,16 +181,35 @@ async fn speak(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> 
         return plain(StatusCode::BAD_REQUEST, "invalid speech request or limits");
     }
     let Ok(_permit) = app.busy.try_acquire() else {
-        return plain(StatusCode::SERVICE_UNAVAILABLE, "speech service busy; try again");
+        return plain(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "speech service busy; try again",
+        );
     };
     match speech::generate(&request, &app.limits).await {
-        Ok(wav) => (StatusCode::OK, [(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "no-store")], wav).into_response(),
-        Err(SpeechError::TimedOut) => plain(StatusCode::GATEWAY_TIMEOUT, "speech generation timed out"),
-        Err(SpeechError::TooLong) => plain(StatusCode::PAYLOAD_TOO_LARGE, "speech is longer than requested"),
+        Ok(wav) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "audio/wav"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            wav,
+        )
+            .into_response(),
+        Err(SpeechError::TimedOut) => {
+            plain(StatusCode::GATEWAY_TIMEOUT, "speech generation timed out")
+        }
+        Err(SpeechError::TooLong) => plain(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "speech is longer than requested",
+        ),
         Err(SpeechError::Failed(reason)) => {
             // Never log the text or provider output.
             eprintln!("speech request failed: {reason}");
-            plain(StatusCode::BAD_GATEWAY, "the configured Hermes speech provider failed; no fallback")
+            plain(
+                StatusCode::BAD_GATEWAY,
+                "the configured Hermes speech provider failed; no fallback",
+            )
         }
     }
 }
@@ -207,27 +251,54 @@ mod tests {
     }
 
     fn post(url: &str, token: &str, body: serde_json::Value) -> reqwest::RequestBuilder {
-        reqwest::Client::new().post(url).bearer_auth(token).json(&body)
+        reqwest::Client::new()
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
     }
 
     #[tokio::test]
     async fn returns_radio_ready_wav() {
         let (_dir, url) = serve(1.0).await;
-        let response = post(&url, TOKEN, serde_json::json!({"text": "Hello.", "max_seconds": 5.0, "crop": true})).send().await.unwrap();
+        let response = post(
+            &url,
+            TOKEN,
+            serde_json::json!({"text": "Hello.", "max_seconds": 5.0, "crop": true}),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(response.status(), 200);
         let bytes = response.bytes().await.unwrap();
         let reader = hound::WavReader::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
         let spec = reader.spec();
-        assert_eq!((spec.channels, spec.sample_rate, spec.bits_per_sample), (1, 48_000, 16));
+        assert_eq!(
+            (spec.channels, spec.sample_rate, spec.bits_per_sample),
+            (1, 48_000, 16)
+        );
         assert!((reader.duration() as i64 - 48_000).abs() < 2_000);
     }
 
     #[tokio::test]
     async fn strict_requests_refuse_long_speech_and_crop_requests_cut_it() {
         let (_dir, url) = serve(3.0).await;
-        let strict = post(&url, TOKEN, serde_json::json!({"text": "A callsign.", "max_seconds": 1.0, "crop": false})).send().await.unwrap();
+        let strict = post(
+            &url,
+            TOKEN,
+            serde_json::json!({"text": "A callsign.", "max_seconds": 1.0, "crop": false}),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(strict.status(), 413);
-        let cropped = post(&url, TOKEN, serde_json::json!({"text": "A reply.", "max_seconds": 1.0, "crop": true})).send().await.unwrap();
+        let cropped = post(
+            &url,
+            TOKEN,
+            serde_json::json!({"text": "A reply.", "max_seconds": 1.0, "crop": true}),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(cropped.status(), 200);
         let bytes = cropped.bytes().await.unwrap();
         let reader = hound::WavReader::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
@@ -237,7 +308,14 @@ mod tests {
     #[tokio::test]
     async fn rejects_bad_tokens_and_invalid_requests() {
         let (_dir, url) = serve(1.0).await;
-        let wrong = post(&url, "wrong-token-wrong-token", serde_json::json!({"text": "x", "max_seconds": 1.0, "crop": true})).send().await.unwrap();
+        let wrong = post(
+            &url,
+            "wrong-token-wrong-token",
+            serde_json::json!({"text": "x", "max_seconds": 1.0, "crop": true}),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(wrong.status(), 401);
         for body in [
             serde_json::json!({"text": "", "max_seconds": 1.0, "crop": true}),
