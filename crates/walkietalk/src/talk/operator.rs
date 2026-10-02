@@ -17,7 +17,7 @@ use crate::ui;
 pub(super) struct Operator {
     pub shared: Shared,
     pub commands: mpsc::Receiver<Command>,
-    server: Server,
+    server: Option<Server>,
     panel: Option<crate::panel::Panel>,
     announced: Option<(Option<u64>, u64)>,
 }
@@ -46,10 +46,29 @@ impl Operator {
         Ok(Operator {
             shared,
             commands,
-            server,
+            server: Some(server),
             panel,
             announced: None,
         })
+    }
+
+    /// Without a control socket: commands go straight into the channel.
+    #[cfg(test)]
+    pub fn for_tests(config: &Config) -> (Operator, mpsc::Sender<Command>, Shared) {
+        let shared: Shared = std::sync::Arc::new(std::sync::Mutex::new(Board {
+            review: Review::new(config),
+            conversation: String::new(),
+            delivery: String::new(),
+        }));
+        let (tx, commands) = mpsc::channel(16);
+        let operator = Operator {
+            shared: shared.clone(),
+            commands,
+            server: None,
+            panel: None,
+            announced: None,
+        };
+        (operator, tx, shared)
     }
 
     pub fn close(self) {
@@ -71,7 +90,7 @@ impl Talk {
         let Some(op) = self.messaging.as_mut().and_then(|m| m.operator.as_mut()) else {
             return Ok(());
         };
-        if op.server.failed() {
+        if op.server.as_ref().is_some_and(Server::failed) {
             bail!("the operator controls stopped unexpectedly; stopping talk");
         }
         if let Some(panel) = &op.panel {
