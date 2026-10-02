@@ -116,3 +116,49 @@ pub async fn tts_check(config: &Config, creds: &Credentials, text: &str, output:
     );
     Ok(())
 }
+
+/// One realtime speech-to-speech turn, saved to a new WAV.
+pub async fn voice_agent_check(
+    config: &Config,
+    creds: &Credentials,
+    wav: Option<PathBuf>,
+    output: &Path,
+    supervised: bool,
+    consent: Option<crate::radio::TransmitConsent>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.agent.backend.is_realtime(),
+        "voice-agent-check needs agent.backend = \"grok-realtime\""
+    );
+    anyhow::ensure!(consent.is_none() || supervised, "--transmit requires --supervised");
+    anyhow::ensure!(!output.exists(), "{} already exists; choose a new --output", output.display());
+    let settings = crate::realtime::Settings::from_config(config, creds)?;
+    let utterance = match wav {
+        Some(path) => utterance_from_wav(config, &path)?,
+        None => utterance_from_device(config, Some(Duration::from_secs(60))).await?,
+    };
+    let radio = if supervised {
+        Some(std::sync::Arc::new(crate::commands::hardware::radio(config, consent)?))
+    } else {
+        None
+    };
+    ui::status!("Sending {:.1}s of audio to the voice agent (billed API)...", utterance.audio.seconds());
+    let reply = crate::realtime::single_turn(&settings, &utterance.audio, radio).await?;
+    if !reply.heard.is_empty() {
+        ui::transcript!("Heard: {}", reply.heard);
+    }
+    ui::reply!("Reply: {}", if reply.said.is_empty() { "(no transcript)" } else { &reply.said });
+    if reply.audio.is_empty() {
+        bail!("the voice agent returned no audio");
+    }
+    let clip = Clip::new(reply.audio, crate::realtime::tx::RATE);
+    clip.write_new_wav(output)?;
+    ui::status!("Wrote {} ({:.2}s).", output.display(), clip.seconds());
+    if reply.truncated {
+        ui::warning!("The transmit cap cut the reply short.");
+    }
+    if !supervised {
+        ui::status!("No playback or PTT.");
+    }
+    Ok(())
+}
