@@ -23,8 +23,24 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct WhatsApp {
     store: PathBuf,
     to: String,
-    daemon: Option<Daemon>,
+    /// Polls the store and keeps `wacli sync` running; its group is killed
+    /// when the task stops.
     poller: tokio::task::JoinHandle<()>,
+}
+
+/// Start `wacli sync --follow`, which keeps the local store current.
+fn sync(program: &std::path::Path, store: &std::path::Path) -> anyhow::Result<Daemon> {
+    let mut command = Job::new(program.to_path_buf(), "wacli")
+        .arg("--store")
+        .arg(store.as_os_str())
+        .args(["sync", "--follow", "--download-media"])
+        .env(env())
+        .command();
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(Daemon::spawn(command, "wacli")?)
 }
 
 /// `WACLI_STORE_DIR`, else `~/.wacli` if it exists, else the XDG state dir.
@@ -196,20 +212,35 @@ impl WhatsApp {
                 poller.seen.insert(row.msg_id);
             }
         }
-        let mut command = Job::new(program, "wacli")
-            .arg("--store")
-            .arg(store.as_os_str())
-            .args(["sync", "--follow", "--download-media"])
-            .env(env())
-            .command();
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let daemon = Daemon::spawn(command, "wacli")?;
+        let mut daemon = Some(sync(&program, &store)?);
+        let sync_store = store.clone();
         let poller = tokio::spawn(async move {
+            let mut restart_at: Option<tokio::time::Instant> = None;
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
+                // Keep the sync running; report and restart it if it exits.
+                if let Some(d) = daemon.as_mut()
+                    && !matches!(d.child.try_wait(), Ok(None))
+                {
+                    ui::error!("wacli sync stopped; restarting it in 10 s.");
+                    daemon = None;
+                    restart_at = Some(tokio::time::Instant::now() + Duration::from_secs(10));
+                }
+                if daemon.is_none()
+                    && restart_at.is_some_and(|at| tokio::time::Instant::now() >= at)
+                {
+                    match sync(&program, &sync_store) {
+                        Ok(started) => {
+                            daemon = Some(started);
+                            restart_at = None;
+                        }
+                        Err(err) => {
+                            ui::error!("Cannot restart wacli sync: {err:#}");
+                            restart_at =
+                                Some(tokio::time::Instant::now() + Duration::from_secs(30));
+                        }
+                    }
+                }
                 let (next, found) = tokio::task::spawn_blocking(move || {
                     let found = poller.poll();
                     (poller, found)
@@ -227,7 +258,6 @@ impl WhatsApp {
         Ok(WhatsApp {
             store,
             to: contact.to.clone(),
-            daemon: Some(daemon),
             poller,
         })
     }
@@ -276,11 +306,10 @@ impl WhatsApp {
         .await
     }
 
-    pub async fn stop(mut self) {
+    pub async fn stop(self) {
         self.poller.abort();
-        if let Some(daemon) = self.daemon.take() {
-            daemon.stop().await;
-        }
+        // Dropping the aborted task kills the sync's process group.
+        let _ = self.poller.await;
     }
 }
 

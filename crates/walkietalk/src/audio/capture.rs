@@ -28,8 +28,8 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn open(name: &str) -> anyhow::Result<Capture> {
-        let (ready_tx, ready_rx) = std_mpsc::channel();
+    pub async fn open(name: &str) -> anyhow::Result<Capture> {
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
         let (frame_tx, frames) = mpsc::channel(QUEUE_FRAMES);
         let overflow = Arc::new(AtomicBool::new(false));
@@ -55,9 +55,10 @@ impl Capture {
                 drop(stream);
             })
             .context("cannot start capture thread")?;
-        let rate = ready_rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| anyhow::anyhow!("capture device \"{name}\" did not open within 10 s"))??;
+        let rate = match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
+            Ok(Ok(result)) => result?,
+            _ => bail!("capture device \"{name}\" did not open within 10 s"),
+        };
         Ok(Capture {
             frames,
             rate,

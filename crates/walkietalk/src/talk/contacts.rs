@@ -338,15 +338,11 @@ impl Talk {
                     self.delivery_failed(&message, operator.as_ref());
                     return Ok(false);
                 }
-                Err(AirError::Playback(err)) if operator.is_some() => {
+                Err(AirError::Playback(err)) => {
                     ui::error!("Message transmission failed: {err:#}");
-                    ui::warning!("The message is kept for review; part of it may have been heard.");
-                    air.mute().await;
+                    ui::warning!("The message is kept; part of it may have been heard.");
                     self.delivery_failed(&message, operator.as_ref());
                     return Ok(false);
-                }
-                Err(AirError::Playback(err)) => {
-                    return Err(err.context("playback failed while transmitting"));
                 }
             }
         }

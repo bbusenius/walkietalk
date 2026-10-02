@@ -48,7 +48,13 @@ pub struct Air {
     station_id: StationId,
     budget: Duration,
     mute: Duration,
+    /// Playback failures in a row; a device that keeps failing stops `talk`
+    /// rather than keying dead air again and again.
+    playback_failures: u32,
 }
+
+/// Consecutive playback failures that stop `talk`.
+const PLAYBACK_FAILURE_LIMIT: u32 = 3;
 
 impl Air {
     pub fn new(radio: Radio, voice: Option<Arc<dyn Voice>>, config: &Config) -> Air {
@@ -58,6 +64,7 @@ impl Air {
             station_id: StationId::new(config.radio.station_id.clone()),
             budget: config.radio.speech_budget(),
             mute: config.radio.post_tx_mute(),
+            playback_failures: 0,
         }
     }
 
@@ -150,9 +157,27 @@ impl Air {
             }
             None => vec![reply],
         };
-        self.send_bursts(bursts, id.is_some()).await?;
-        self.mute().await;
-        Ok(())
+        let result = self.send_bursts(bursts, id.is_some()).await;
+        match &result {
+            Ok(()) => self.playback_failures = 0,
+            Err(AirError::Playback(err)) => {
+                self.playback_failures += 1;
+                if self.playback_failures >= PLAYBACK_FAILURE_LIMIT {
+                    return Err(AirError::fatal(
+                        format!(
+                            "audio playback failed {PLAYBACK_FAILURE_LIMIT} times in a row ({err:#}); stopping"
+                        ),
+                        false,
+                    ));
+                }
+            }
+            Err(_) => {}
+        }
+        // Part of a failed transmission may have been heard: mute as usual.
+        if matches!(result, Ok(()) | Err(AirError::Playback(_))) {
+            self.mute().await;
+        }
+        result
     }
 
     async fn send_bursts(&mut self, bursts: Vec<Clip>, with_id: bool) -> Result<(), AirError> {
@@ -209,6 +234,10 @@ impl Air {
             Ok(()) => Ok(true),
             Err(AirError::NotSent(err)) => {
                 ui::error!("{what} was not transmitted: {err:#}");
+                Ok(false)
+            }
+            Err(AirError::Playback(err)) => {
+                ui::error!("{what} failed during transmission: {err:#}");
                 Ok(false)
             }
             Err(other) => Err(other),

@@ -968,6 +968,9 @@ impl Config {
             30.0,
             false,
         );
+        if f64::from(self.vad.hangover_ms) >= self.vad.max_utterance_seconds * 1000.0 {
+            v.fail("vad.hangover_ms must be shorter than vad.max_utterance_seconds");
+        }
         v.finite_range(
             "stt.timeout_seconds",
             self.stt.timeout_seconds,
@@ -1299,6 +1302,29 @@ impl Config {
                 }
             }
         }
+        // Shutdown is checked first, and an utterance that starts with its
+        // phrase or code never goes further, so no other phrase may start so.
+        let shutdown_words: Vec<String> = controls
+            .iter()
+            .filter(|(field, _)| field.starts_with("shutdown"))
+            .flat_map(|(_, list)| list.iter().map(|p| phrases::normalize(p)))
+            .collect();
+        for (field, list) in wakes
+            .iter()
+            .chain(controls.iter().filter(|(f, _)| !f.starts_with("shutdown")))
+        {
+            for phrase in list {
+                let words = phrases::normalize(phrase);
+                if shutdown_words
+                    .iter()
+                    .any(|s| words.starts_with(&format!("{s} ")))
+                {
+                    v.fail(format!(
+                        "{field} \"{phrase}\" starts with a shutdown phrase or code"
+                    ));
+                }
+            }
+        }
         // Spoken replies must not sound like a control or wake phrase.
         for (field, phrase) in &spoken {
             if let Some(owner) = owners.get(&phrases::normalize(phrase)) {
@@ -1618,6 +1644,21 @@ mod tests {
             "[sleep]\nphrase = \"go to sleep\"\n[messaging.whatsapp]\nwake = \"charlotte go\"\nto = \"+15551234567\"\n",
         );
         assert!(p.contains("swallow"), "{p}");
+    }
+
+    #[test]
+    fn phrases_cannot_start_with_a_shutdown_phrase() {
+        let p = problems(
+            "[sleep]\nphrase = \"stop listening\"\n[shutdown]\nenabled = true\nphrase = \"stop\"\ncode = \"seven\"\narmed_reply = \"armed\"\nconfirmed_reply = \"bye\"\n",
+        );
+        assert!(p.contains("starts with a shutdown"), "{p}");
+    }
+
+    #[test]
+    fn hangover_must_be_shorter_than_the_longest_utterance() {
+        assert!(
+            problems("[vad]\nhangover_ms = 3000\nmax_utterance_seconds = 2\n").contains("hangover")
+        );
     }
 
     #[test]

@@ -175,6 +175,10 @@ impl Keyed {
         if let Err(err) = ptt.key(deadline) {
             // Make sure a partial assertion is released before reporting.
             let _ = ptt.release();
+            if crate::signals::stop_requested() {
+                // The stop request already released the line.
+                return Err(TxError::NotKeyed(anyhow::anyhow!("stopping")));
+            }
             return Err(TxError::Ptt(err));
         }
         Ok(Keyed {
@@ -197,7 +201,12 @@ impl Keyed {
     /// Release and report whether the cap had already released the line.
     pub fn release(mut self) -> Result<bool, TxError> {
         self.released = true;
-        self.ptt.release().map_err(TxError::Ptt)
+        match self.ptt.release() {
+            Ok(capped) => Ok(capped),
+            // After a stop request the supervisor released the line and exited.
+            Err(_) if crate::signals::stop_requested() => Ok(true),
+            Err(err) => Err(TxError::Ptt(err)),
+        }
     }
 }
 

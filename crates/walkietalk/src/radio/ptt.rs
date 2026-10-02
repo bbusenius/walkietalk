@@ -37,6 +37,7 @@ impl SerialLine {
     pub fn open(path: &Path, line: Line) -> anyhow::Result<SerialLine> {
         let name = path.to_str().context("serial path must be UTF-8")?;
         let mut port = serialport::new(name, 9600)
+            .dtr_on_open(false)
             .timeout(Duration::from_millis(500))
             .open_native()
             .map_err(|err| {

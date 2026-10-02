@@ -37,9 +37,14 @@ impl Whisper {
         }
     }
 
-    fn context(&self) -> anyhow::Result<Arc<WhisperContext>> {
-        let mut slot = self.context.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(context) = slot.as_ref() {
+    /// The loaded model, loading it off the async threads the first time.
+    async fn context(&self) -> anyhow::Result<Arc<WhisperContext>> {
+        if let Some(context) = self
+            .context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             return Ok(context.clone());
         }
         if !self.path.is_file() {
@@ -48,12 +53,17 @@ impl Whisper {
                 self.model
             );
         }
-        whisper_rs::install_logging_hooks();
-        let path = self.path.to_str().context("model path must be UTF-8")?;
-        let context = WhisperContext::new_with_params(path, WhisperContextParameters::default())
-            .map_err(|err| anyhow::anyhow!("cannot load Whisper {}: {err}", self.model))?;
+        let (path, model) = (self.path.clone(), self.model);
+        let context = tokio::task::spawn_blocking(move || {
+            whisper_rs::install_logging_hooks();
+            let path = path.to_str().context("model path must be UTF-8")?;
+            WhisperContext::new_with_params(path, WhisperContextParameters::default())
+                .map_err(|err| anyhow::anyhow!("cannot load Whisper {model}: {err}"))
+        })
+        .await
+        .context("Whisper loader failed")??;
         let context = Arc::new(context);
-        *slot = Some(context.clone());
+        *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some(context.clone());
         Ok(context)
     }
 }
@@ -65,11 +75,11 @@ impl Transcriber for Whisper {
     }
 
     async fn prepare(&self) -> anyhow::Result<()> {
-        self.context().map(|_| ())
+        self.context().await.map(|_| ())
     }
 
     async fn transcribe(&self, audio: &Clip) -> anyhow::Result<String> {
-        let context = self.context()?;
+        let context = self.context().await?;
         if self.busy.swap(true, Ordering::SeqCst) {
             bail!("Whisper is still finishing the previous audio; this utterance was skipped");
         }
@@ -86,7 +96,7 @@ impl Transcriber for Whisper {
             Err(_) => {
                 // whisper.cpp checks this flag and stops early.
                 cancel.store(true, Ordering::SeqCst);
-                bail!("Whisper timed out after {:.0}s", self.timeout.as_secs_f64())
+                bail!("Whisper timed out after {:.1}s", self.timeout.as_secs_f64())
             }
         }
     }
@@ -116,7 +126,14 @@ fn run(
     params.set_suppress_blank(true);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     params.set_n_threads(threads as i32);
-    params.set_abort_callback_safe(move || cancel.load(Ordering::SeqCst));
+    // The raw callback API is used because whisper-rs's closure wrapper
+    // reads its boxed closure with the wrong type.
+    // SAFETY: the pointer refers to the flag in `cancel`, which outlives the
+    // `full` call below, the only place whisper.cpp invokes the callback.
+    unsafe {
+        params.set_abort_callback(Some(aborted));
+        params.set_abort_callback_user_data(Arc::as_ptr(&cancel) as *mut std::ffi::c_void);
+    }
     state
         .full(params, samples)
         .map_err(|err| anyhow::anyhow!("Whisper failed: {err}"))?;
@@ -126,6 +143,12 @@ fn run(
         .filter(|s| !s.is_empty())
         .collect();
     Ok(text.join(" "))
+}
+
+/// Whether a timed-out transcription asked whisper.cpp to stop.
+unsafe extern "C" fn aborted(flag: *mut std::ffi::c_void) -> bool {
+    // SAFETY: `run` passes a pointer to an `AtomicBool` it keeps alive.
+    unsafe { &*(flag as *const AtomicBool) }.load(Ordering::SeqCst)
 }
 
 /// Convert captured audio to Whisper's 16 kHz float samples.

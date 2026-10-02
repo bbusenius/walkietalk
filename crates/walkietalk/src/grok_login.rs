@@ -88,7 +88,17 @@ impl GrokLogin {
     }
 
     /// Exchange the refresh token for a new access token and save it.
+    ///
+    /// The exchange runs to completion in its own task even if the caller
+    /// gives up, so a rotated refresh token is always saved.
     pub async fn refresh(&self, client: &reqwest::Client) -> anyhow::Result<Secret> {
+        let (this, client) = (self.clone(), client.clone());
+        tokio::spawn(async move { this.refresh_now(&client).await })
+            .await
+            .map_err(|_| anyhow::anyhow!("the Grok login refresh failed"))?
+    }
+
+    async fn refresh_now(&self, client: &reqwest::Client) -> anyhow::Result<Secret> {
         let _guard = REFRESH.lock().await;
         let (mut store, account) = self.read()?;
         let session = &store[&account];

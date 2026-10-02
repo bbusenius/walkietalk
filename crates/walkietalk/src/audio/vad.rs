@@ -101,6 +101,14 @@ impl Vad {
         self.speaking && self.voiced >= self.min_voiced
     }
 
+    fn discard(&mut self, level: f64) -> VadEvent {
+        self.speaking = false;
+        self.captured.clear();
+        self.frames = 0;
+        self.voiced = 0;
+        VadEvent::Discarded { level }
+    }
+
     pub fn push(&mut self, frame: &[i16]) -> VadEvent {
         let level = rms(frame);
         self.peak = self.peak.max(level);
@@ -125,13 +133,18 @@ impl Vad {
         }
         self.captured.extend_from_slice(frame);
         self.frames += 1;
+        if loud {
+            self.voiced += 1;
+        }
         if self.frames >= self.max_frames {
+            if self.voiced < self.min_voiced {
+                return self.discard(level);
+            }
             return VadEvent::Finished {
                 reason: EndReason::MaxLength,
             };
         }
         if loud {
-            self.voiced += 1;
             self.quiet_left = self.hangover_frames;
             return VadEvent::Speaking { level };
         }
@@ -140,11 +153,7 @@ impl Vad {
             return VadEvent::Speaking { level };
         }
         if self.voiced < self.min_voiced {
-            self.speaking = false;
-            self.captured.clear();
-            self.frames = 0;
-            self.voiced = 0;
-            return VadEvent::Discarded { level };
+            return self.discard(level);
         }
         VadEvent::Finished {
             reason: EndReason::Silence,
@@ -194,6 +203,23 @@ mod tests {
         assert!(matches!(events.last(), Some(VadEvent::Discarded { .. })));
         assert!(!vad.speaking());
         assert!(vad.captured().is_empty());
+    }
+
+    #[test]
+    fn a_click_that_fills_the_maximum_is_still_noise() {
+        // One loud frame, then a hangover longer than the maximum length.
+        let mut vad = Vad::new(0.1, 2000, 0.5);
+        let events = run(&mut vad, &[(10_000, 1), (0, 30)]);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, VadEvent::Discarded { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, VadEvent::Finished { .. }))
+        );
     }
 
     #[test]

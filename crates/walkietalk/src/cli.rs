@@ -227,7 +227,21 @@ pub fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run(cli)) {
+    // `talk` winds down by itself on a stop request; anything else stops at
+    // once (dropping its work kills any helper programs).
+    let talk = matches!(cli.command, Command::Talk { .. });
+    let result = runtime.block_on(async move {
+        if talk {
+            return run(cli).await;
+        }
+        tokio::select! {
+            result = run(cli) => result,
+            _ = signals::token().cancelled() => Err(anyhow::anyhow!("stopped")),
+        }
+    });
+    // A worker stuck in a driver call must not keep the process alive.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             ui::error!("Error: {err:#}");

@@ -128,7 +128,12 @@ impl Credentials {
     pub fn get(&self, name: &str) -> Option<(Secret, Source)> {
         let env = match self.env {
             Some(lookup) => lookup(name),
-            None => std::env::var(name).ok(),
+            // A non-UTF-8 value is exported but unusable; never fall back to the file.
+            None => match std::env::var(name) {
+                Ok(value) => Some(value),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => Some("\u{FFFD}".into()),
+            },
         };
         match env {
             Some(value) => Some((Secret(value), Source::Environment)),
