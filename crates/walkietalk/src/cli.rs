@@ -359,9 +359,12 @@ async fn operator(
     let config = global.config.as_deref().map(paths::expand_home);
     let config = config.as_deref();
     let timeout = std::time::Duration::from_secs_f64(timeout);
+    let mut bound = None;
     let text = match (action, text) {
         (Action::Edit, None) => {
-            let item = client::current_text(config).await?;
+            let (item, revision) = client::current_text(config).await?;
+            // The edit applies only to the item shown in the editor.
+            bound = Some(revision);
             let current = item.content.clone();
             match tokio::task::spawn_blocking(move || client::prompt_edit(&current)).await?? {
                 Some(text) => Some(text),
@@ -373,7 +376,7 @@ async fn operator(
         }
         (_, text) => text,
     };
-    if !client::request(config, action, approved, text, timeout).await? {
+    if !client::request(config, action, approved, text, bound, timeout).await? {
         bail!("the operator command did not complete; see above");
     }
     Ok(())

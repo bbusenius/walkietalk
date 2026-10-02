@@ -205,14 +205,17 @@ struct State {
 struct Editor {
     text: Vec<char>,
     cursor: usize,
+    /// The revision of the item being edited; the edit applies only to it.
+    revision: u64,
 }
 
 impl Editor {
-    fn new(text: &str) -> Editor {
+    fn new(text: &str, revision: u64) -> Editor {
         let text: Vec<char> = text.chars().collect();
         Editor {
             cursor: text.len(),
             text,
+            revision,
         }
     }
 
@@ -354,9 +357,16 @@ fn handle_key(
     if let Some(editor) = state.editor.as_mut() {
         match editor.key(key) {
             Some(true) => {
-                let text = editor.text();
+                let (text, revision) = (editor.text(), editor.revision);
                 state.editor = None;
-                submit(state, snapshot, commands, Action::Edit, Some(text));
+                submit(
+                    state,
+                    snapshot,
+                    commands,
+                    Action::Edit,
+                    Some(text),
+                    Some(revision),
+                );
             }
             Some(false) => {
                 state.editor = None;
@@ -399,7 +409,9 @@ fn handle_key(
                     } else if let Some(item) = &snapshot.item {
                         match &item.edit_block {
                             Some(block) => state.status = (Kind::Warn, block.clone()),
-                            None => state.editor = Some(Editor::new(&item.content)),
+                            None => {
+                                state.editor = Some(Editor::new(&item.content, snapshot.revision))
+                            }
                         }
                     }
                     return;
@@ -413,7 +425,7 @@ fn handle_key(
                 );
                 return;
             }
-            submit(state, snapshot, commands, action, None);
+            submit(state, snapshot, commands, action, None, None);
         }
         _ => {}
     }
@@ -425,12 +437,14 @@ fn submit(
     commands: &mpsc::Sender<Command>,
     action: Action,
     text: Option<String>,
+    bound: Option<u64>,
 ) {
-    let (item, revision) = if state.approved_view {
+    let (item, shown) = if state.approved_view {
         (&snapshot.approved_item, snapshot.approved_revision)
     } else {
         (&snapshot.item, snapshot.revision)
     };
+    let revision = bound.unwrap_or(shown);
     if action != Action::Sleep && item.is_none() {
         state.status = (Kind::Warn, "No message is selected.".into());
         return;
@@ -632,7 +646,7 @@ mod tests {
     fn editor_supports_the_documented_keys() {
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
-        let mut e = Editor::new("hello");
+        let mut e = Editor::new("hello", 1);
         e.key(key(KeyCode::Home));
         e.key(key(KeyCode::Char('X')));
         e.key(ctrl('e'));

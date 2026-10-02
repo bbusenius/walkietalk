@@ -16,6 +16,10 @@ use crate::phrases::{self, Phrase};
 /// Rate the radio path uses for every outgoing clip.
 pub const RADIO_RATE: u32 = 48_000;
 
+/// Time kept free at the end of each transmission for the audio device to
+/// drain, so speech that fills the budget still finishes before the cap.
+pub const DRAIN_MARGIN: Duration = Duration::from_millis(350);
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -119,9 +123,12 @@ impl RadioConfig {
         Duration::from_secs_f64(self.post_tx_mute_seconds)
     }
 
-    /// Audio that fits in one transmission after the settle delay.
+    /// Audio that fits in one transmission after the settle delay and the
+    /// drain margin.
     pub fn speech_budget(&self) -> Duration {
-        self.max_tx().saturating_sub(self.settle())
+        self.max_tx()
+            .saturating_sub(self.settle())
+            .saturating_sub(DRAIN_MARGIN)
     }
 }
 
@@ -915,9 +922,9 @@ impl Config {
         v.finite_range("radio.settle_seconds", r.settle_seconds, 0.0, 2.0, false);
         if r.settle_seconds.is_finite()
             && r.max_tx_seconds.is_finite()
-            && r.settle_seconds >= r.max_tx_seconds
+            && r.max_tx_seconds - r.settle_seconds < 1.0
         {
-            v.fail("radio.settle_seconds must be less than radio.max_tx_seconds");
+            v.fail("radio.max_tx_seconds must exceed radio.settle_seconds by at least 1 second");
         }
         v.finite_range(
             "radio.post_tx_mute_seconds",

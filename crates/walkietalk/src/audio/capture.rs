@@ -132,6 +132,7 @@ where
     let mut pending: Vec<i16> = Vec::with_capacity(size);
     let error_slot = failure.clone();
     let wake = frames.clone();
+    let lost = overflow.clone();
     device
         .build_input_stream(
             config,
@@ -151,6 +152,11 @@ where
                 }
             },
             move |err| {
+                // An overrun loses some audio; the stream recovers by itself.
+                if err.kind() == cpal::ErrorKind::Xrun {
+                    lost.store(true, Ordering::Relaxed);
+                    return;
+                }
                 *error_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(err.to_string());
                 // An empty frame tells the reader the stream failed.
                 let _ = wake.try_send(Vec::new());

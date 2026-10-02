@@ -460,9 +460,19 @@ impl Talk {
             };
             match result {
                 Step::Frame(frame) => {
-                    let Some(frame) = frame.context("capture failed; check the audio interface")?
-                    else {
-                        return Ok(None);
+                    let frame = match frame {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) => return Ok(None),
+                        Err(err) if self.once => {
+                            return Err(err.context("capture failed; check the audio interface"));
+                        }
+                        Err(err) => {
+                            // Reopen the device; a missing device fails on reopen.
+                            ui::error!("Capture stopped ({err:#}); reopening the device.");
+                            self.gate.close();
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            return Err(Retry.into());
+                        }
                     };
                     if capture.take_overflow() {
                         ui::warning!("Capture overflow; some audio was lost.");
