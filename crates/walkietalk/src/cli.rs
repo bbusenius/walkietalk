@@ -67,6 +67,17 @@ enum Command {
         #[arg(long)]
         transmit: bool,
     },
+    /// Ask the text agent one question (no audio or PTT)
+    AgentCheck {
+        #[arg(default_value = "Hello. Please introduce yourself in one sentence.")]
+        text: String,
+    },
+    /// Synthesize speech to a new WAV file (no hardware)
+    TtsCheck {
+        text: String,
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+    },
     /// Download the local Whisper model
     Models,
     /// Transcribe one utterance from a WAV or the radio (never transmits)
@@ -208,6 +219,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let (source, config) = global.load_config()?;
             let consent = TransmitConsent::grant(transmit, &source)?;
             blocking(move || hardware::ptt(&config, consent, seconds)).await
+        }
+        Command::AgentCheck { text } => {
+            let (source, config) = global.load_config()?;
+            let creds = global.load_credentials(&source)?;
+            speech::agent_check(&config, &creds, &text).await
+        }
+        Command::TtsCheck { text, output } => {
+            let (source, config) = global.load_config()?;
+            let creds = global.load_credentials(&source)?;
+            speech::tts_check(&config, &creds, &text, &output).await
         }
         Command::Models => {
             let (_, config) = global.load_config()?;

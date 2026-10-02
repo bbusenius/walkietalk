@@ -1461,10 +1461,8 @@ impl Validator {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    pub(crate) const MINIMAL: &str = r#"
+pub mod tests_support {
+    pub const MINIMAL: &str = r#"
         [audio]
         input = "plughw:CARD=AllInOneCable,DEV=0"
         output = "plughw:CARD=AllInOneCable,DEV=0"
@@ -1474,6 +1472,12 @@ mod tests {
         name = "charlotte"
         aliases = ["charlot"]
     "#;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::MINIMAL;
+    use super::*;
 
     fn parse(extra: &str) -> Result<Config, ConfigError> {
         Config::parse(

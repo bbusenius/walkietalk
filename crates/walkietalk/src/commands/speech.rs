@@ -5,13 +5,14 @@ use std::time::Duration;
 
 use anyhow::bail;
 
-use crate::audio::Clip;
+use crate::agent::Conversation;
+use crate::audio::{Clip, Fit};
 use crate::audio::capture::Capture;
 use crate::audio::listener::{Heard, Listener, Utterance};
 use crate::config::{Config, SttBackend};
 use crate::credentials::Credentials;
-use crate::stt::{self, Transcriber};
-use crate::{signals, ui};
+use crate::stt;
+use crate::{backends, signals, ui};
 
 pub async fn models(config: &Config) -> anyhow::Result<()> {
     if config.stt.backend != SttBackend::Whisper {
@@ -67,7 +68,7 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
 }
 
 pub async fn listen(config: &Config, creds: &Credentials, wav: Option<PathBuf>, timeout: f64) -> anyhow::Result<()> {
-    let stt = open_stt(config, creds)?;
+    let stt = backends::transcriber(config, creds)?;
     ui::status!("Speech recognition: {}", stt.label());
     stt.prepare().await?;
     let utterance = match wav {
@@ -88,9 +89,30 @@ pub async fn listen(config: &Config, creds: &Credentials, wav: Option<PathBuf>, 
     Ok(())
 }
 
-pub fn open_stt(config: &Config, _creds: &Credentials) -> anyhow::Result<Box<dyn Transcriber>> {
-    match config.stt.backend {
-        SttBackend::Whisper => Ok(Box::new(stt::whisper::Whisper::new(config.stt.model, config.stt.timeout()))),
-        other => bail!("stt.backend {other} is not available yet"),
-    }
+/// Ask the text agent one question.
+pub async fn agent_check(config: &Config, creds: &Credentials, text: &str) -> anyhow::Result<()> {
+    let agent = backends::text_agent(config, creds)?;
+    ui::status!("Agent: {} (no audio or PTT)", agent.label());
+    let conversation = Conversation::new(agent, config, false);
+    let reply = conversation.ask(text).await?;
+    ui::reply!("Reply: {}", reply.text);
+    Ok(())
+}
+
+/// Synthesize speech into a new WAV.
+pub async fn tts_check(config: &Config, creds: &Credentials, text: &str, output: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!output.exists(), "{} already exists; choose a new --output", output.display());
+    let voice = backends::voice(config, creds)?;
+    ui::status!("Voice: {}", voice.label());
+    voice.prepare().await?;
+    let clip = voice.synthesize(text, Fit::Crop).await?;
+    clip.write_new_wav(output)?;
+    ui::status!(
+        "Wrote {}: {} Hz mono, {:.2}s (at most {:.1}s fits one transmission). No hardware opened.",
+        output.display(),
+        clip.rate(),
+        clip.seconds(),
+        config.radio.speech_budget().as_secs_f64()
+    );
+    Ok(())
 }
