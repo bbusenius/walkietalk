@@ -9,6 +9,8 @@ mod agent;
 mod air;
 mod contacts;
 mod operator;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,6 +48,43 @@ enum Input {
     /// A WAV file, consumed by the first listen.
     Wav(Option<PathBuf>),
     Capture,
+    /// Frames supplied by a test; the loop ends when the sender is dropped.
+    #[cfg(test)]
+    Frames(Option<tokio::sync::mpsc::Receiver<Vec<i16>>>),
+}
+
+/// Where captured frames come from.
+enum Source {
+    Device(Capture),
+    #[cfg(test)]
+    Frames(tokio::sync::mpsc::Receiver<Vec<i16>>),
+}
+
+impl Source {
+    fn rate(&self) -> u32 {
+        match self {
+            Source::Device(capture) => capture.rate(),
+            #[cfg(test)]
+            Source::Frames(_) => 16_000,
+        }
+    }
+
+    /// The next frame, or `None` at the end of test input.
+    async fn next_frame(&mut self) -> anyhow::Result<Option<Vec<i16>>> {
+        match self {
+            Source::Device(capture) => capture.next_frame().await.map(Some),
+            #[cfg(test)]
+            Source::Frames(rx) => Ok(rx.recv().await),
+        }
+    }
+
+    fn take_overflow(&self) -> bool {
+        match self {
+            Source::Device(capture) => capture.take_overflow(),
+            #[cfg(test)]
+            Source::Frames(_) => false,
+        }
+    }
 }
 
 /// What turns speech into replies.
@@ -368,12 +407,29 @@ impl Talk {
                 }
                 Ok(Some(Event::Heard(utterance)))
             }
-            Input::Capture => self.capture().await,
+            Input::Capture => {
+                let source = Source::Device(Capture::open(&self.config.audio.input)?);
+                self.capture(source).await.1
+            }
+            #[cfg(test)]
+            Input::Frames(rx) => {
+                let Some(rx) = rx.take() else { return Ok(None) };
+                let (source, result) = self.capture(Source::Frames(rx)).await;
+                if let (Source::Frames(rx), Input::Frames(slot)) = (source, &mut self.input) {
+                    *slot = Some(rx);
+                }
+                result
+            }
         }
     }
 
-    async fn capture(&mut self) -> anyhow::Result<Option<Event>> {
-        let mut capture = Capture::open(&self.config.audio.input)?;
+    /// Listen until something needs attention; gives the source back.
+    async fn capture(&mut self, mut capture: Source) -> (Source, anyhow::Result<Option<Event>>) {
+        let result = self.listen(&mut capture).await;
+        (capture, result)
+    }
+
+    async fn listen(&mut self, capture: &mut Source) -> anyhow::Result<Option<Event>> {
         let mut listener = Listener::new(&self.config.vad, capture.rate(), true);
         if let Brain::Realtime(session) = &mut self.brain {
             session.begin(capture.rate());
@@ -399,7 +455,10 @@ impl Talk {
             };
             match result {
                 Step::Frame(frame) => {
-                    let frame = frame.context("capture failed; check the audio interface")?;
+                    let Some(frame) = frame.context("capture failed; check the audio interface")?
+                    else {
+                        return Ok(None);
+                    };
                     if capture.take_overflow() {
                         ui::warning!("Capture overflow; some audio was lost.");
                     }
@@ -648,7 +707,7 @@ impl Talk {
 }
 
 enum Step {
-    Frame(anyhow::Result<Vec<i16>>),
+    Frame(anyhow::Result<Option<Vec<i16>>>),
     Stop,
     Message(Option<crate::messaging::Inbound>),
     Command(Option<Command>),

@@ -56,46 +56,88 @@ pub fn same_contact(configured: &str, candidate: &str) -> bool {
     !configured.is_empty() && configured == digits(candidate.split('@').next().unwrap_or(""))
 }
 
+/// A messaging service that can send to its configured contact.
+#[async_trait::async_trait]
+pub trait Contact: Send + Sync {
+    async fn send_text(&self, text: &str) -> anyhow::Result<()>;
+    async fn send_voice(&self, file: &std::path::Path) -> anyhow::Result<()>;
+    async fn stop(self: Box<Self>);
+}
+
+#[async_trait::async_trait]
+impl Contact for whatsapp::WhatsApp {
+    async fn send_text(&self, text: &str) -> anyhow::Result<()> {
+        whatsapp::WhatsApp::send_text(self, text).await
+    }
+    async fn send_voice(&self, file: &std::path::Path) -> anyhow::Result<()> {
+        whatsapp::WhatsApp::send_voice(self, file).await
+    }
+    async fn stop(self: Box<Self>) {
+        whatsapp::WhatsApp::stop(*self).await
+    }
+}
+
+#[async_trait::async_trait]
+impl Contact for signal::Signal {
+    async fn send_text(&self, text: &str) -> anyhow::Result<()> {
+        signal::Signal::send_text(self, text).await
+    }
+    async fn send_voice(&self, file: &std::path::Path) -> anyhow::Result<()> {
+        signal::Signal::send_voice(self, file).await
+    }
+    async fn stop(self: Box<Self>) {
+        signal::Signal::stop(*self).await
+    }
+}
+
 /// The running messaging services.
 pub struct Bridge {
-    whatsapp: Option<whatsapp::WhatsApp>,
-    signal: Option<signal::Signal>,
+    contacts: HashMap<Service, Box<dyn Contact>>,
 }
 
 impl Bridge {
     /// Start the configured services; incoming messages arrive on the receiver.
     pub async fn start(config: &Config) -> anyhow::Result<(Bridge, mpsc::Receiver<Inbound>)> {
         let (tx, inbox) = mpsc::channel(256);
-        let whatsapp = match &config.messaging.whatsapp {
-            Some(contact) => Some(whatsapp::WhatsApp::start(contact, tx.clone()).await?),
-            None => None,
+        let mut bridge = Bridge {
+            contacts: HashMap::new(),
         };
-        let signal = match &config.messaging.signal {
-            Some(contact) => match signal::Signal::start(contact, tx).await {
-                Ok(signal) => Some(signal),
+        for (service, contact) in config.messaging.enabled() {
+            let started: anyhow::Result<Box<dyn Contact>> = match service {
+                Service::WhatsApp => whatsapp::WhatsApp::start(contact, tx.clone())
+                    .await
+                    .map(|c| Box::new(c) as _),
+                Service::Signal => signal::Signal::start(contact, tx.clone())
+                    .await
+                    .map(|c| Box::new(c) as _),
+            };
+            match started {
+                Ok(started) => {
+                    bridge.contacts.insert(service, started);
+                }
                 Err(err) => {
-                    if let Some(w) = whatsapp {
-                        w.stop().await;
-                    }
+                    bridge.stop().await;
                     return Err(err);
                 }
-            },
-            None => None,
-        };
-        Ok((Bridge { whatsapp, signal }, inbox))
+            }
+        }
+        Ok((bridge, inbox))
+    }
+
+    #[cfg(test)]
+    pub fn with(contacts: HashMap<Service, Box<dyn Contact>>) -> Bridge {
+        Bridge { contacts }
+    }
+
+    fn contact(&self, service: Service) -> anyhow::Result<&dyn Contact> {
+        match self.contacts.get(&service) {
+            Some(contact) => Ok(contact.as_ref()),
+            None => bail!("{service} is not configured"),
+        }
     }
 
     pub async fn send_text(&self, service: Service, text: &str) -> anyhow::Result<()> {
-        match service {
-            Service::WhatsApp => match &self.whatsapp {
-                Some(w) => w.send_text(text).await,
-                None => bail!("WhatsApp is not configured"),
-            },
-            Service::Signal => match &self.signal {
-                Some(s) => s.send_text(text).await,
-                None => bail!("Signal is not configured"),
-            },
-        }
+        self.contact(service)?.send_text(text).await
     }
 
     /// Send the captured recording as a voice note. A failure never falls
@@ -106,6 +148,7 @@ impl Bridge {
         audio: &Clip,
         max: Duration,
     ) -> anyhow::Result<()> {
+        let contact = self.contact(service)?;
         let dir = tempfile::Builder::new()
             .prefix("walkietalk-send-")
             .tempdir()?;
@@ -113,24 +156,12 @@ impl Bridge {
         let file = voice::encode(&clip, dir.path()).await.map_err(|err| {
             anyhow::anyhow!("Message not sent. Could not prepare the voice message: {err}")
         })?;
-        match service {
-            Service::WhatsApp => match &self.whatsapp {
-                Some(w) => w.send_voice(&file).await,
-                None => bail!("WhatsApp is not configured"),
-            },
-            Service::Signal => match &self.signal {
-                Some(s) => s.send_voice(&file).await,
-                None => bail!("Signal is not configured"),
-            },
-        }
+        contact.send_voice(&file).await
     }
 
     pub async fn stop(self) {
-        if let Some(w) = self.whatsapp {
-            w.stop().await;
-        }
-        if let Some(s) = self.signal {
-            s.stop().await;
+        for (_, contact) in self.contacts {
+            contact.stop().await;
         }
     }
 }
