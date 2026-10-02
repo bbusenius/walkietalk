@@ -5,6 +5,8 @@ use anyhow::bail;
 use crate::agent::{self, TextAgent};
 use crate::config::{AgentBackend, Config, SttBackend, TtsBackend};
 use crate::credentials::Credentials;
+use crate::grok_login::GrokLogin;
+use crate::xai::Auth;
 use crate::stt::{self, Transcriber};
 use crate::tts::{self, Shaping, Voice};
 
@@ -18,17 +20,40 @@ pub fn text_agent(config: &Config, _creds: &Credentials) -> anyhow::Result<Box<d
     })
 }
 
-pub fn transcriber(config: &Config, _creds: &Credentials) -> anyhow::Result<Box<dyn Transcriber>> {
+pub fn transcriber(config: &Config, creds: &Credentials) -> anyhow::Result<Box<dyn Transcriber>> {
+    let remote = |auth| {
+        Box::new(stt::grok::GrokStt::new(auth, config.stt.timeout(), config.stt.max_response_bytes, keyterms(config)))
+    };
     Ok(match config.stt.backend {
         SttBackend::Whisper => Box::new(stt::whisper::Whisper::new(config.stt.model, config.stt.timeout())),
-        other => bail!("stt.backend {other} is not available yet"),
+        SttBackend::Grok => remote(Auth::Login(GrokLogin::locate())),
+        SttBackend::GrokApi => remote(Auth::Key { env: config.stt.api_key_env.clone(), creds: creds.clone() }),
     })
 }
 
-pub fn voice(config: &Config, _creds: &Credentials) -> anyhow::Result<Box<dyn Voice>> {
+/// Names the recognizer should expect: wake names and sleep phrases.
+/// The shutdown code is deliberately left out.
+pub fn keyterms(config: &Config) -> Vec<String> {
+    let mut terms: Vec<String> = std::iter::once(&config.wake.name).chain(&config.wake.aliases).cloned().collect();
+    for (_, contact) in config.messaging.enabled() {
+        terms.extend(std::iter::once(&contact.wake).chain(&contact.aliases).cloned());
+    }
+    terms.extend(config.sleep_phrases().into_iter().map(String::from));
+    terms
+}
+
+pub fn voice(config: &Config, creds: &Credentials) -> anyhow::Result<Box<dyn Voice>> {
     let shaping = Shaping::from_config(config);
+    let grok = |auth| Box::new(tts::grok::GrokTts::new(auth, config.tts.grok.clone(), shaping));
     Ok(match config.tts.backend {
         TtsBackend::Piper => Box::new(tts::piper::Piper::new(&config.tts.piper.executable, config.piper_model(), shaping)),
-        other => bail!("tts.backend {other} is not available yet"),
+        TtsBackend::Grok => grok(Auth::Login(GrokLogin::locate())),
+        TtsBackend::GrokApi => grok(Auth::Key { env: config.tts.grok.key_env.clone(), creds: creds.clone() }),
+        TtsBackend::Hermes => Box::new(tts::hermes::HermesTts::new(
+            &config.tts.hermes.url,
+            &config.tts.hermes.token_env,
+            creds.clone(),
+            shaping,
+        )),
     })
 }

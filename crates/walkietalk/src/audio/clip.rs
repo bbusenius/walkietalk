@@ -153,7 +153,11 @@ impl Clip {
         Self::from_reader(reader, max).with_context(|| format!("WAV {}", path.display()))
     }
 
+    /// Decode an in-memory WAV. Streaming encoders often write a
+    /// placeholder data length; it is corrected to the bytes present.
     pub fn from_wav_bytes(bytes: &[u8], max: Duration) -> anyhow::Result<Clip> {
+        let mut bytes = bytes.to_vec();
+        fix_streaming_lengths(&mut bytes);
         Self::from_reader(hound::WavReader::new(Cursor::new(bytes))?, max)
     }
 
@@ -217,6 +221,31 @@ impl Clip {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         }
+    }
+}
+
+/// Clamp the RIFF and data chunk lengths to what is actually present.
+fn fix_streaming_lengths(bytes: &mut [u8]) {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return;
+    }
+    let total = bytes.len();
+    let riff = (total - 8) as u32;
+    if u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes")) as usize > total - 8 {
+        bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+    }
+    let mut pos = 12;
+    while pos + 8 <= total {
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes")) as usize;
+        let start = pos + 8;
+        if &bytes[pos..pos + 4] == b"data" {
+            let present = (total - start) & !1;
+            if size > present {
+                bytes[pos + 4..pos + 8].copy_from_slice(&(present as u32).to_le_bytes());
+            }
+            return;
+        }
+        pos = start.saturating_add(size + (size & 1));
     }
 }
 
@@ -301,6 +330,15 @@ mod tests {
         let bytes = clip.to_wav_bytes();
         assert_eq!(Clip::from_wav_bytes(&bytes, Duration::from_secs(1)).unwrap(), clip);
         assert!(Clip::from_wav_bytes(&bytes, Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn streaming_placeholder_lengths_are_corrected() {
+        let clip = tone(300.0, 0.25, 48_000);
+        let mut bytes = clip.to_wav_bytes();
+        bytes[4..8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        assert_eq!(Clip::from_wav_bytes(&bytes, Duration::from_secs(1)).unwrap(), clip);
     }
 
     #[test]
