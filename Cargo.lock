@@ -3759,6 +3759,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml",
+ "unicode-width",
  "uuid",
  "which",
  "whisper-rs",

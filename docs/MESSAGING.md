@@ -142,16 +142,25 @@ station while it transmits.
 walkietalk -c ~/.config/walkietalk/config.toml talk --capture --transmit --panel
 ```
 
-The panel shows the live radio log above fixed review controls in the same
-terminal (at least 60x20). The keys that work at the moment are always shown at
-the bottom, as `[R] Read  [E] Edit ...`. Keys: **R** read, **E** edit, **A** approve,
-**T** transmit, **D** deny, **S** sleep, **Tab** switch between the review and
-approved views, **Up/Down/PgUp/PgDn/Home/End** scroll the message, **Ctrl+C**
-stop. The editor accepts typing, **Left/Right**, **Home/End**, **Ctrl+A/E**,
-**Backspace/Delete**, **Ctrl+U** (clear), **Enter** (save), and **Esc**
-(cancel). Panel actions use the same rules as the commands, which keep working
-while the panel is open. While the panel is open, all other program output
-goes to its log pane; the terminal is restored on exit.
+The panel shows the live radio log above the review controls in the same
+terminal (at least 60x20; the review area grows on taller terminals). It
+shows the conversation status, the queue counts, the current message with
+what you can do next ("Ready for review", "Read the voice transcript before
+approving"), the latest result, and the keys that work right now:
+
+```
+[R] Read  [E] Edit  [A] Approve  [T] Transmit  [D] Deny  [S] Sleep  [Tab] Approved view  [Ctrl+C] Stop
+```
+
+**Tab** switches between the review and approved views;
+**Up/Down/PgUp/PgDn/Home/End** scroll a long message. While an action runs,
+the keys pause and the panel says so. The editor uses the terminal's own
+cursor and wraps long text; it accepts typing, **Left/Right**, **Home/End**,
+**Ctrl+A/E**, **Backspace/Delete**, **Ctrl+U** (clear), **Enter** (save), and
+**Esc** (cancel), and warns at once if the message changes while you edit.
+Panel actions use the same rules as the commands, which keep working while the
+panel is open. While the panel is open, all other program output goes to its
+log pane; the terminal is restored on exit.
 
 Control sockets live in `$XDG_RUNTIME_DIR/walkietalk-operator/` (private), or
 `~/.cache/walkietalk/operator/` without a runtime directory.
