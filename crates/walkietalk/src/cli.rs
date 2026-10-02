@@ -8,7 +8,9 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::config::Config;
 use crate::credentials::{self, Credentials};
-use crate::{paths, setup, ui};
+use crate::commands::hardware;
+use crate::radio::TransmitConsent;
+use crate::{paths, setup, signals, ui};
 
 #[derive(Parser)]
 #[command(
@@ -51,6 +53,27 @@ enum Command {
     },
     /// Validate the settings without touching hardware, network, or logins
     ConfigCheck,
+    /// List audio devices and serial ports for the config
+    Devices {
+        /// Show every ALSA device, not just sound cards by name
+        #[arg(long)]
+        all: bool,
+    },
+    /// Key the transmitter briefly (simulated unless --transmit)
+    Ptt {
+        #[arg(long, default_value_t = 1.0, value_name = "N")]
+        seconds: f64,
+        /// Really key the radio (requires --config)
+        #[arg(long)]
+        transmit: bool,
+    },
+    /// Play a WAV over the radio (simulated unless --transmit)
+    Play {
+        wav: PathBuf,
+        /// Really transmit (requires --config)
+        #[arg(long)]
+        transmit: bool,
+    },
 }
 
 /// Where the config came from. Only an explicitly named file may key the radio.
@@ -115,7 +138,18 @@ impl Global {
 
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli) {
+    if let Err(err) = signals::install() {
+        ui::error!("Error: cannot install signal handlers: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            ui::error!("Error: cannot start the async runtime: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(run(cli)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             ui::error!("Error: {err:#}");
@@ -124,7 +158,7 @@ pub fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let global = &cli.global;
     match cli.command {
         Command::Init { directory } => {
@@ -148,7 +182,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ui::status!("No hardware, network, or login was checked.");
             Ok(())
         }
+        Command::Devices { all } => blocking(move || hardware::devices(all)).await,
+        Command::Ptt { seconds, transmit } => {
+            let (source, config) = global.load_config()?;
+            let consent = TransmitConsent::grant(transmit, &source)?;
+            blocking(move || hardware::ptt(&config, consent, seconds)).await
+        }
+        Command::Play { wav, transmit } => {
+            let (source, config) = global.load_config()?;
+            let consent = TransmitConsent::grant(transmit, &source)?;
+            blocking(move || hardware::play(&config, consent, &wav)).await
+        }
     }
+}
+
+/// Run blocking work off the async threads.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> anyhow::Result<T> {
+    tokio::task::spawn_blocking(f).await.context("worker thread failed")?
 }
 
 fn print_summary(config: &Config, creds: &Credentials) {
