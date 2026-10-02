@@ -3616,6 +3616,7 @@ dependencies = [
 name = "walkietalk"
 version = "0.1.0"
 dependencies = [
+ "alsa",
  "anstream",
  "anstyle",
  "anyhow",
@@ -3641,6 +3642,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "toml",
  "uuid",
  "whisper-rs",
