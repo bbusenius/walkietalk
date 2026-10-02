@@ -21,6 +21,8 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Events kept in memory before the turn is abandoned.
 const INBOX: usize = 256;
+/// Longest wait for the socket to accept one command.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Credentials were refused; retrying cannot help.
 #[derive(Debug, thiserror::Error)]
@@ -157,11 +159,15 @@ impl Client {
         !self.reader.is_finished() || !self.inbox.is_empty()
     }
 
+    /// Send a command; a server that stops reading cannot block us.
     pub async fn send(&mut self, command: Value) -> anyhow::Result<()> {
-        self.sink
-            .send(Message::Text(command.to_string().into()))
-            .await
-            .map_err(|err| anyhow::anyhow!("realtime send failed: {}", describe(&err)))
+        let send = self.sink.send(Message::Text(command.to_string().into()));
+        match tokio::time::timeout(SEND_TIMEOUT, send).await {
+            Ok(result) => {
+                result.map_err(|err| anyhow::anyhow!("realtime send failed: {}", describe(&err)))
+            }
+            Err(_) => bail!("realtime send timed out"),
+        }
     }
 
     /// Configure the session and wait for the server to accept it.

@@ -344,16 +344,21 @@ impl Talk {
                 Err(err) if err.downcast_ref::<Retry>().is_some() => continue,
                 Err(err) => return Err(err),
             };
-            let next = match event {
-                Event::Heard(utterance) => self.handle(utterance).await?,
-                Event::Deliver(service) => {
-                    self.deliver(service).await?;
-                    Next::Listen
+            // A stop request abandons slow work (an agent request, say);
+            // the transmitter was already released by the signal handler.
+            let stop = self.stop.clone();
+            let work = async {
+                match event {
+                    Event::Heard(utterance) => self.handle(utterance).await,
+                    Event::Deliver(service) => self.deliver(service).await.map(|_| Next::Listen),
+                    Event::Operator(command) => {
+                        self.operator_command(command).await.map(|_| Next::Listen)
+                    }
                 }
-                Event::Operator(command) => {
-                    self.operator_command(command).await?;
-                    Next::Listen
-                }
+            };
+            let next = tokio::select! {
+                next = work => next?,
+                _ = stop.cancelled() => return Ok(()),
             };
             if next == Next::Exit || self.once {
                 return Ok(());

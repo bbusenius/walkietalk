@@ -54,7 +54,8 @@ impl Request {
         let text_ok = !self.text.trim().is_empty()
             && self.text.chars().count() <= MAX_TEXT_CHARS
             && !self.text.chars().any(char::is_control);
-        let limit_ok = self.max_seconds.is_finite() && self.max_seconds > 0.0 && self.max_seconds <= max_audio;
+        let limit_ok =
+            self.max_seconds.is_finite() && self.max_seconds > 0.0 && self.max_seconds <= max_audio;
         if text_ok && limit_ok { Ok(()) } else { Err(()) }
     }
 }
@@ -95,14 +96,24 @@ impl Drop for Group {
 
 /// Run a program in its own process group, keeping a bounded stdout.
 async fn run(mut command: Command, max_stdout: usize) -> Result<(bool, Vec<u8>), SpeechError> {
-    command.process_group(0).kill_on_drop(true).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|_| SpeechError::Failed("cannot start a helper program"))?;
+    command
+        .process_group(0)
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|_| SpeechError::Failed("cannot start a helper program"))?;
     let _group = Group::of(&child);
     let mut stdout = child.stdout.take().expect("piped");
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
-        let n = stdout.read(&mut buf).await.map_err(|_| SpeechError::Failed("helper output failed"))?;
+        let n = stdout
+            .read(&mut buf)
+            .await
+            .map_err(|_| SpeechError::Failed("helper output failed"))?;
         if n == 0 {
             break;
         }
@@ -111,7 +122,10 @@ async fn run(mut command: Command, max_stdout: usize) -> Result<(bool, Vec<u8>),
         }
         out.extend_from_slice(&buf[..n]);
     }
-    let status = child.wait().await.map_err(|_| SpeechError::Failed("helper failed"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|_| SpeechError::Failed("helper failed"))?;
     Ok((status.success(), out))
 }
 
@@ -128,18 +142,39 @@ async fn produce(request: &Request, limits: &Limits) -> Result<Vec<u8>, SpeechEr
         .tempdir()
         .map_err(|_| SpeechError::Failed("cannot create a working directory"))?;
     let request_path = dir.path().join("request.json");
-    std::fs::write(&request_path, serde_json::json!({"text": request.text}).to_string())
-        .map_err(|_| SpeechError::Failed("cannot write the request"))?;
+    std::fs::write(
+        &request_path,
+        serde_json::json!({"text": request.text}).to_string(),
+    )
+    .map_err(|_| SpeechError::Failed("cannot write the request"))?;
     let mut python = Command::new(&limits.python);
-    python.arg("-c").arg(SNIPPET).arg(&limits.hermes_root).arg(&request_path).arg(dir.path()).current_dir(dir.path());
+    python
+        .arg("-c")
+        .arg(SNIPPET)
+        .arg(&limits.hermes_root)
+        .arg(&request_path)
+        .arg(dir.path())
+        .current_dir(dir.path());
     let (ok, stdout) = run(python, 64 * 1024).await?;
     if !ok {
-        return Err(SpeechError::Failed("the configured provider failed or was not explicitly selected"));
+        return Err(SpeechError::Failed(
+            "the configured provider failed or was not explicitly selected",
+        ));
     }
-    let reply: serde_json::Value = serde_json::from_slice(&stdout).map_err(|_| SpeechError::Failed("invalid provider reply"))?;
-    let source = reply["file"].as_str().map(PathBuf::from).ok_or(SpeechError::Failed("no audio file"))?;
-    let source = source.canonicalize().map_err(|_| SpeechError::Failed("audio file missing"))?;
-    let inside = dir.path().canonicalize().map(|d| source.starts_with(d)).unwrap_or(false);
+    let reply: serde_json::Value = serde_json::from_slice(&stdout)
+        .map_err(|_| SpeechError::Failed("invalid provider reply"))?;
+    let source = reply["file"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or(SpeechError::Failed("no audio file"))?;
+    let source = source
+        .canonicalize()
+        .map_err(|_| SpeechError::Failed("audio file missing"))?;
+    let inside = dir
+        .path()
+        .canonicalize()
+        .map(|d| source.starts_with(d))
+        .unwrap_or(false);
     let size = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
     if !inside || size == 0 || size > MAX_SOURCE_BYTES {
         return Err(SpeechError::Failed("invalid audio file"));
@@ -166,7 +201,8 @@ async fn convert(source: &Path, dir: &Path, request: &Request) -> Result<Vec<u8>
     if !ok {
         return Err(SpeechError::Failed("audio conversion failed"));
     }
-    let reader = hound::WavReader::open(&out).map_err(|_| SpeechError::Failed("invalid converted audio"))?;
+    let reader =
+        hound::WavReader::open(&out).map_err(|_| SpeechError::Failed("invalid converted audio"))?;
     let spec = reader.spec();
     if spec.channels != 1 || spec.sample_rate != RATE || spec.bits_per_sample != 16 {
         return Err(SpeechError::Failed("invalid converted audio"));
