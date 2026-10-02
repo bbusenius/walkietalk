@@ -110,8 +110,19 @@ pub async fn request(
     text: Option<String>,
     timeout: Duration,
 ) -> anyhow::Result<bool> {
+    let stream = connect(config).await?;
+    exchange(stream, action, approved, text, timeout).await
+}
+
+/// Run one request over an open control connection.
+pub async fn exchange(
+    stream: UnixStream,
+    action: Action,
+    approved: bool,
+    text: Option<String>,
+    timeout: Duration,
+) -> anyhow::Result<bool> {
     let work = async {
-        let stream = connect(config).await?;
         let (read, mut write) = stream.into_split();
         let mut lines = BufReader::new(read).lines();
         let first = lines
