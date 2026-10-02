@@ -140,9 +140,8 @@ impl Radio {
             .map_err(|err| TxError::NotKeyed(err.into()))?
             .with_gain(self.timing.gain);
         let playback = self.out.prepare(&clip).map_err(TxError::NotKeyed)?;
-        let ptt = self.owner.handle();
         let deadline = Instant::now() + self.timing.max_tx;
-        let mut keyed = Keyed::new(&ptt, deadline)?;
+        let keyed = Keyed::new(self.owner.handle(), deadline)?;
         keyed.settle(self.timing.settle);
         let played = play(playback, deadline);
         let capped = keyed.release()?;
@@ -167,22 +166,20 @@ fn play(mut playback: Box<dyn Playback>, deadline: Instant) -> anyhow::Result<bo
 }
 
 /// The transmitter is keyed while this exists.
-pub struct Keyed<'a> {
-    ptt: &'a Ptt,
+pub struct Keyed {
+    ptt: Ptt,
     deadline: Instant,
     released: bool,
 }
 
-impl<'a> Keyed<'a> {
-    pub fn new(ptt: &'a Ptt, deadline: Instant) -> Result<Keyed<'a>, TxError> {
-        let mut keyed = Keyed { ptt, deadline, released: false };
+impl Keyed {
+    pub fn new(ptt: Ptt, deadline: Instant) -> Result<Keyed, TxError> {
         if let Err(err) = ptt.key(deadline) {
             // Make sure a partial assertion is released before reporting.
-            keyed.released = true;
             let _ = ptt.release();
             return Err(TxError::Ptt(err));
         }
-        Ok(keyed)
+        Ok(Keyed { ptt, deadline, released: false })
     }
 
     /// Wait out the key-up delay, never past the deadline.
@@ -202,7 +199,7 @@ impl<'a> Keyed<'a> {
     }
 }
 
-impl Drop for Keyed<'_> {
+impl Drop for Keyed {
     fn drop(&mut self) {
         if !self.released {
             if let Err(err) = self.ptt.release() {

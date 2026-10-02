@@ -14,6 +14,7 @@ mod http;
 mod paths;
 mod phrases;
 mod radio;
+mod realtime;
 mod setup;
 mod signals;
 mod stt;

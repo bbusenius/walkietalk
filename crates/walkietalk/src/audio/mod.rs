@@ -6,6 +6,7 @@ pub mod device;
 pub mod listener;
 pub mod morse;
 pub mod playback;
+pub mod stream;
 pub mod vad;
 
 pub use clip::{Clip, Fit, TooLong};
