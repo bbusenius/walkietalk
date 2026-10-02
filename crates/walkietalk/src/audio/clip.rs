@@ -66,10 +66,6 @@ impl Clip {
         self.samples.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
-    }
-
     pub fn duration(&self) -> Duration {
         Duration::from_secs_f64(self.seconds())
     }
@@ -115,7 +111,9 @@ impl Clip {
     pub fn with_gain(mut self, gain: f64) -> Clip {
         if gain != 1.0 {
             for s in &mut self.samples {
-                *s = (*s as f64 * gain).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+                *s = (*s as f64 * gain)
+                    .round()
+                    .clamp(i16::MIN as f64, i16::MAX as f64) as i16;
             }
         }
         self
@@ -143,13 +141,15 @@ impl Clip {
     }
 
     /// Root-mean-square level, 0 to 1.
+    #[cfg(test)]
     pub fn rms(&self) -> f64 {
         rms(&self.samples)
     }
 
     /// Read a mono 16-bit PCM WAV, refusing anything longer than `max`.
     pub fn read_wav(path: &Path, max: Duration) -> anyhow::Result<Clip> {
-        let reader = hound::WavReader::open(path).with_context(|| format!("cannot read WAV {}", path.display()))?;
+        let reader = hound::WavReader::open(path)
+            .with_context(|| format!("cannot read WAV {}", path.display()))?;
         Self::from_reader(reader, max).with_context(|| format!("WAV {}", path.display()))
     }
 
@@ -161,13 +161,22 @@ impl Clip {
         Self::from_reader(hound::WavReader::new(Cursor::new(bytes))?, max)
     }
 
-    fn from_reader<R: std::io::Read>(reader: hound::WavReader<R>, max: Duration) -> anyhow::Result<Clip> {
+    fn from_reader<R: std::io::Read>(
+        reader: hound::WavReader<R>,
+        max: Duration,
+    ) -> anyhow::Result<Clip> {
         let spec = reader.spec();
-        if spec.channels != 1 || spec.bits_per_sample != 16 || spec.sample_format != hound::SampleFormat::Int {
+        if spec.channels != 1
+            || spec.bits_per_sample != 16
+            || spec.sample_format != hound::SampleFormat::Int
+        {
             bail!("use an uncompressed mono 16-bit PCM WAV");
         }
         if !(8_000..=48_000).contains(&spec.sample_rate) {
-            bail!("sample rate {} Hz is not supported; use 8000 to 48000 Hz", spec.sample_rate);
+            bail!(
+                "sample rate {} Hz is not supported; use 8000 to 48000 Hz",
+                spec.sample_rate
+            );
         }
         let limit = frames_for(max, spec.sample_rate);
         // Some streaming encoders write a placeholder length; trust the data, bounded.
@@ -190,7 +199,8 @@ impl Clip {
     pub fn to_wav_bytes(&self) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         {
-            let mut writer = hound::WavWriter::new(&mut cursor, self.spec()).expect("in-memory WAV writer");
+            let mut writer =
+                hound::WavWriter::new(&mut cursor, self.spec()).expect("in-memory WAV writer");
             for &s in &self.samples {
                 writer.write_sample(s).expect("in-memory WAV write");
             }
@@ -205,7 +215,12 @@ impl Clip {
             .write(true)
             .create_new(true)
             .open(path)
-            .with_context(|| format!("cannot create {} (it must not already exist)", path.display()))?;
+            .with_context(|| {
+                format!(
+                    "cannot create {} (it must not already exist)",
+                    path.display()
+                )
+            })?;
         let mut writer = hound::WavWriter::new(std::io::BufWriter::new(file), self.spec())?;
         for &s in &self.samples {
             writer.write_sample(s)?;
@@ -236,7 +251,8 @@ fn fix_streaming_lengths(bytes: &mut [u8]) {
     }
     let mut pos = 12;
     while pos + 8 <= total {
-        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes")) as usize;
+        let size =
+            u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes")) as usize;
         let start = pos + 8;
         if &bytes[pos..pos + 4] == b"data" {
             let present = (total - start) & !1;
@@ -262,7 +278,9 @@ pub fn rms(samples: &[i16]) -> f64 {
 }
 
 pub fn to_i16(sample: f32) -> i16 {
-    (sample * 32768.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+    (sample * 32768.0)
+        .round()
+        .clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 /// Resample a whole mono signal.
@@ -287,7 +305,9 @@ mod tests {
         let n = (seconds * rate as f64) as usize;
         Clip::new(
             (0..n)
-                .map(|i| ((i as f64 / rate as f64 * freq * std::f64::consts::TAU).sin() * 16000.0) as i16)
+                .map(|i| {
+                    ((i as f64 / rate as f64 * freq * std::f64::consts::TAU).sin() * 16000.0) as i16
+                })
                 .collect(),
             rate,
         )
@@ -305,7 +325,11 @@ mod tests {
     #[test]
     fn strict_fit_refuses_and_crop_cuts() {
         let clip = Clip::silence(Duration::from_secs(3), 8000);
-        assert!(clip.clone().fit(Duration::from_secs(2), Fit::Strict).is_err());
+        assert!(
+            clip.clone()
+                .fit(Duration::from_secs(2), Fit::Strict)
+                .is_err()
+        );
         let cropped = clip.fit(Duration::from_secs(2), Fit::Crop).unwrap();
         assert_eq!(cropped.len(), 16_000);
     }
@@ -319,7 +343,10 @@ mod tests {
     #[test]
     fn peak_normalization_reaches_full_scale() {
         let clip = Clip::new(vec![1000, -2000, 500], 8000).peak_normalized();
-        assert_eq!(clip.samples().iter().map(|s| s.unsigned_abs()).max(), Some(32767));
+        assert_eq!(
+            clip.samples().iter().map(|s| s.unsigned_abs()).max(),
+            Some(32767)
+        );
         let silent = Clip::new(vec![0, 0], 8000).peak_normalized();
         assert_eq!(silent.samples(), &[0, 0]);
     }
@@ -328,7 +355,10 @@ mod tests {
     fn wav_round_trip_and_limits() {
         let clip = tone(300.0, 0.5, 16_000);
         let bytes = clip.to_wav_bytes();
-        assert_eq!(Clip::from_wav_bytes(&bytes, Duration::from_secs(1)).unwrap(), clip);
+        assert_eq!(
+            Clip::from_wav_bytes(&bytes, Duration::from_secs(1)).unwrap(),
+            clip
+        );
         assert!(Clip::from_wav_bytes(&bytes, Duration::from_millis(100)).is_err());
     }
 
@@ -338,13 +368,21 @@ mod tests {
         let mut bytes = clip.to_wav_bytes();
         bytes[4..8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         bytes[40..44].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-        assert_eq!(Clip::from_wav_bytes(&bytes, Duration::from_secs(1)).unwrap(), clip);
+        assert_eq!(
+            Clip::from_wav_bytes(&bytes, Duration::from_secs(1)).unwrap(),
+            clip
+        );
     }
 
     #[test]
     fn stereo_or_float_wavs_are_refused() {
         let mut cursor = Cursor::new(Vec::new());
-        let spec = hound::WavSpec { channels: 2, sample_rate: 8000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 8000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
         let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
         w.write_sample(0i16).unwrap();
         w.write_sample(0i16).unwrap();

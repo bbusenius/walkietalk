@@ -27,7 +27,14 @@ pub struct ClaudeApi {
 }
 
 impl ClaudeApi {
-    pub fn new(key_env: &str, creds: Credentials, model: &str, effort: ReasoningEffort, max_reply_chars: usize, timeout: Duration) -> ClaudeApi {
+    pub fn new(
+        key_env: &str,
+        creds: Credentials,
+        model: &str,
+        effort: ReasoningEffort,
+        max_reply_chars: usize,
+        timeout: Duration,
+    ) -> ClaudeApi {
         ClaudeApi {
             url: URL.into(),
             key_env: key_env.into(),
@@ -50,7 +57,12 @@ impl ClaudeApi {
         let mut messages: Vec<Value> = request
             .history
             .iter()
-            .flat_map(|t| [json!({"role": "user", "content": t.user}), json!({"role": "assistant", "content": t.assistant})])
+            .flat_map(|t| {
+                [
+                    json!({"role": "user", "content": t.user}),
+                    json!({"role": "assistant", "content": t.assistant}),
+                ]
+            })
             .collect();
         messages.push(json!({"role": "user", "content": request.traffic}));
         let mut body = json!({
@@ -61,7 +73,8 @@ impl ClaudeApi {
             "max_tokens": (self.max_reply_chars * 2).max(2048),
         });
         if request.web_search {
-            body["tools"] = json!([{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]);
+            body["tools"] =
+                json!([{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]);
         }
         if let Some(effort) = self.effort.explicit() {
             body["output_config"] = json!({"effort": effort});
@@ -83,9 +96,16 @@ impl ClaudeApi {
         match response.status() {
             StatusCode::OK => {}
             s @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
-                bail!("Claude API refused the key (HTTP {}); check {} and billed API access", s.as_u16(), self.key_env)
+                bail!(
+                    "Claude API refused the key (HTTP {}); check {} and billed API access",
+                    s.as_u16(),
+                    self.key_env
+                )
             }
-            s => bail!("Claude API returned HTTP {}; check the model and effort. Details withheld", s.as_u16()),
+            s => bail!(
+                "Claude API returned HTTP {}; check the model and effort. Details withheld",
+                s.as_u16()
+            ),
         }
         let message = http::json(response, MAX_RESPONSE, "Claude API").await?;
         parse(&message, request.web_search)
@@ -97,10 +117,15 @@ fn parse(message: &Value, web_search: bool) -> anyhow::Result<String> {
     if message["type"] != "message" || message["role"] != "assistant" {
         bail!("Claude API returned an unexpected response");
     }
-    if !matches!(message["stop_reason"].as_str(), Some("end_turn" | "refusal")) {
+    if !matches!(
+        message["stop_reason"].as_str(),
+        Some("end_turn" | "refusal")
+    ) {
         bail!("Claude API did not finish its answer; reply discarded");
     }
-    let content = message["content"].as_array().context("Claude API returned no content")?;
+    let content = message["content"]
+        .as_array()
+        .context("Claude API returned no content")?;
     let mut parts = Vec::new();
     for block in content {
         match block["type"].as_str() {
@@ -117,7 +142,10 @@ fn parse(message: &Value, web_search: bool) -> anyhow::Result<String> {
 #[async_trait]
 impl TextAgent for ClaudeApi {
     fn label(&self) -> String {
-        format!("claude-api ({}; reasoning {}; {}, billed API)", self.model, self.effort, self.key_env)
+        format!(
+            "claude-api ({}; reasoning {}; {}, billed API)",
+            self.model, self.effort, self.key_env
+        )
     }
 
     async fn reply(&self, request: Request<'_>) -> anyhow::Result<String> {
@@ -157,11 +185,25 @@ mod tests {
 
     fn agent(url: String) -> ClaudeApi {
         let creds = Credentials::for_tests(&[("ANTHROPIC_API_KEY", "sk-test")], no_env);
-        ClaudeApi::new("ANTHROPIC_API_KEY", creds, "claude-test", ReasoningEffort::Low, 600, Duration::from_secs(5)).at(url)
+        ClaudeApi::new(
+            "ANTHROPIC_API_KEY",
+            creds,
+            "claude-test",
+            ReasoningEffort::Low,
+            600,
+            Duration::from_secs(5),
+        )
+        .at(url)
     }
 
     fn request<'a>(history: &'a [super::super::Turn]) -> Request<'a> {
-        Request { session_id: "s", instructions: "be brief", history, traffic: "why is ice slippery?", web_search: true }
+        Request {
+            session_id: "s",
+            instructions: "be brief",
+            history,
+            traffic: "why is ice slippery?",
+            web_search: true,
+        }
     }
 
     #[tokio::test]
@@ -172,7 +214,10 @@ mod tests {
             "content": [{"type": "thinking", "thinking": "hmm"}, {"type": "server_tool_use", "name": "web_search"}, {"type": "text", "text": "A thin water layer."}]
         });
         let url = serve(reply, seen.clone()).await;
-        let history = [super::super::Turn { user: "hi".into(), assistant: "hello".into() }];
+        let history = [super::super::Turn {
+            user: "hi".into(),
+            assistant: "hello".into(),
+        }];
         let answer = agent(url).reply(request(&history)).await.unwrap();
         assert_eq!(answer, "A thin water layer.");
         let body = &seen.lock().unwrap()[0];

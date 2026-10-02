@@ -97,10 +97,7 @@ impl Conversation {
         }
     }
 
-    pub fn label(&self) -> String {
-        self.agent.label()
-    }
-
+    #[cfg(test)]
     pub fn history(&self) -> impl Iterator<Item = &Turn> {
         self.history.iter()
     }
@@ -150,7 +147,10 @@ pub fn clean_reply(raw: &str, max_chars: usize) -> anyhow::Result<String> {
     if text.is_empty() {
         bail!("the agent returned no answer");
     }
-    if text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
         bail!("the agent returned control characters; reply discarded");
     }
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -181,11 +181,14 @@ pub mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    /// The history and traffic of each request.
+    type Seen = Arc<Mutex<Vec<(Vec<Turn>, String)>>>;
+
     /// Answers from a script and records what it was asked.
     #[derive(Clone, Default)]
     pub struct Scripted {
         pub answers: Arc<Mutex<VecDeque<anyhow::Result<String>>>>,
-        pub seen: Arc<Mutex<Vec<(Vec<Turn>, String)>>>,
+        pub seen: Seen,
     }
 
     impl Scripted {
@@ -208,7 +211,11 @@ pub mod tests {
                 .lock()
                 .unwrap()
                 .push((request.history.to_vec(), request.traffic.to_string()));
-            self.answers.lock().unwrap().pop_front().unwrap_or_else(|| Ok("ok".into()))
+            self.answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok("ok".into()))
         }
     }
 
@@ -234,7 +241,12 @@ pub mod tests {
 
     #[tokio::test]
     async fn uncommitted_or_failed_turns_are_not_remembered() {
-        let agent = Scripted::new(vec![Ok("first".into()), Err(anyhow::anyhow!("boom")), Ok("unheard".into()), Ok("x".into())]);
+        let agent = Scripted::new(vec![
+            Ok("first".into()),
+            Err(anyhow::anyhow!("boom")),
+            Ok("unheard".into()),
+            Ok("x".into()),
+        ]);
         let mut convo = Conversation::new(Box::new(agent.clone()), &config(8), false);
         let first = convo.ask("a").await.unwrap();
         convo.commit(first);
@@ -242,13 +254,21 @@ pub mod tests {
         let _unheard = convo.ask("c").await.unwrap();
         let _ = convo.ask("d").await.unwrap();
         let seen = agent.seen.lock().unwrap();
-        assert_eq!(seen[3].0.len(), 1, "only the committed turn is sent as history");
+        assert_eq!(
+            seen[3].0.len(),
+            1,
+            "only the committed turn is sent as history"
+        );
         assert_eq!(seen[3].0[0].assistant, "first");
     }
 
     #[tokio::test]
     async fn oversized_or_empty_replies_are_rejected() {
-        let agent = Scripted::new(vec![Ok("x".repeat(21)), Ok("   ".into()), Ok("bad\u{7}".into())]);
+        let agent = Scripted::new(vec![
+            Ok("x".repeat(21)),
+            Ok("   ".into()),
+            Ok("bad\u{7}".into()),
+        ]);
         let convo = Conversation::new(Box::new(agent), &config(8), false);
         for _ in 0..3 {
             assert!(convo.ask("q").await.is_err());

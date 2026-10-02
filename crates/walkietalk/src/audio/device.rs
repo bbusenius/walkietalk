@@ -37,7 +37,10 @@ pub fn list() -> anyhow::Result<Vec<Listing>> {
         let Ok(id) = device.id() else { continue };
         out.push(Listing {
             name: id.id().to_string(),
-            description: device.description().map(|d| d.to_string()).unwrap_or_default(),
+            description: device
+                .description()
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
             input: device.supports_input(),
             output: device.supports_output(),
         });
@@ -61,7 +64,11 @@ pub fn find(name: &str, direction: Direction) -> anyhow::Result<Device> {
         Direction::Output => device.supports_output(),
     };
     if !supported {
-        let what = if direction == Direction::Input { "capture" } else { "playback" };
+        let what = if direction == Direction::Input {
+            "capture"
+        } else {
+            "playback"
+        };
         bail!("audio device \"{name}\" does not support {what}");
     }
     Ok(device)
@@ -75,7 +82,12 @@ pub struct Chosen {
     pub format: SampleFormat,
 }
 
-pub fn choose(device: &Device, direction: Direction, preferred_rate: u32, name: &str) -> anyhow::Result<Chosen> {
+pub fn choose(
+    device: &Device,
+    direction: Direction,
+    preferred_rate: u32,
+    name: &str,
+) -> anyhow::Result<Chosen> {
     let ranges: Vec<_> = match direction {
         Direction::Input => device.supported_input_configs().map(|r| r.collect()),
         Direction::Output => device.supported_output_configs().map(|r| r.collect()),
@@ -97,7 +109,9 @@ pub fn choose(device: &Device, direction: Direction, preferred_rate: u32, name: 
     let rate = if (best.min_sample_rate()..=best.max_sample_rate()).contains(&preferred_rate) {
         preferred_rate
     } else {
-        best.max_sample_rate().min(48_000).max(best.min_sample_rate())
+        best.max_sample_rate()
+            .min(48_000)
+            .max(best.min_sample_rate())
     };
     Ok(Chosen {
         config: StreamConfig {

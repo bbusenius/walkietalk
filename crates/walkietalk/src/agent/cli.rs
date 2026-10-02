@@ -20,7 +20,10 @@ pub struct Deadline {
 
 impl Deadline {
     pub fn new(timeout: Duration, label: &'static str) -> Deadline {
-        Deadline { at: Instant::now() + timeout, label }
+        Deadline {
+            at: Instant::now() + timeout,
+            label,
+        }
     }
 
     pub fn left(&self) -> anyhow::Result<Duration> {
@@ -59,7 +62,9 @@ pub fn prompt(request: &Request<'_>) -> String {
 }
 
 pub fn locate(executable: &str, setting: &str) -> anyhow::Result<PathBuf> {
-    exec::find(executable).map_err(|_| anyhow::anyhow!("{executable} not found; install the official CLI or set {setting}"))
+    exec::find(executable).map_err(|_| {
+        anyhow::anyhow!("{executable} not found; install the official CLI or set {setting}")
+    })
 }
 
 /// Parse JSON Lines, failing on any malformed line.
@@ -67,6 +72,9 @@ pub fn json_lines(stdout: &[u8], label: &str) -> anyhow::Result<Vec<serde_json::
     stdout
         .split(|&b| b == b'\n')
         .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-        .map(|line| serde_json::from_slice(line).map_err(|_| anyhow::anyhow!("{label} returned malformed output; reply discarded")))
+        .map(|line| {
+            serde_json::from_slice(line)
+                .map_err(|_| anyhow::anyhow!("{label} returned malformed output; reply discarded"))
+        })
         .collect()
 }

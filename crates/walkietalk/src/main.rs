@@ -21,9 +21,9 @@ mod realtime;
 mod setup;
 mod signals;
 mod stt;
+mod sys;
 mod talk;
 mod tts;
-mod sys;
 mod ui;
 mod xai;
 

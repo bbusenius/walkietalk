@@ -31,7 +31,14 @@ async fn connect(config: Option<&Path>) -> anyhow::Result<UnixStream> {
         }
     }
     match live.len() {
-        0 => bail!("no operator-mode talk is running{}; start `talk --capture` with messaging.operator_mode = true", if config.is_some() { " for this config" } else { "" }),
+        0 => bail!(
+            "no operator-mode talk is running{}; start `talk --capture` with messaging.operator_mode = true",
+            if config.is_some() {
+                " for this config"
+            } else {
+                ""
+            }
+        ),
         1 => Ok(live.pop().expect("one")),
         _ => bail!("more than one operator-mode talk is running; choose one with --config"),
     }
@@ -43,45 +50,89 @@ fn show(item: &ItemView) {
         super::review::Direction::Incoming => "incoming",
         super::review::Direction::Outgoing => "outgoing",
     };
-    ui::status!("Item {}: {direction} {}, {}, {kind}.", item.number, item.service, item.alias);
+    ui::status!(
+        "Item {}: {direction} {}, {}, {kind}.",
+        item.number,
+        item.service,
+        item.alias
+    );
     match (&item.original, item.readable) {
         (Some(original), _) => {
             ui::reply!("Edited: {}", item.content);
             ui::status!("Original: {original}");
         }
-        (None, true) => ui::reply!("{}{}", if item.voice { "Voice transcript: " } else { "" }, item.content),
-        (None, false) => ui::status!("Voice message: run `operator read` for its transcript before approving."),
+        (None, true) => ui::reply!(
+            "{}{}",
+            if item.voice { "Voice transcript: " } else { "" },
+            item.content
+        ),
+        (None, false) => {
+            ui::status!("Voice message: run `operator read` for its transcript before approving.")
+        }
     }
 }
 
 fn summary(snapshot: &Snapshot, action: Action, approved: bool) {
-    ui::status!("Review queue: {} waiting; {} approved for radio delivery.", snapshot.waiting, snapshot.approved);
+    ui::status!(
+        "Review queue: {} waiting; {} approved for radio delivery.",
+        snapshot.waiting,
+        snapshot.approved
+    );
     if !snapshot.conversation.is_empty() {
         ui::status!("Conversation: {}", snapshot.conversation);
     }
     if action == Action::Sleep {
         return;
     }
-    let item = if approved { &snapshot.approved_item } else { &snapshot.item };
+    let item = if approved {
+        &snapshot.approved_item
+    } else {
+        &snapshot.item
+    };
     match item {
         Some(item) => show(item),
-        None => ui::status!("{}", if approved { "No approved incoming message is waiting." } else { "The review queue is empty." }),
+        None => ui::status!(
+            "{}",
+            if approved {
+                "No approved incoming message is waiting."
+            } else {
+                "The review queue is empty."
+            }
+        ),
     }
 }
 
 /// Send one request and print the progress. Returns whether it succeeded.
-pub async fn request(config: Option<&Path>, action: Action, approved: bool, text: Option<String>, timeout: Duration) -> anyhow::Result<bool> {
+pub async fn request(
+    config: Option<&Path>,
+    action: Action,
+    approved: bool,
+    text: Option<String>,
+    timeout: Duration,
+) -> anyhow::Result<bool> {
     let work = async {
         let stream = connect(config).await?;
         let (read, mut write) = stream.into_split();
         let mut lines = BufReader::new(read).lines();
-        let first = lines.next_line().await?.context("operator controls closed the connection")?;
+        let first = lines
+            .next_line()
+            .await?
+            .context("operator controls closed the connection")?;
         let Ok(Response::Snapshot { snapshot }) = serde_json::from_str(&first) else {
             bail!("invalid response from the operator controls");
         };
         summary(&snapshot, action, approved);
-        let revision = (action != Action::Sleep).then(|| if approved { snapshot.approved_revision } else { snapshot.revision });
-        let request = Request { action, approved, revision, text };
+        let revision = (action != Action::Sleep).then_some(if approved {
+            snapshot.approved_revision
+        } else {
+            snapshot.revision
+        });
+        let request = Request {
+            action,
+            approved,
+            revision,
+            text,
+        };
         let mut line = serde_json::to_vec(&request)?;
         line.push(b'\n');
         write.write_all(&line).await?;
@@ -101,7 +152,9 @@ pub async fn request(config: Option<&Path>, action: Action, approved: bool, text
     };
     match tokio::time::timeout(timeout, work).await {
         Ok(result) => result,
-        Err(_) => bail!("the operator command timed out; it may have started, so check `operator status` before retrying (or use --timeout)"),
+        Err(_) => bail!(
+            "the operator command timed out; it may have started, so check `operator status` before retrying (or use --timeout)"
+        ),
     }
 }
 
@@ -119,11 +172,19 @@ pub async fn current_text(config: Option<&Path>) -> anyhow::Result<ItemView> {
     let stream = connect(config).await?;
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
-    let first = lines.next_line().await?.context("operator controls closed the connection")?;
+    let first = lines
+        .next_line()
+        .await?
+        .context("operator controls closed the connection")?;
     let Ok(Response::Snapshot { snapshot }) = serde_json::from_str(&first) else {
         bail!("invalid response from the operator controls");
     };
-    let request = serde_json::to_vec(&Request { action: Action::Status, approved: false, revision: None, text: None })?;
+    let request = serde_json::to_vec(&Request {
+        action: Action::Status,
+        approved: false,
+        revision: None,
+        text: None,
+    })?;
     write.write_all(&[request, b"\n".to_vec()].concat()).await?;
     let item = snapshot.item.context("the review queue is empty")?;
     if let Some(block) = &item.edit_block {
@@ -137,7 +198,9 @@ pub fn prompt_edit(current: &str) -> anyhow::Result<Option<String>> {
     let mut editor = rustyline::DefaultEditor::new()?;
     match editor.readline_with_initial("New text: ", (current, "")) {
         Ok(line) => Ok(Some(line)),
-        Err(rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof) => Ok(None),
+        Err(
+            rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
+        ) => Ok(None),
         Err(err) => Err(err.into()),
     }
 }

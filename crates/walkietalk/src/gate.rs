@@ -61,18 +61,28 @@ impl Gate {
     pub fn new(config: &Config) -> Gate {
         let mut wakes: Vec<Wake> = std::iter::once(&config.wake.name)
             .chain(&config.wake.aliases)
-            .map(|p| Wake { to: Destination::Agent, phrase: Phrase::new(p) })
+            .map(|p| Wake {
+                to: Destination::Agent,
+                phrase: Phrase::new(p),
+            })
             .collect();
         let mut contacts = Vec::new();
         for (service, contact) in config.messaging.enabled() {
             contacts.push((service, contact.listening.clone()));
             for p in std::iter::once(&contact.wake).chain(&contact.aliases) {
-                wakes.push(Wake { to: Destination::Contact(service), phrase: Phrase::new(p) });
+                wakes.push(Wake {
+                    to: Destination::Contact(service),
+                    phrase: Phrase::new(p),
+                });
             }
         }
         Gate {
             wakes,
-            sleep: config.sleep_phrases().into_iter().map(Phrase::new).collect(),
+            sleep: config
+                .sleep_phrases()
+                .into_iter()
+                .map(Phrase::new)
+                .collect(),
             agent: config.listening.clone(),
             contacts,
             selected: None,
@@ -103,7 +113,8 @@ impl Gate {
 
     /// Whether unaddressed traffic that began at `at` is accepted.
     pub fn follow_up_open(&self, at: Instant) -> bool {
-        self.current().mode == ListeningMode::Conversation && self.open_until.is_some_and(|until| at < until)
+        self.current().mode == ListeningMode::Conversation
+            && self.open_until.is_some_and(|until| at < until)
     }
 
     /// Seconds left in the follow-up window.
@@ -129,11 +140,14 @@ impl Gate {
             return Decision::Empty;
         }
         let phrases: Vec<Phrase> = self.wakes.iter().map(|w| w.phrase.clone()).collect();
-        let matched = phrases::longest_prefix(text, &phrases).map(|(index, words)| {
-            (self.wakes[index].to, phrases::after_words(text, words))
-        });
+        let matched = phrases::longest_prefix(text, &phrases)
+            .map(|(index, words)| (self.wakes[index].to, phrases::after_words(text, words)));
         let body = matched.map_or(text, |(_, rest)| rest);
-        if self.sleep.iter().any(|s| s.matches_all(text) || s.matches_all(body)) {
+        if self
+            .sleep
+            .iter()
+            .any(|s| s.matches_all(text) || s.matches_all(body))
+        {
             self.sleep();
             return Decision::Sleep;
         }
@@ -144,7 +158,11 @@ impl Gate {
             }
             Some((to, rest)) => {
                 self.select(to);
-                Decision::Traffic { to, text: rest.to_string(), addressed: true }
+                Decision::Traffic {
+                    to,
+                    text: rest.to_string(),
+                    addressed: true,
+                }
             }
             None if self.follow_up_open(started_at) => Decision::Traffic {
                 to: self.selected.unwrap_or(Destination::Agent),
@@ -165,7 +183,8 @@ impl Gate {
     /// A turn finished: (re)open the follow-up window in conversation mode.
     pub fn complete_turn(&mut self, now: Instant) {
         let listening = self.current();
-        self.open_until = (listening.mode == ListeningMode::Conversation).then(|| now + listening.follow_up());
+        self.open_until =
+            (listening.mode == ListeningMode::Conversation).then(|| now + listening.follow_up());
     }
 
     /// Close the follow-up window, keeping the selected conversation.
@@ -198,10 +217,18 @@ impl Gate {
         };
         match (listening.mode, self.window_left(now)) {
             (ListeningMode::Conversation, Some(left)) => {
-                format!("Listening: follow-up open{to} ({:.0}s left).", left.as_secs_f64())
+                format!(
+                    "Listening: follow-up open{to} ({:.0}s left).",
+                    left.as_secs_f64()
+                )
             }
-            (ListeningMode::Conversation, None) => format!("Listening: say \"{}\" to start.", self.wake_name()),
-            (ListeningMode::WakePhrase, _) => format!("Listening: start each request with \"{}\".", self.wake_name()),
+            (ListeningMode::Conversation, None) => {
+                format!("Listening: say \"{}\" to start.", self.wake_name())
+            }
+            (ListeningMode::WakePhrase, _) => format!(
+                "Listening: start each request with \"{}\".",
+                self.wake_name()
+            ),
         }
     }
 }
@@ -243,7 +270,11 @@ impl Shutdown {
             .map(|p| Phrase::new(p))
             .collect();
         for (_, contact) in config.messaging.enabled() {
-            wakes.extend(std::iter::once(&contact.wake).chain(&contact.aliases).map(|p| Phrase::new(p)));
+            wakes.extend(
+                std::iter::once(&contact.wake)
+                    .chain(&contact.aliases)
+                    .map(|p| Phrase::new(p)),
+            );
         }
         Shutdown {
             enabled: s.enabled,
@@ -281,7 +312,9 @@ impl Shutdown {
         // The whole utterance, and the utterance after any wake phrase.
         let mut candidates = vec![phrases::normalize(transcript)];
         for wake in &self.wakes {
-            if let Some((_, words)) = phrases::longest_prefix(transcript, std::slice::from_ref(wake)) {
+            if let Some((_, words)) =
+                phrases::longest_prefix(transcript, std::slice::from_ref(wake))
+            {
                 candidates.push(phrases::normalize(phrases::after_words(transcript, words)));
             }
         }
@@ -310,10 +343,15 @@ impl Shutdown {
             return Control::Rejected("shutdown code ignored: shutdown is not armed");
         }
         let starts_control = candidates.iter().any(|c| {
-            self.phrases.iter().chain(&self.codes).any(|p| c.starts_with(&format!("{p} ")))
+            self.phrases
+                .iter()
+                .chain(&self.codes)
+                .any(|p| c.starts_with(&format!("{p} ")))
         });
         if starts_control {
-            return Control::Rejected("shutdown control not recognized; say the phrase alone or the phrase then the code");
+            return Control::Rejected(
+                "shutdown control not recognized; say the phrase alone or the phrase then the code",
+            );
         }
         Control::None
     }
@@ -343,7 +381,11 @@ mod tests {
         assert_eq!(gate.decide("what time is it", t0), Decision::NeedsWake);
         assert_eq!(
             gate.decide("Charlotte, what time is it?", t0),
-            Decision::Traffic { to: Destination::Agent, text: "what time is it?".into(), addressed: true }
+            Decision::Traffic {
+                to: Destination::Agent,
+                text: "what time is it?".into(),
+                addressed: true
+            }
         );
         assert_eq!(gate.decide("  ", t0), Decision::Empty);
     }
@@ -354,7 +396,13 @@ mod tests {
         let t0 = Instant::now();
         let _ = gate.decide("charlotte hi", t0);
         gate.complete_turn(t0);
-        assert!(matches!(gate.decide("and then?", secs(t0, 29)), Decision::Traffic { addressed: false, .. }));
+        assert!(matches!(
+            gate.decide("and then?", secs(t0, 29)),
+            Decision::Traffic {
+                addressed: false,
+                ..
+            }
+        ));
         assert_eq!(gate.decide("and then?", secs(t0, 31)), Decision::NeedsWake);
         assert!(gate.expire(secs(t0, 31)));
     }
@@ -366,7 +414,10 @@ mod tests {
         let _ = gate.decide("charlotte hi", t0);
         gate.complete_turn(t0);
         // Started inside the window, even if transcribed after it closed.
-        assert!(matches!(gate.decide("one more", secs(t0, 29)), Decision::Traffic { .. }));
+        assert!(matches!(
+            gate.decide("one more", secs(t0, 29)),
+            Decision::Traffic { .. }
+        ));
     }
 
     #[test]
@@ -382,7 +433,10 @@ mod tests {
     fn wake_alone_selects_without_traffic() {
         let mut gate = Gate::new(&config(""));
         let t0 = Instant::now();
-        assert_eq!(gate.decide("Charlot!", t0), Decision::WakeOnly(Destination::Agent));
+        assert_eq!(
+            gate.decide("Charlot!", t0),
+            Decision::WakeOnly(Destination::Agent)
+        );
         gate.complete_turn(t0);
         assert!(gate.follow_up_open(secs(t0, 1)));
     }
@@ -393,12 +447,18 @@ mod tests {
         let t0 = Instant::now();
         let _ = gate.decide("charlotte hi", t0);
         gate.complete_turn(t0);
-        assert_eq!(gate.decide("Charlotte, go to sleep.", secs(t0, 1)), Decision::Sleep);
+        assert_eq!(
+            gate.decide("Charlotte, go to sleep.", secs(t0, 1)),
+            Decision::Sleep
+        );
         assert_eq!(gate.selected(), None);
         assert_eq!(gate.decide("follow up", secs(t0, 2)), Decision::NeedsWake);
         assert_eq!(gate.decide("stop listening", secs(t0, 3)), Decision::Sleep);
         // A mention inside a longer request is ordinary traffic.
-        assert!(matches!(gate.decide("charlotte, when do kids go to sleep", secs(t0, 4)), Decision::Traffic { .. }));
+        assert!(matches!(
+            gate.decide("charlotte, when do kids go to sleep", secs(t0, 4)),
+            Decision::Traffic { .. }
+        ));
     }
 
     #[test]
@@ -407,18 +467,36 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(
             gate.decide("code one hello", t0),
-            Decision::Traffic { to: Destination::Contact(Service::Signal), text: "hello".into(), addressed: true }
+            Decision::Traffic {
+                to: Destination::Contact(Service::Signal),
+                text: "hello".into(),
+                addressed: true
+            }
         );
         assert_eq!(
             gate.decide("code two", t0),
-            Decision::Traffic { to: Destination::Contact(Service::WhatsApp), text: "two".into(), addressed: true }
+            Decision::Traffic {
+                to: Destination::Contact(Service::WhatsApp),
+                text: "two".into(),
+                addressed: true
+            }
         );
         gate.complete_turn(t0);
         assert!(matches!(
             gate.decide("unaddressed", secs(t0, 5)),
-            Decision::Traffic { to: Destination::Contact(Service::WhatsApp), addressed: false, .. }
+            Decision::Traffic {
+                to: Destination::Contact(Service::WhatsApp),
+                addressed: false,
+                ..
+            }
         ));
-        assert!(matches!(gate.decide("charlotte hi", secs(t0, 6)), Decision::Traffic { to: Destination::Agent, .. }));
+        assert!(matches!(
+            gate.decide("charlotte hi", secs(t0, 6)),
+            Decision::Traffic {
+                to: Destination::Agent,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -435,14 +513,20 @@ mod tests {
         let mut s = Shutdown::new(&config(SHUTDOWN));
         let t0 = Instant::now();
         assert_eq!(s.decide("Bird.", t0, t0), Control::Armed);
-        assert_eq!(s.decide("seven", secs(t0, 10), secs(t0, 11)), Control::Confirmed);
+        assert_eq!(
+            s.decide("seven", secs(t0, 10), secs(t0, 11)),
+            Control::Confirmed
+        );
     }
 
     #[test]
     fn shutdown_together_with_optional_wake() {
         let mut s = Shutdown::new(&config(SHUTDOWN));
         let t0 = Instant::now();
-        assert_eq!(s.decide("Charlotte, Picard epsilon 7!", t0, t0), Control::Confirmed);
+        assert_eq!(
+            s.decide("Charlotte, Picard epsilon 7!", t0, t0),
+            Control::Confirmed
+        );
     }
 
     #[test]
@@ -451,23 +535,35 @@ mod tests {
         let t0 = Instant::now();
         assert!(matches!(s.decide("seven", t0, t0), Control::Rejected(_)));
         assert_eq!(s.decide("bird", t0, t0), Control::Armed);
-        assert!(matches!(s.decide("eight", secs(t0, 1), secs(t0, 1)), Control::Rejected(_)));
+        assert!(matches!(
+            s.decide("eight", secs(t0, 1), secs(t0, 1)),
+            Control::Rejected(_)
+        ));
         assert!(!s.armed(secs(t0, 1)), "a wrong answer cancels arming");
         assert_eq!(s.decide("bird", t0, t0), Control::Armed);
-        assert!(matches!(s.decide("seven", secs(t0, 31), secs(t0, 31)), Control::Rejected(_)));
+        assert!(matches!(
+            s.decide("seven", secs(t0, 31), secs(t0, 31)),
+            Control::Rejected(_)
+        ));
     }
 
     #[test]
     fn near_miss_controls_never_reach_the_agent() {
         let mut s = Shutdown::new(&config(SHUTDOWN));
         let t0 = Instant::now();
-        assert!(matches!(s.decide("bird seven eight", t0, t0), Control::Rejected(_)));
+        assert!(matches!(
+            s.decide("bird seven eight", t0, t0),
+            Control::Rejected(_)
+        ));
         assert_eq!(s.decide("tell me about birds", t0, t0), Control::None);
     }
 
     #[test]
     fn disabled_shutdown_ignores_everything() {
         let mut s = Shutdown::new(&config(""));
-        assert_eq!(s.decide("bird seven", Instant::now(), Instant::now()), Control::None);
+        assert_eq!(
+            s.decide("bird seven", Instant::now(), Instant::now()),
+            Control::None
+        );
     }
 }

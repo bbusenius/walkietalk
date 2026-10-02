@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -40,7 +40,9 @@ pub fn check_terminal() -> anyhow::Result<()> {
     }
     let (cols, rows) = terminal::size().context("cannot read the terminal size")?;
     if cols < MIN_COLS || rows < MIN_ROWS {
-        bail!("--panel needs a terminal of at least {MIN_COLS}x{MIN_ROWS} (this one is {cols}x{rows})");
+        bail!(
+            "--panel needs a terminal of at least {MIN_COLS}x{MIN_ROWS} (this one is {cols}x{rows})"
+        );
     }
     Ok(())
 }
@@ -55,7 +57,12 @@ impl Log {
     fn push(&mut self, kind: Kind, message: &str) {
         for line in message.lines() {
             let meter = kind == Kind::Meter && line.starts_with("RMS ");
-            if meter && self.lines.back().is_some_and(|(k, l)| *k == Kind::Meter && l.starts_with("RMS ")) {
+            if meter
+                && self
+                    .lines
+                    .back()
+                    .is_some_and(|(k, l)| *k == Kind::Meter && l.starts_with("RMS "))
+            {
                 self.lines.pop_back();
             }
             if self.lines.len() == LOG_LINES {
@@ -76,26 +83,38 @@ impl Redirect {
     fn start(log: Arc<Mutex<Log>>) -> anyhow::Result<Redirect> {
         let mut fds = [0; 2];
         // SAFETY: pipe writes two new descriptors into the array.
-        anyhow::ensure!(unsafe { libc::pipe(fds.as_mut_ptr()) } == 0, "cannot create a pipe");
+        anyhow::ensure!(
+            unsafe { libc::pipe(fds.as_mut_ptr()) } == 0,
+            "cannot create a pipe"
+        );
         // SAFETY: both descriptors were just created and are owned here.
         let (read, write) = unsafe { (File::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         // SAFETY: dup returns a new descriptor or -1, checked below.
         let (out, err) = unsafe { (libc::dup(1), libc::dup(2)) };
         anyhow::ensure!(out >= 0 && err >= 0, "cannot save the terminal output");
         // SAFETY: out/err are fresh descriptors owned by us.
-        let saved = unsafe { Redirect { saved_out: OwnedFd::from_raw_fd(out), saved_err: OwnedFd::from_raw_fd(err) } };
+        let saved = unsafe {
+            Redirect {
+                saved_out: OwnedFd::from_raw_fd(out),
+                saved_err: OwnedFd::from_raw_fd(err),
+            }
+        };
         // SAFETY: dup2 replaces 1 and 2 with the pipe's write end.
         unsafe {
             libc::dup2(write.as_raw_fd(), 1);
             libc::dup2(write.as_raw_fd(), 2);
         }
         drop(write);
-        std::thread::Builder::new().name("panel-output".into()).spawn(move || {
-            for line in BufReader::new(read).lines() {
-                let Ok(line) = line else { break };
-                log.lock().unwrap_or_else(|e| e.into_inner()).push(Kind::Warn, &line);
-            }
-        })?;
+        std::thread::Builder::new()
+            .name("panel-output".into())
+            .spawn(move || {
+                for line in BufReader::new(read).lines() {
+                    let Ok(line) = line else { break };
+                    log.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(Kind::Warn, &line);
+                }
+            })?;
         Ok(saved)
     }
 }
@@ -120,17 +139,28 @@ impl Panel {
     pub fn start(shared: Shared, commands: mpsc::Sender<Command>) -> anyhow::Result<Panel> {
         let log = Arc::new(Mutex::new(Log::default()));
         let sink_log = log.clone();
-        ui::set_sink(move |kind, message| sink_log.lock().unwrap_or_else(|e| e.into_inner()).push(kind, message));
+        ui::set_sink(move |kind, message| {
+            sink_log
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(kind, message)
+        });
         let stop = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(Mutex::new(None));
         let (s, f) = (stop.clone(), failed.clone());
-        let thread = std::thread::Builder::new().name("panel".into()).spawn(move || {
-            if let Err(err) = run(shared, commands, log, s) {
-                *f.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{err:#}"));
-            }
-            ui::clear_sink();
-        })?;
-        Ok(Panel { stop, thread: Some(thread), failed })
+        let thread = std::thread::Builder::new()
+            .name("panel".into())
+            .spawn(move || {
+                if let Err(err) = run(shared, commands, log, s) {
+                    *f.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{err:#}"));
+                }
+                ui::clear_sink();
+            })?;
+        Ok(Panel {
+            stop,
+            thread: Some(thread),
+            failed,
+        })
     }
 
     /// Fail if the panel stopped unexpectedly.
@@ -180,7 +210,10 @@ struct Editor {
 impl Editor {
     fn new(text: &str) -> Editor {
         let text: Vec<char> = text.chars().collect();
-        Editor { cursor: text.len(), text }
+        Editor {
+            cursor: text.len(),
+            text,
+        }
     }
 
     /// Returns `Some(true)` to save, `Some(false)` to cancel.
@@ -223,8 +256,17 @@ impl Editor {
     }
 }
 
-fn run(shared: Shared, commands: mpsc::Sender<Command>, log: Arc<Mutex<Log>>, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
-    let tty = File::options().read(true).write(true).open("/dev/tty").context("cannot open the terminal")?;
+fn run(
+    shared: Shared,
+    commands: mpsc::Sender<Command>,
+    log: Arc<Mutex<Log>>,
+    stop: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let tty = File::options()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("cannot open the terminal")?;
     terminal::enable_raw_mode()?;
     let mut writer = tty.try_clone()?;
     execute!(writer, EnterAlternateScreen)?;
@@ -235,17 +277,24 @@ fn run(shared: Shared, commands: mpsc::Sender<Command>, log: Arc<Mutex<Log>>, st
             approved_view: false,
             scroll: 0,
             editor: None,
-            status: (Kind::Status, "R read  E edit  A approve  T transmit  D deny  S sleep  Tab view  Ctrl+C stop".into()),
+            status: (
+                Kind::Status,
+                "R read  E edit  A approve  T transmit  D deny  S sleep  Tab view  Ctrl+C stop"
+                    .into(),
+            ),
             pending: None,
         };
         while !stop.load(Ordering::SeqCst) {
             if let Some(pending) = state.pending.as_mut() {
                 while let Ok(reply) = pending.replies.try_recv() {
                     match reply {
-                        Response::Line { kind, message } => state.status = (kind_of(&kind), message),
+                        Response::Line { kind, message } => {
+                            state.status = (kind_of(&kind), message)
+                        }
                         Response::Done { ok, message, .. } => {
                             if let Some(message) = message {
-                                state.status = (if ok { Kind::Status } else { Kind::Warn }, message);
+                                state.status =
+                                    (if ok { Kind::Status } else { Kind::Warn }, message);
                             }
                             state.pending = None;
                             break;
@@ -256,14 +305,25 @@ fn run(shared: Shared, commands: mpsc::Sender<Command>, log: Arc<Mutex<Log>>, st
             }
             let snapshot = {
                 let board = lock(&shared);
-                (board.review.snapshot(board.conversation.clone()), board.delivery.clone())
+                (
+                    board.review.snapshot(board.conversation.clone()),
+                    board.delivery.clone(),
+                )
             };
-            let lines: Vec<(Kind, String)> = log.lock().unwrap_or_else(|e| e.into_inner()).lines.iter().cloned().collect();
+            let lines: Vec<(Kind, String)> = log
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .lines
+                .iter()
+                .cloned()
+                .collect();
             term.draw(|frame| draw(frame, &snapshot.0, &snapshot.1, &lines, &state))?;
             if !event::poll(Duration::from_millis(100))? {
                 continue;
             }
-            let Event::Key(key) = event::read()? else { continue };
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -285,7 +345,12 @@ fn run(shared: Shared, commands: mpsc::Sender<Command>, log: Arc<Mutex<Log>>, st
     result
 }
 
-fn handle_key(key: KeyEvent, state: &mut State, snapshot: &Snapshot, commands: &mpsc::Sender<Command>) {
+fn handle_key(
+    key: KeyEvent,
+    state: &mut State,
+    snapshot: &Snapshot,
+    commands: &mpsc::Sender<Command>,
+) {
     if let Some(editor) = state.editor.as_mut() {
         match editor.key(key) {
             Some(true) => {
@@ -308,7 +373,12 @@ fn handle_key(key: KeyEvent, state: &mut State, snapshot: &Snapshot, commands: &
         KeyCode::PageDown => state.scroll = state.scroll.saturating_add(5),
         KeyCode::Home => state.scroll = 0,
         KeyCode::End => state.scroll = u16::MAX / 2,
-        _ if state.pending.is_some() => state.status = (Kind::Warn, "Waiting for the current action to finish.".into()),
+        _ if state.pending.is_some() => {
+            state.status = (
+                Kind::Warn,
+                "Waiting for the current action to finish.".into(),
+            )
+        }
         KeyCode::Tab => {
             state.approved_view = !state.approved_view;
             state.scroll = 0;
@@ -322,7 +392,10 @@ fn handle_key(key: KeyEvent, state: &mut State, snapshot: &Snapshot, commands: &
                 's' => Action::Sleep,
                 'e' => {
                     if state.approved_view {
-                        state.status = (Kind::Warn, crate::operator::review::APPROVED_EDIT_BLOCK.into());
+                        state.status = (
+                            Kind::Warn,
+                            crate::operator::review::APPROVED_EDIT_BLOCK.into(),
+                        );
                     } else if let Some(item) = &snapshot.item {
                         match &item.edit_block {
                             Some(block) => state.status = (Kind::Warn, block.clone()),
@@ -334,7 +407,10 @@ fn handle_key(key: KeyEvent, state: &mut State, snapshot: &Snapshot, commands: &
                 _ => return,
             };
             if action == Action::Transmit && !state.approved_view && snapshot.item.is_none() {
-                state.status = (Kind::Warn, "Nothing waits for review; press Tab to transmit an approved message.".into());
+                state.status = (
+                    Kind::Warn,
+                    "Nothing waits for review; press Tab to transmit an approved message.".into(),
+                );
                 return;
             }
             submit(state, snapshot, commands, action, None);
@@ -343,7 +419,13 @@ fn handle_key(key: KeyEvent, state: &mut State, snapshot: &Snapshot, commands: &
     }
 }
 
-fn submit(state: &mut State, snapshot: &Snapshot, commands: &mpsc::Sender<Command>, action: Action, text: Option<String>) {
+fn submit(
+    state: &mut State,
+    snapshot: &Snapshot,
+    commands: &mpsc::Sender<Command>,
+    action: Action,
+    text: Option<String>,
+) {
     let (item, revision) = if state.approved_view {
         (&snapshot.approved_item, snapshot.approved_revision)
     } else {
@@ -353,13 +435,26 @@ fn submit(state: &mut State, snapshot: &Snapshot, commands: &mpsc::Sender<Comman
         state.status = (Kind::Warn, "No message is selected.".into());
         return;
     }
-    let (command, replies, _) = Command::new(action, state.approved_view && action != Action::Sleep, revision, text);
+    let (command, replies, _) = Command::new(
+        action,
+        state.approved_view && action != Action::Sleep,
+        revision,
+        text,
+    );
     match commands.try_send(command) {
         Ok(()) => {
-            state.status = (Kind::Status, "Action queued; waiting for the radio to be idle.".into());
+            state.status = (
+                Kind::Status,
+                "Action queued; waiting for the radio to be idle.".into(),
+            );
             state.pending = Some(Pending { replies });
         }
-        Err(_) => state.status = (Kind::Error, "The talk loop is not accepting commands.".into()),
+        Err(_) => {
+            state.status = (
+                Kind::Error,
+                "The talk loop is not accepting commands.".into(),
+            )
+        }
     }
 }
 
@@ -386,12 +481,25 @@ fn color(kind: Kind) -> Style {
 }
 
 fn describe(item: &ItemView) -> String {
-    let direction = if item.direction == Direction::Incoming { "incoming" } else { "outgoing" };
+    let direction = if item.direction == Direction::Incoming {
+        "incoming"
+    } else {
+        "outgoing"
+    };
     let kind = if item.voice { "voice" } else { "text" };
-    format!("#{} {direction} {} from/to {} ({kind})", item.number, item.service, item.alias)
+    format!(
+        "#{} {direction} {} from/to {} ({kind})",
+        item.number, item.service, item.alias
+    )
 }
 
-fn draw(frame: &mut Frame, snapshot: &Snapshot, delivery: &str, lines: &[(Kind, String)], state: &State) {
+fn draw(
+    frame: &mut Frame,
+    snapshot: &Snapshot,
+    delivery: &str,
+    lines: &[(Kind, String)],
+    state: &State,
+) {
     let area = frame.area();
     if area.width < MIN_COLS || area.height < MIN_ROWS {
         frame.render_widget(
@@ -400,52 +508,107 @@ fn draw(frame: &mut Frame, snapshot: &Snapshot, delivery: &str, lines: &[(Kind, 
         );
         return;
     }
-    let [log_area, review_area] = Layout::vertical([Constraint::Min(5), Constraint::Length(12)]).areas(area);
+    let [log_area, review_area] =
+        Layout::vertical([Constraint::Min(5), Constraint::Length(12)]).areas(area);
     let height = log_area.height.saturating_sub(2) as usize;
     let shown: Vec<Line> = lines
         .iter()
         .skip(lines.len().saturating_sub(height))
         .map(|(kind, text)| Line::styled(text.clone(), color(*kind)))
         .collect();
-    frame.render_widget(Paragraph::new(shown).block(Block::default().borders(Borders::ALL).title(" Radio log ")), log_area);
+    frame.render_widget(
+        Paragraph::new(shown).block(Block::default().borders(Borders::ALL).title(" Radio log ")),
+        log_area,
+    );
     draw_review(frame, review_area, snapshot, delivery, state);
 }
 
 fn draw_review(frame: &mut Frame, area: Rect, snapshot: &Snapshot, delivery: &str, state: &State) {
-    let view = if state.approved_view { "Approved" } else { "Review" };
-    let title = format!(" {view}: {} waiting, {} approved | {} ", snapshot.waiting, snapshot.approved, snapshot.conversation);
+    let view = if state.approved_view {
+        "Approved"
+    } else {
+        "Review"
+    };
+    let title = format!(
+        " {view}: {} waiting, {} approved | {} ",
+        snapshot.waiting, snapshot.approved, snapshot.conversation
+    );
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(2)]).areas(inner);
-    let item = if state.approved_view { &snapshot.approved_item } else { &snapshot.item };
+    let [head, body, foot] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+    let item = if state.approved_view {
+        &snapshot.approved_item
+    } else {
+        &snapshot.item
+    };
     match item {
         None => frame.render_widget(
-            Paragraph::new(if state.approved_view { "No approved incoming message is waiting." } else { "The review queue is empty." }),
+            Paragraph::new(if state.approved_view {
+                "No approved incoming message is waiting."
+            } else {
+                "The review queue is empty."
+            }),
             head,
         ),
         Some(item) => {
-            frame.render_widget(Paragraph::new(describe(item)).style(Style::new().add_modifier(Modifier::BOLD)), head);
+            frame.render_widget(
+                Paragraph::new(describe(item)).style(Style::new().add_modifier(Modifier::BOLD)),
+                head,
+            );
             let mut text = vec![];
             if let Some(editor) = &state.editor {
-                let (before, after): (String, String) = (editor.text[..editor.cursor].iter().collect(), editor.text[editor.cursor..].iter().collect());
-                text.push(Line::from(vec![Span::raw("Edit: "), Span::raw(before), Span::styled("|", Style::new().fg(Color::Yellow)), Span::raw(after)]));
-                text.push(Line::styled("Enter saves, Esc cancels.", Style::new().fg(Color::DarkGray)));
+                let (before, after): (String, String) = (
+                    editor.text[..editor.cursor].iter().collect(),
+                    editor.text[editor.cursor..].iter().collect(),
+                );
+                text.push(Line::from(vec![
+                    Span::raw("Edit: "),
+                    Span::raw(before),
+                    Span::styled("|", Style::new().fg(Color::Yellow)),
+                    Span::raw(after),
+                ]));
+                text.push(Line::styled(
+                    "Enter saves, Esc cancels.",
+                    Style::new().fg(Color::DarkGray),
+                ));
             } else if !item.readable {
                 text.push(Line::raw("Voice message: press R to read its transcript."));
             } else {
-                let label = if item.original.is_some() { "Edited: " } else if item.voice { "Transcript: " } else { "" };
-                text.push(Line::styled(format!("{label}{}", item.content), color(Kind::Reply)));
+                let label = if item.original.is_some() {
+                    "Edited: "
+                } else if item.voice {
+                    "Transcript: "
+                } else {
+                    ""
+                };
+                text.push(Line::styled(
+                    format!("{label}{}", item.content),
+                    color(Kind::Reply),
+                ));
                 if let Some(original) = &item.original {
                     text.push(Line::raw(format!("Original: {original}")));
                 }
             }
-            frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }).scroll((state.scroll, 0)), body);
+            frame.render_widget(
+                Paragraph::new(text)
+                    .wrap(Wrap { trim: false })
+                    .scroll((state.scroll, 0)),
+                body,
+            );
         }
     }
     let mut foot_lines = vec![Line::styled(state.status.1.clone(), color(state.status.0))];
     if !delivery.is_empty() {
-        foot_lines.push(Line::styled(delivery.to_string(), Style::new().fg(Color::Cyan)));
+        foot_lines.push(Line::styled(
+            delivery.to_string(),
+            Style::new().fg(Color::Cyan),
+        ));
     }
     frame.render_widget(Paragraph::new(foot_lines), foot);
 }

@@ -15,9 +15,13 @@ impl StreamResampler {
     pub fn new(from: u32, to: u32) -> StreamResampler {
         let inner = (from != to).then(|| {
             let chunk = (from as usize / 50).max(64);
-            Fft::<f32>::new(from as usize, to as usize, chunk, 1, FixedSync::Input).expect("valid resampler parameters")
+            Fft::<f32>::new(from as usize, to as usize, chunk, 1, FixedSync::Input)
+                .expect("valid resampler parameters")
         });
-        StreamResampler { inner, pending: Vec::new() }
+        StreamResampler {
+            inner,
+            pending: Vec::new(),
+        }
     }
 
     /// Add samples; returns whatever output is ready.
@@ -25,7 +29,8 @@ impl StreamResampler {
         let Some(inner) = self.inner.as_mut() else {
             return samples.to_vec();
         };
-        self.pending.extend(samples.iter().map(|&s| s as f32 / 32768.0));
+        self.pending
+            .extend(samples.iter().map(|&s| s as f32 / 32768.0));
         let mut out = Vec::new();
         loop {
             let need = inner.input_frames_next();
@@ -34,7 +39,9 @@ impl StreamResampler {
             }
             let chunk: Vec<f32> = self.pending.drain(..need).collect();
             let input = InterleavedSlice::new(&chunk, 1, need).expect("mono adapter");
-            let produced = inner.process(&input, None).expect("resampling a full chunk");
+            let produced = inner
+                .process(&input, None)
+                .expect("resampling a full chunk");
             out.extend(produced.take_data().into_iter().map(to_i16));
         }
     }
@@ -57,7 +64,12 @@ impl StreamResampler {
             .process(&input, Some(&Indexing::new().partial_len(len)))
             .expect("resampling the final chunk");
         let keep = ((len as f64) * ratio).round() as usize;
-        produced.take_data().into_iter().take(keep).map(to_i16).collect()
+        produced
+            .take_data()
+            .into_iter()
+            .take(keep)
+            .map(to_i16)
+            .collect()
     }
 }
 
@@ -79,7 +91,11 @@ mod tests {
         let mut up = StreamResampler::new(24_000, 48_000);
         let mut doubled = up.push(&out);
         doubled.extend(up.flush());
-        assert!((doubled.len() as i64 - 48_000).abs() < 1200, "{}", doubled.len());
+        assert!(
+            (doubled.len() as i64 - 48_000).abs() < 1200,
+            "{}",
+            doubled.len()
+        );
     }
 
     #[test]

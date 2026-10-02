@@ -18,7 +18,7 @@ use anyhow::bail;
 use tokio::sync::mpsc;
 
 use crate::audio::{Clip, Fit, TooLong};
-use crate::config::{Config, ContactConfig, Service};
+use crate::config::{Config, Service};
 use crate::tts::Voice;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,12 +100,19 @@ impl Bridge {
 
     /// Send the captured recording as a voice note. A failure never falls
     /// back to sending text.
-    pub async fn send_voice(&self, service: Service, audio: &Clip, max: Duration) -> anyhow::Result<()> {
-        let dir = tempfile::Builder::new().prefix("walkietalk-send-").tempdir()?;
+    pub async fn send_voice(
+        &self,
+        service: Service,
+        audio: &Clip,
+        max: Duration,
+    ) -> anyhow::Result<()> {
+        let dir = tempfile::Builder::new()
+            .prefix("walkietalk-send-")
+            .tempdir()?;
         let clip = audio.clone().fit(max, Fit::Crop)?;
-        let file = voice::encode(&clip, dir.path())
-            .await
-            .map_err(|err| anyhow::anyhow!("Message not sent. Could not prepare the voice message: {err}"))?;
+        let file = voice::encode(&clip, dir.path()).await.map_err(|err| {
+            anyhow::anyhow!("Message not sent. Could not prepare the voice message: {err}")
+        })?;
         match service {
             Service::WhatsApp => match &self.whatsapp {
                 Some(w) => w.send_voice(&file).await,
@@ -148,7 +155,10 @@ impl Queues {
             }
             message.content = Content::Text(clean);
         }
-        self.queues.entry(message.service).or_default().push_back(message);
+        self.queues
+            .entry(message.service)
+            .or_default()
+            .push_back(message);
         true
     }
 
@@ -200,22 +210,43 @@ impl Progress {
     /// Synthesize the next piece: "<label> says: <text>", with "over" on
     /// the final piece. A piece whose speech would not fit is halved until
     /// it does; nothing is summarized or cut.
-    pub async fn next_piece(&mut self, voice: &dyn Voice, label: &str, remaining: &str, budget: Duration, max_chars: usize) -> anyhow::Result<Piece> {
+    pub async fn next_piece(
+        &mut self,
+        voice: &dyn Voice,
+        label: &str,
+        remaining: &str,
+        budget: Duration,
+        max_chars: usize,
+    ) -> anyhow::Result<Piece> {
         let prefix = format!("{label} says: ");
         let room = max_chars.saturating_sub(prefix.chars().count() + ", over".len());
-        anyhow::ensure!(room > 0, "the sender introduction leaves no room for the message");
+        anyhow::ensure!(
+            room > 0,
+            "the sender introduction leaves no room for the message"
+        );
         // Start from a cautious speaking rate, then learn the voice's rate.
-        let guess = ((budget.as_secs_f64() * 12.0) as usize).saturating_sub(prefix.len() + 6).max(24);
+        let guess = ((budget.as_secs_f64() * 12.0) as usize)
+            .saturating_sub(prefix.len() + 6)
+            .max(24);
         let mut size = self.chunk_chars.unwrap_or(guess).min(room);
         loop {
             let (body, rest) = text::split(remaining, size);
-            let line = if rest.is_empty() { format!("{prefix}{}", text::with_over(&body)) } else { format!("{prefix}{body}") };
+            let line = if rest.is_empty() {
+                format!("{prefix}{}", text::with_over(&body))
+            } else {
+                format!("{prefix}{body}")
+            };
             match voice.synthesize(&line, Fit::Strict).await {
                 Ok(audio) => {
                     let rate = line.chars().count() as f64 / audio.seconds().max(0.1);
                     let estimate = (rate * budget.as_secs_f64() * 0.9) as usize;
-                    self.chunk_chars = Some(estimate.saturating_sub(prefix.len() + 6).clamp(1, room));
-                    let said = if rest.is_empty() { text::with_over(&body) } else { body };
+                    self.chunk_chars =
+                        Some(estimate.saturating_sub(prefix.len() + 6).clamp(1, room));
+                    let said = if rest.is_empty() {
+                        text::with_over(&body)
+                    } else {
+                        body
+                    };
                     return Ok(Piece { audio, said, rest });
                 }
                 Err(err) if err.downcast_ref::<TooLong>().is_some() && body.chars().count() > 1 => {
@@ -234,11 +265,6 @@ impl Progress {
     }
 }
 
-/// The spoken label for a contact.
-pub fn label(contact: &ContactConfig) -> &str {
-    contact.label()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,7 +273,10 @@ mod tests {
 
     #[test]
     fn contacts_match_by_digits() {
-        assert!(same_contact("+1 (555) 123-4567", "15551234567@s.whatsapp.net"));
+        assert!(same_contact(
+            "+1 (555) 123-4567",
+            "15551234567@s.whatsapp.net"
+        ));
         assert!(same_contact("+15551234567", "+15551234567"));
         assert!(!same_contact("+15551234567", "+15551234568"));
         assert!(!same_contact("", "12345"));
@@ -256,11 +285,18 @@ mod tests {
     #[test]
     fn queue_delivers_each_message_once_and_cleans_text() {
         let mut q = Queues::default();
-        let m = |id: &str, text: &str| Inbound { service: Service::Signal, id: id.into(), content: Content::Text(text.into()) };
+        let m = |id: &str, text: &str| Inbound {
+            service: Service::Signal,
+            id: id.into(),
+            content: Content::Text(text.into()),
+        };
         assert!(q.add(m("1", "Hi\u{200B}\nthere")));
         assert!(!q.add(m("1", "again")));
         assert!(!q.add(m("2", "\u{200B} ")));
-        assert_eq!(q.head(Service::Signal).unwrap().content, Content::Text("Hi there".into()));
+        assert_eq!(
+            q.head(Service::Signal).unwrap().content,
+            Content::Text("Hi there".into())
+        );
         q.remove(Service::Signal, "1");
         assert_eq!(q.len(Service::Signal), 0);
     }
@@ -281,7 +317,10 @@ mod tests {
         }
         async fn synthesize(&self, text: &str, fit: Fit) -> anyhow::Result<Clip> {
             self.calls.lock().unwrap().push(text.to_string());
-            let clip = Clip::silence(Duration::from_millis(text.chars().count() as u64 * 100), 48_000);
+            let clip = Clip::silence(
+                Duration::from_millis(text.chars().count() as u64 * 100),
+                48_000,
+            );
             Ok(clip.fit(self.budget, fit)?)
         }
     }
@@ -289,12 +328,18 @@ mod tests {
     #[tokio::test]
     async fn long_text_is_split_into_fitting_pieces_with_over_at_the_end() {
         let budget = Duration::from_secs(5);
-        let voice = SlowVoice { calls: Mutex::new(vec![]), budget };
+        let voice = SlowVoice {
+            calls: Mutex::new(vec![]),
+            budget,
+        };
         let mut progress = Progress::default();
         let mut remaining = "This is a long message. It has several sentences. Each one matters a lot to the reader.".to_string();
         let mut spoken = Vec::new();
         while !remaining.is_empty() {
-            let piece = progress.next_piece(&voice, "Nana", &remaining, budget, 600).await.unwrap();
+            let piece = progress
+                .next_piece(&voice, "Nana", &remaining, budget, 600)
+                .await
+                .unwrap();
             assert!(piece.audio.duration() <= budget);
             remaining = piece.rest;
             spoken.push(voice.calls.lock().unwrap().last().unwrap().clone());
@@ -302,8 +347,19 @@ mod tests {
         assert!(spoken.len() > 1);
         assert!(spoken.iter().all(|s| s.starts_with("Nana says: ")));
         assert!(spoken.last().unwrap().ends_with(", over"));
-        assert!(spoken[..spoken.len() - 1].iter().all(|s| !s.ends_with("over")));
-        let words: String = spoken.iter().map(|s| s.trim_start_matches("Nana says: ").trim_end_matches(", over")).collect::<Vec<_>>().join(" ");
+        assert!(
+            spoken[..spoken.len() - 1]
+                .iter()
+                .all(|s| !s.ends_with("over"))
+        );
+        let words: String = spoken
+            .iter()
+            .map(|s| {
+                s.trim_start_matches("Nana says: ")
+                    .trim_end_matches(", over")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(words.contains("reader"), "nothing is dropped: {words}");
     }
 }

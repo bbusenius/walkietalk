@@ -15,7 +15,6 @@ pub struct Utterance {
     pub audio: Clip,
     /// When speech began; follow-up windows are judged from this moment.
     pub started_at: Instant,
-    pub reason: EndReason,
 }
 
 /// What one frame did.
@@ -23,7 +22,9 @@ pub struct Utterance {
 pub enum Heard {
     Waiting,
     /// Audio was added to the utterance in progress (`new` holds it).
-    Speech { new: Vec<i16> },
+    Speech {
+        new: Vec<i16>,
+    },
     /// The utterance in progress turned out to be noise and was dropped.
     Discarded,
     Finished(Utterance),
@@ -41,7 +42,11 @@ pub struct Listener {
 impl Listener {
     pub fn new(config: &VadConfig, rate: u32, meter: bool) -> Listener {
         Listener {
-            vad: Vad::new(config.threshold, config.hangover_ms, config.max_utterance_seconds, rate),
+            vad: Vad::new(
+                config.threshold,
+                config.hangover_ms,
+                config.max_utterance_seconds,
+            ),
             rate,
             threshold: config.threshold,
             frames: 0,
@@ -64,7 +69,7 @@ impl Listener {
         self.frames += 1;
         match event {
             VadEvent::Waiting { level } => {
-                if self.meter && self.frames % METER_EVERY == 0 {
+                if self.meter && self.frames.is_multiple_of(METER_EVERY) {
                     ui::meter!("RMS {level:.3} (threshold {:.3})", self.threshold);
                 }
                 Heard::Waiting
@@ -72,13 +77,17 @@ impl Listener {
             VadEvent::Started { level } => {
                 self.started_at = Some(Instant::now());
                 ui::event!("Speech started (RMS {level:.3})");
-                Heard::Speech { new: self.vad.captured()[before..].to_vec() }
+                Heard::Speech {
+                    new: self.vad.captured()[before..].to_vec(),
+                }
             }
             VadEvent::Speaking { level } => {
-                if self.meter && self.frames % METER_EVERY == 0 {
+                if self.meter && self.frames.is_multiple_of(METER_EVERY) {
                     ui::meter!("RMS {level:.3} peak {:.3}", self.vad.peak());
                 }
-                Heard::Speech { new: self.vad.captured()[before..].to_vec() }
+                Heard::Speech {
+                    new: self.vad.captured()[before..].to_vec(),
+                }
             }
             VadEvent::Discarded { level } => {
                 self.started_at = None;
@@ -91,11 +100,14 @@ impl Listener {
                     EndReason::Silence => "silence",
                     EndReason::MaxLength => "maximum length",
                 };
-                ui::event!("Speech ended after {:.1}s ({why}; peak RMS {:.3})", audio.seconds(), self.vad.peak());
+                ui::event!(
+                    "Speech ended after {:.1}s ({why}; peak RMS {:.3})",
+                    audio.seconds(),
+                    self.vad.peak()
+                );
                 Heard::Finished(Utterance {
                     audio,
                     started_at: self.started_at.take().unwrap_or_else(Instant::now),
-                    reason,
                 })
             }
         }
@@ -109,7 +121,6 @@ impl Listener {
         Some(Utterance {
             audio: Clip::new(self.vad.take_captured(), self.rate),
             started_at: self.started_at.take().unwrap_or_else(Instant::now),
-            reason: EndReason::Silence,
         })
     }
 

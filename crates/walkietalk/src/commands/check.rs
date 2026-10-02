@@ -30,38 +30,72 @@ impl Report {
 }
 
 fn serial(path: &Path) -> anyhow::Result<String> {
-    let meta = std::fs::metadata(path).map_err(|_| anyhow::anyhow!("{} not found; connect the interface", path.display()))?;
-    anyhow::ensure!(meta.file_type().is_char_device(), "{} is not a serial device", path.display());
+    let meta = std::fs::metadata(path)
+        .map_err(|_| anyhow::anyhow!("{} not found; connect the interface", path.display()))?;
+    anyhow::ensure!(
+        meta.file_type().is_char_device(),
+        "{} is not a serial device",
+        path.display()
+    );
     let c_path = CString::new(path.as_os_str().as_bytes())?;
     // SAFETY: access only reads the NUL-terminated path.
     let ok = unsafe { libc::access(c_path.as_ptr(), libc::R_OK | libc::W_OK) } == 0;
-    anyhow::ensure!(ok, "no read/write permission for {}; see the serial permissions section of the install guide", path.display());
+    anyhow::ensure!(
+        ok,
+        "no read/write permission for {}; see the serial permissions section of the install guide",
+        path.display()
+    );
     Ok(format!("{} (not opened)", path.display()))
 }
 
 fn program(name: &str) -> anyhow::Result<String> {
-    exec::find(name).map(|p| p.display().to_string()).map_err(Into::into)
+    exec::find(name)
+        .map(|p| p.display().to_string())
+        .map_err(Into::into)
 }
 
 pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
     let mut r = Report { problems: 0 };
-    r.line("capture device", device::find(&config.audio.input, Direction::Input).map(|_| config.audio.input.clone()));
-    r.line("playback device", device::find(&config.audio.output, Direction::Output).map(|_| config.audio.output.clone()));
-    r.line(&format!("PTT ({} keys)", config.ptt.line), serial(&config.ptt.port));
+    r.line(
+        "capture device",
+        device::find(&config.audio.input, Direction::Input).map(|_| config.audio.input.clone()),
+    );
+    r.line(
+        "playback device",
+        device::find(&config.audio.output, Direction::Output).map(|_| config.audio.output.clone()),
+    );
+    r.line(
+        &format!("PTT ({} keys)", config.ptt.line),
+        serial(&config.ptt.port),
+    );
 
     if config.agent.backend.is_realtime() {
         let rt = &config.agent.realtime;
         r.line(
             "voice agent",
-            creds.token(&rt.key_env).map(|_| format!("grok-realtime {} voice {}; {} set", rt.model, rt.voice, rt.key_env)),
+            creds.token(&rt.key_env).map(|_| {
+                format!(
+                    "grok-realtime {} voice {}; {} set",
+                    rt.model, rt.voice, rt.key_env
+                )
+            }),
         );
     } else {
         let stt_ready = match config.stt.backend {
             SttBackend::Whisper => stt::models::installed(config.stt.model)
                 .map(|bytes| format!("whisper {} ({} MB)", config.stt.model, bytes / 1_000_000))
-                .ok_or_else(|| anyhow::anyhow!("Whisper {} is not downloaded; run `walkietalk models`", config.stt.model)),
-            SttBackend::Grok => GrokLogin::locate().check().map(|_| "grok with the saved Grok login".into()),
-            SttBackend::GrokApi => creds.token(&config.stt.api_key_env).map(|_| format!("grok-api; {} set", config.stt.api_key_env)),
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Whisper {} is not downloaded; run `walkietalk models`",
+                        config.stt.model
+                    )
+                }),
+            SttBackend::Grok => GrokLogin::locate()
+                .check()
+                .map(|_| "grok with the saved Grok login".into()),
+            SttBackend::GrokApi => creds
+                .token(&config.stt.api_key_env)
+                .map(|_| format!("grok-api; {} set", config.stt.api_key_env)),
         };
         r.line("speech recognition", stt_ready);
         let a = &config.agent;
@@ -69,7 +103,9 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
             match a.backend {
                 AgentBackend::Hermes => creds.token(&a.hermes.token_env).map(|_| ()),
                 AgentBackend::Codex => program(&a.codex.executable).map(|_| ()),
-                AgentBackend::Grok => program(&a.grok.executable).and_then(|_| GrokLogin::locate().check()),
+                AgentBackend::Grok => {
+                    program(&a.grok.executable).and_then(|_| GrokLogin::locate().check())
+                }
                 AgentBackend::Claude => program(&a.claude.executable).map(|_| ()),
                 AgentBackend::ClaudeApi => creds.token(&a.claude_api.key_env).map(|_| ()),
                 AgentBackend::Stub | AgentBackend::GrokRealtime => Ok(()),
@@ -100,7 +136,10 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
             crate::config::Service::WhatsApp => "wacli",
             crate::config::Service::Signal => "signal-cli",
         };
-        r.line(&format!("{service} ({tool})"), program(tool).map(|p| format!("{p}; wake \"{}\"", contact.wake)));
+        r.line(
+            &format!("{service} ({tool})"),
+            program(tool).map(|p| format!("{p}; wake \"{}\"", contact.wake)),
+        );
         r.line("ffmpeg", program("ffmpeg"));
     }
 
@@ -113,7 +152,12 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
     }
     let id = &config.radio.station_id;
     if id.enabled() {
-        ui::status!("Station ID: {} ({:?}, {:?})", id.callsign, id.mode, id.method);
+        ui::status!(
+            "Station ID: {} ({:?}, {:?})",
+            id.callsign,
+            id.mode,
+            id.method
+        );
     } else {
         ui::status!("Station ID: off");
     }

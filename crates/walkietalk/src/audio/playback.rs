@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use cpal::{FromSample, SampleFormat, SizedSample};
 
 use super::Clip;
 use super::device::{self, Direction};
@@ -50,7 +50,11 @@ struct FeedState {
 impl Feed {
     /// Queue radio-rate samples.
     pub fn push(&self, samples: &[i16]) {
-        self.0.queue.lock().unwrap_or_else(|e| e.into_inner()).extend(samples.iter().copied());
+        self.0
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(samples.iter().copied());
     }
 
     /// No more audio will arrive; playback ends when the queue drains.
@@ -83,7 +87,9 @@ pub struct DeviceOut {
 
 impl DeviceOut {
     pub fn new(name: &str) -> DeviceOut {
-        DeviceOut { name: name.to_string() }
+        DeviceOut {
+            name: name.to_string(),
+        }
     }
 }
 
@@ -118,7 +124,9 @@ impl AudioOut for DeviceOut {
             .context("cannot start playback thread")?;
         ready_rx
             .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| anyhow::anyhow!("playback device \"{}\" did not open within 10 s", self.name))??;
+            .map_err(|_| {
+                anyhow::anyhow!("playback device \"{}\" did not open within 10 s", self.name)
+            })??;
         Ok((
             feed,
             Box::new(DevicePlayback {
@@ -148,12 +156,19 @@ impl Playback for DevicePlayback {
             Ok(Ok(())) => Ok(true),
             Ok(Err(err)) => bail!("audio playback failed: {err}"),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(false),
-            Err(mpsc::RecvTimeoutError::Disconnected) => bail!("audio playback stopped unexpectedly"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("audio playback stopped unexpectedly")
+            }
         }
     }
 }
 
-fn open(name: &str, feed: Feed, started: Arc<AtomicBool>, done: mpsc::Sender<Result<(), String>>) -> anyhow::Result<cpal::Stream> {
+fn open(
+    name: &str,
+    feed: Feed,
+    started: Arc<AtomicBool>,
+    done: mpsc::Sender<Result<(), String>>,
+) -> anyhow::Result<cpal::Stream> {
     let device = device::find(name, Direction::Output)?;
     let chosen = device::choose(&device, Direction::Output, RADIO_RATE, name)?;
     if chosen.config.sample_rate != RADIO_RATE {
@@ -221,12 +236,21 @@ impl AudioOut for DryOut {
         let feed = Feed::default();
         feed.push(clip.to_radio().samples());
         feed.finish();
-        Ok(Box::new(DryPlayback { feed, started: None }))
+        Ok(Box::new(DryPlayback {
+            feed,
+            started: None,
+        }))
     }
 
     fn prepare_stream(&self) -> anyhow::Result<(Feed, Box<dyn Playback>)> {
         let feed = Feed::default();
-        Ok((feed.clone(), Box::new(DryPlayback { feed, started: None })))
+        Ok((
+            feed.clone(),
+            Box::new(DryPlayback {
+                feed,
+                started: None,
+            }),
+        ))
     }
 }
 

@@ -15,8 +15,22 @@ use crate::exec::{self, Job};
 use crate::grok_login::GrokLogin;
 
 const ENV: &[&str] = &[
-    "HOME", "PATH", "GROK_HOME", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY",
-    "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "HOME",
+    "PATH",
+    "GROK_HOME",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
 ];
 
 pub struct GrokCli {
@@ -62,7 +76,11 @@ fn environment(grok_home: &Path, home: &Path) -> HashMap<String, String> {
 /// The effective profile must have API keys disabled, no active extensions,
 /// and no custom model providers.
 fn check_profile(output: &[u8]) -> anyhow::Result<()> {
-    let unverifiable = || anyhow::anyhow!("cannot verify the Grok profile; check the CLI version and `grok inspect`. No question was sent");
+    let unverifiable = || {
+        anyhow::anyhow!(
+            "cannot verify the Grok profile; check the CLI version and `grok inspect`. No question was sent"
+        )
+    };
     let profile: Value = serde_json::from_slice(output).map_err(|_| unverifiable())?;
     if profile["loginPolicy"]["apiKeyAuthDisabled"] != true {
         return Err(unverifiable());
@@ -70,12 +88,23 @@ fn check_profile(output: &[u8]) -> anyhow::Result<()> {
     for key in ["hooks", "mcpServers", "plugins", "lspServers"] {
         let entries = profile[key].as_array().ok_or_else(unverifiable)?;
         if entries.iter().any(|e| e["disabled"] != true) {
-            bail!("radio mode needs Grok hooks, MCP servers, plugins, and LSP servers inactive; see `grok inspect`");
+            bail!(
+                "radio mode needs Grok hooks, MCP servers, plugins, and LSP servers inactive; see `grok inspect`"
+            );
         }
     }
-    for layer in profile["configSources"]["layers"].as_array().ok_or_else(unverifiable)? {
-        let path = layer["path"].as_str().map(Path::new).filter(|p| p.is_absolute()).ok_or_else(unverifiable)?;
-        let Ok(meta) = std::fs::metadata(path) else { continue };
+    for layer in profile["configSources"]["layers"]
+        .as_array()
+        .ok_or_else(unverifiable)?
+    {
+        let path = layer["path"]
+            .as_str()
+            .map(Path::new)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(unverifiable)?;
+        let Ok(meta) = std::fs::metadata(path) else {
+            continue;
+        };
         if meta.len() > 1024 * 1024 {
             return Err(unverifiable());
         }
@@ -83,9 +112,15 @@ fn check_profile(output: &[u8]) -> anyhow::Result<()> {
         let table: toml::Table = text.parse().map_err(|_| unverifiable())?;
         let custom = ["model", "model_providers", "auth_provider"]
             .iter()
-            .any(|k| table.get(*k).is_some_and(|v| v.as_str() != Some("") && v.as_table().is_none_or(|t| !t.is_empty())));
+            .any(|k| {
+                table.get(*k).is_some_and(|v| {
+                    v.as_str() != Some("") && v.as_table().is_none_or(|t| !t.is_empty())
+                })
+            });
         if custom {
-            bail!("radio mode needs the standard Grok model catalog; custom models or providers are not supported");
+            bail!(
+                "radio mode needs the standard Grok model catalog; custom models or providers are not supported"
+            );
         }
     }
     Ok(())
@@ -102,7 +137,11 @@ fn block_allowed(block: &Value, web_search: bool) -> bool {
 
 /// Only the successful final result is an answer.
 fn parse(stdout: &[u8], session: &str, web_search: bool) -> anyhow::Result<String> {
-    let bad = || anyhow::anyhow!("Grok returned an incomplete, failed, or unexpected result; reply discarded");
+    let bad = || {
+        anyhow::anyhow!(
+            "Grok returned an incomplete, failed, or unexpected result; reply discarded"
+        )
+    };
     let mut initialized = false;
     let mut result = None;
     for event in cli::json_lines(stdout, "Grok")? {
@@ -111,8 +150,13 @@ fn parse(stdout: &[u8], session: &str, web_search: bool) -> anyhow::Result<Strin
         }
         match (event["type"].as_str(), initialized) {
             (Some("system"), false) if event["subtype"] == "init" => {
-                let mcp_off = event["mcp_servers"].as_array().is_none_or(|s| s.iter().all(|m| m["status"] == "disabled"));
-                if event["apiKeySource"] != "oauth" || event["permissionMode"] != "dontAsk" || !mcp_off {
+                let mcp_off = event["mcp_servers"]
+                    .as_array()
+                    .is_none_or(|s| s.iter().all(|m| m["status"] == "disabled"));
+                if event["apiKeySource"] != "oauth"
+                    || event["permissionMode"] != "dontAsk"
+                    || !mcp_off
+                {
                     return Err(bad());
                 }
                 initialized = true;
@@ -149,7 +193,10 @@ fn parse(stdout: &[u8], session: &str, web_search: bool) -> anyhow::Result<Strin
 #[async_trait]
 impl TextAgent for GrokCli {
     fn label(&self) -> String {
-        format!("grok ({}; reasoning {}; saved Grok login)", self.config.model, self.config.reasoning_effort)
+        format!(
+            "grok ({}; reasoning {}; saved Grok login)",
+            self.config.model, self.config.reasoning_effort
+        )
     }
 
     async fn reply(&self, request: Request<'_>) -> anyhow::Result<String> {
@@ -159,12 +206,18 @@ impl TextAgent for GrokCli {
         let grok_home = std::env::var_os("GROK_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| crate::paths::home().join(".grok"));
-        let dir = tempfile::Builder::new().prefix("walkietalk-grok-").tempdir()?;
+        let dir = tempfile::Builder::new()
+            .prefix("walkietalk-grok-")
+            .tempdir()?;
         // An empty HOME keeps desktop integrations out; GROK_HOME keeps the login.
         let home = dir.path().join("home");
         std::fs::create_dir(&home)?;
         let env = environment(&grok_home, &home);
-        let base = || Job::new(program.clone(), "Grok").env(env.clone()).cwd(dir.path());
+        let base = || {
+            Job::new(program.clone(), "Grok")
+                .env(env.clone())
+                .cwd(dir.path())
+        };
 
         let inspect = deadline.run(base().args(["inspect", "--json"])).await?;
         if !inspect.success() {
@@ -174,25 +227,51 @@ impl TextAgent for GrokCli {
 
         let session = uuid::Uuid::new_v4().to_string();
         let mut job = base().args([
-            "--prompt-file", "/dev/stdin", "--verbatim", "--output-format", "streaming-messages-json",
-            "--permission-mode", "dontAsk",
+            "--prompt-file",
+            "/dev/stdin",
+            "--verbatim",
+            "--output-format",
+            "streaming-messages-json",
+            "--permission-mode",
+            "dontAsk",
         ]);
         job = if request.web_search {
             // The workspace sandbox allows the lookup's network; write tools stay denied.
             job.args(["--sandbox", "workspace", "--tools", "web_search"])
-                .args(["--deny", "Bash", "--deny", "Read", "--deny", "Edit", "--deny", "Grep", "--deny", "MCPTool", "--deny", "WebFetch"])
+                .args([
+                    "--deny", "Bash", "--deny", "Read", "--deny", "Edit", "--deny", "Grep",
+                    "--deny", "MCPTool", "--deny", "WebFetch",
+                ])
                 .args(["--max-turns".to_string(), WEB_SEARCH_TURNS.to_string()])
         } else {
-            job.args(["--sandbox", "read-only", "--tools", "read_file", "--disallowed-tools", "read_file"])
-                .args(["--deny", "*", "--disable-web-search", "--max-turns", "1"])
+            job.args([
+                "--sandbox",
+                "read-only",
+                "--tools",
+                "read_file",
+                "--disallowed-tools",
+                "read_file",
+            ])
+            .args(["--deny", "*", "--disable-web-search", "--max-turns", "1"])
         };
-        job = job.args(["--no-subagents", "--no-plan", "--model", &self.config.model, "--session-id", &session]);
+        job = job.args([
+            "--no-subagents",
+            "--no-plan",
+            "--model",
+            &self.config.model,
+            "--session-id",
+            &session,
+        ]);
         if let Some(effort) = self.config.reasoning_effort.explicit() {
             job = job.args(["--reasoning-effort", effort]);
         }
-        let output = deadline.run(job.stdin(cli::prompt(&request).into_bytes())).await?;
+        let output = deadline
+            .run(job.stdin(cli::prompt(&request).into_bytes()))
+            .await?;
         if !output.success() {
-            bail!("Grok failed; check `grok login`, account access, and the CLI version. No API-key fallback; details withheld");
+            bail!(
+                "Grok failed; check `grok login`, account access, and the CLI version. No API-key fallback; details withheld"
+            );
         }
         parse(&output.stdout, &session, request.web_search)
     }
@@ -207,7 +286,9 @@ mod tests {
     }
 
     fn events(session: &str, extra: &[Value]) -> Vec<u8> {
-        let mut out = line(serde_json::json!({"type":"system","subtype":"init","session_id":session,"apiKeySource":"oauth","permissionMode":"dontAsk","mcp_servers":[]}));
+        let mut out = line(
+            serde_json::json!({"type":"system","subtype":"init","session_id":session,"apiKeySource":"oauth","permissionMode":"dontAsk","mcp_servers":[]}),
+        );
         for e in extra {
             out.push_str(&line(e.clone()));
         }
@@ -216,20 +297,35 @@ mod tests {
 
     #[test]
     fn successful_result_is_the_answer() {
-        let out = events("s", &[
-            serde_json::json!({"type":"assistant","session_id":"s","message":{"content":[{"type":"thinking"},{"type":"text","text":"x"}]}}),
-            serde_json::json!({"type":"result","session_id":"s","subtype":"success","is_error":false,"stop_reason":"end_turn","result":"Ice floats."}),
-        ]);
+        let out = events(
+            "s",
+            &[
+                serde_json::json!({"type":"assistant","session_id":"s","message":{"content":[{"type":"thinking"},{"type":"text","text":"x"}]}}),
+                serde_json::json!({"type":"result","session_id":"s","subtype":"success","is_error":false,"stop_reason":"end_turn","result":"Ice floats."}),
+            ],
+        );
         assert_eq!(parse(&out, "s", false).unwrap(), "Ice floats.");
     }
 
     #[test]
     fn tools_without_permission_or_api_keys_are_rejected() {
-        let tool = events("s", &[serde_json::json!({"type":"assistant","session_id":"s","message":{"content":[{"type":"tool_use","name":"Bash"}]}})]);
+        let tool = events(
+            "s",
+            &[
+                serde_json::json!({"type":"assistant","session_id":"s","message":{"content":[{"type":"tool_use","name":"Bash"}]}}),
+            ],
+        );
         assert!(parse(&tool, "s", true).is_err());
-        let search = events("s", &[serde_json::json!({"type":"assistant","session_id":"s","message":{"content":[{"type":"tool_use","name":"web_search"}]}})]);
+        let search = events(
+            "s",
+            &[
+                serde_json::json!({"type":"assistant","session_id":"s","message":{"content":[{"type":"tool_use","name":"web_search"}]}}),
+            ],
+        );
         assert!(parse(&search, "s", false).is_err());
-        let key = line(serde_json::json!({"type":"system","subtype":"init","session_id":"s","apiKeySource":"env","permissionMode":"dontAsk"}));
+        let key = line(
+            serde_json::json!({"type":"system","subtype":"init","session_id":"s","apiKeySource":"env","permissionMode":"dontAsk"}),
+        );
         assert!(parse(key.as_bytes(), "s", false).is_err());
     }
 

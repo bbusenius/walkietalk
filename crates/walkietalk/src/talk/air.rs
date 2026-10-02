@@ -34,7 +34,10 @@ pub enum AirError {
 
 impl AirError {
     fn fatal(message: impl Into<String>, reply_sent: bool) -> AirError {
-        AirError::Fatal { message: message.into(), reply_sent }
+        AirError::Fatal {
+            message: message.into(),
+            reply_sent,
+        }
     }
 }
 
@@ -80,7 +83,10 @@ impl Air {
 
     /// Synthesize text, cropping speech that would not fit.
     pub async fn synthesize(&self, text: &str) -> anyhow::Result<Clip> {
-        let voice = self.voice.as_ref().context("no voice is configured for transmission")?;
+        let voice = self
+            .voice
+            .as_ref()
+            .context("no voice is configured for transmission")?;
         voice.synthesize(text, Fit::Crop).await
     }
 
@@ -89,7 +95,11 @@ impl Air {
         let radio = self.radio.clone();
         tokio::task::spawn_blocking(move || radio.transmit(&clip))
             .await
-            .unwrap_or_else(|err| Err(TxError::NotKeyed(anyhow::anyhow!("transmit worker failed: {err}"))))
+            .unwrap_or_else(|err| {
+                Err(TxError::NotKeyed(anyhow::anyhow!(
+                    "transmit worker failed: {err}"
+                )))
+            })
     }
 
     /// Prepare the station ID clip if one is due. Morse is generated here;
@@ -104,11 +114,17 @@ impl Air {
             StationIdMethod::Morse => morse(callsign),
             StationIdMethod::Voice => match &self.voice {
                 Some(voice) => voice.synthesize(callsign, Fit::Strict).await,
-                None => Err(anyhow::anyhow!("a voice station ID needs a configured voice")),
+                None => Err(anyhow::anyhow!(
+                    "a voice station ID needs a configured voice"
+                )),
             },
         };
-        clip.map(Some)
-            .map_err(|err| AirError::fatal(format!("station ID could not be prepared: {err:#}; stopping"), false))
+        clip.map(Some).map_err(|err| {
+            AirError::fatal(
+                format!("station ID could not be prepared: {err:#}; stopping"),
+                false,
+            )
+        })
     }
 
     /// Transmit a reply, with the station ID when due, then the
@@ -116,8 +132,14 @@ impl Air {
     pub async fn send(&mut self, reply: Clip) -> Result<(), AirError> {
         let id = self.due_id().await?;
         let bursts = match &id {
-            Some(id_clip) => station_id::plan(reply, id_clip.clone(), self.budget)
-                .map_err(|err| AirError::fatal(format!("station ID does not fit one transmission: {err}"), false))?,
+            Some(id_clip) => {
+                station_id::plan(reply, id_clip.clone(), self.budget).map_err(|err| {
+                    AirError::fatal(
+                        format!("station ID does not fit one transmission: {err}"),
+                        false,
+                    )
+                })?
+            }
             None => vec![reply],
         };
         self.send_bursts(bursts, id.is_some()).await?;
@@ -133,9 +155,14 @@ impl Air {
             }
             match self.transmit(burst).await {
                 Ok(()) => {}
-                Err(err @ TxError::Ptt(_)) => return Err(AirError::fatal(err.to_string(), index > 0)),
+                Err(err @ TxError::Ptt(_)) => {
+                    return Err(AirError::fatal(err.to_string(), index > 0));
+                }
                 Err(err) if index > 0 => {
-                    return Err(AirError::fatal(format!("station ID failed: {err}; stopping"), true));
+                    return Err(AirError::fatal(
+                        format!("station ID failed: {err}; stopping"),
+                        true,
+                    ));
                 }
                 Err(TxError::NotKeyed(err)) => return Err(AirError::NotSent(err)),
                 Err(TxError::Playback(err)) => return Err(AirError::Playback(err)),

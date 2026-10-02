@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 
+use crate::commands::{hardware, speech};
 use crate::config::Config;
 use crate::credentials::{self, Credentials};
-use crate::commands::{hardware, speech};
 use crate::radio::TransmitConsent;
 use crate::{paths, setup, signals, talk, ui};
 
@@ -183,13 +183,13 @@ impl Global {
 
     fn load_config(&self) -> anyhow::Result<(ConfigPath, Config)> {
         let source = self.config_path();
-        if let ConfigPath::Default(path) = &source {
-            if !path.exists() {
-                bail!(
-                    "no settings at {}; run `walkietalk init` or pass --config FILE",
-                    path.display()
-                );
-            }
+        if let ConfigPath::Default(path) = &source
+            && !path.exists()
+        {
+            bail!(
+                "no settings at {}; run `walkietalk init` or pass --config FILE",
+                path.display()
+            );
         }
         let config = Config::load(source.path())?;
         Ok((source, config))
@@ -281,11 +281,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let creds = global.load_credentials(&source)?;
             speech::tts_check(&config, &creds, &text, &output).await
         }
-        Command::VoiceAgentCheck { input, output, supervised, transmit } => {
+        Command::VoiceAgentCheck {
+            input,
+            output,
+            supervised,
+            transmit,
+        } => {
             let (source, config) = global.load_config()?;
             let creds = global.load_credentials(&source)?;
             let consent = TransmitConsent::grant(transmit, &source)?;
-            speech::voice_agent_check(&config, &creds, input.wav, &output, supervised, consent).await
+            speech::voice_agent_check(&config, &creds, input.wav, &output, supervised, consent)
+                .await
         }
         Command::Models => {
             let (_, config) = global.load_config()?;
@@ -296,14 +302,32 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let creds = global.load_credentials(&source)?;
             speech::listen(&config, &creds, input.wav, timeout).await
         }
-        Command::Talk { input, transmit, once, timeout, panel } => {
+        Command::Talk {
+            input,
+            transmit,
+            once,
+            timeout,
+            panel,
+        } => {
             let (source, config) = global.load_config()?;
             let creds = global.load_credentials(&source)?;
             let consent = TransmitConsent::grant(transmit, &source)?;
-            let options = talk::Options { wav: input.wav, consent, once, timeout, config_path: source.path().to_path_buf(), panel };
+            let options = talk::Options {
+                wav: input.wav,
+                consent,
+                once,
+                timeout,
+                config_path: source.path().to_path_buf(),
+                panel,
+            };
             talk::run(config, creds, options).await
         }
-        Command::Operator { action, approved, text, timeout } => operator(global, action, approved, text, timeout).await,
+        Command::Operator {
+            action,
+            approved,
+            text,
+            timeout,
+        } => operator(global, action, approved, text, timeout).await,
         Command::Play { wav, transmit } => {
             let (source, config) = global.load_config()?;
             let consent = TransmitConsent::grant(transmit, &source)?;
@@ -312,11 +336,26 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
-async fn operator(global: &Global, action: crate::operator::Action, approved: bool, text: Option<String>, timeout: f64) -> anyhow::Result<()> {
+async fn operator(
+    global: &Global,
+    action: crate::operator::Action,
+    approved: bool,
+    text: Option<String>,
+    timeout: f64,
+) -> anyhow::Result<()> {
     use crate::operator::{Action, client};
-    anyhow::ensure!(timeout > 0.0 && timeout <= 600.0, "--timeout must be greater than 0 and at most 600");
-    anyhow::ensure!(text.is_none() || action == Action::Edit, "--text applies only to edit");
-    anyhow::ensure!(!(approved && action == Action::Edit), "approved messages can't be edited; deny to drop it");
+    anyhow::ensure!(
+        timeout > 0.0 && timeout <= 600.0,
+        "--timeout must be greater than 0 and at most 600"
+    );
+    anyhow::ensure!(
+        text.is_none() || action == Action::Edit,
+        "--text applies only to edit"
+    );
+    anyhow::ensure!(
+        !(approved && action == Action::Edit),
+        "approved messages can't be edited; deny to drop it"
+    );
     let config = global.config.as_deref().map(paths::expand_home);
     let config = config.as_deref();
     let timeout = std::time::Duration::from_secs_f64(timeout);
@@ -341,8 +380,12 @@ async fn operator(global: &Global, action: crate::operator::Action, approved: bo
 }
 
 /// Run blocking work off the async threads.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> anyhow::Result<T> {
-    tokio::task::spawn_blocking(f).await.context("worker thread failed")?
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .context("worker thread failed")?
 }
 
 fn print_summary(config: &Config, creds: &Credentials) {

@@ -43,7 +43,10 @@ impl Whisper {
             return Ok(context.clone());
         }
         if !self.path.is_file() {
-            bail!("Whisper {} is not downloaded; run `walkietalk models`", self.model);
+            bail!(
+                "Whisper {} is not downloaded; run `walkietalk models`",
+                self.model
+            );
         }
         whisper_rs::install_logging_hooks();
         let path = self.path.to_str().context("model path must be UTF-8")?;
@@ -89,12 +92,21 @@ impl Transcriber for Whisper {
     }
 }
 
-fn run(context: &WhisperContext, samples: &[f32], cancel: Arc<AtomicBool>) -> anyhow::Result<String> {
+fn run(
+    context: &WhisperContext,
+    samples: &[f32],
+    cancel: Arc<AtomicBool>,
+) -> anyhow::Result<String> {
     if samples.len() < (WHISPER_RATE / 20) as usize {
         return Ok(String::new());
     }
-    let mut state = context.create_state().map_err(|err| anyhow::anyhow!("Whisper state: {err}"))?;
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
+    let mut state = context
+        .create_state()
+        .map_err(|err| anyhow::anyhow!("Whisper state: {err}"))?;
+    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+        beam_size: 5,
+        patience: -1.0,
+    });
     params.set_language(Some("en"));
     params.set_no_context(true);
     params.set_print_special(false);
@@ -118,6 +130,10 @@ fn run(context: &WhisperContext, samples: &[f32], cancel: Arc<AtomicBool>) -> an
 
 /// Convert captured audio to Whisper's 16 kHz float samples.
 fn for_whisper(audio: &Clip) -> Vec<f32> {
-    let input: Vec<f32> = audio.samples().iter().map(|&s| s as f32 / 32768.0).collect();
+    let input: Vec<f32> = audio
+        .samples()
+        .iter()
+        .map(|&s| s as f32 / 32768.0)
+        .collect();
     resample_f32(&input, audio.rate(), WHISPER_RATE)
 }

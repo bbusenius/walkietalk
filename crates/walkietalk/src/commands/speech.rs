@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::bail;
 
 use crate::agent::Conversation;
-use crate::audio::{Clip, Fit};
 use crate::audio::capture::Capture;
 use crate::audio::listener::{Heard, Listener, Utterance};
+use crate::audio::{Clip, Fit};
 use crate::config::{Config, SttBackend};
 use crate::credentials::Credentials;
 use crate::stt;
@@ -16,7 +16,10 @@ use crate::{backends, signals, ui};
 
 pub async fn models(config: &Config) -> anyhow::Result<()> {
     if config.stt.backend != SttBackend::Whisper {
-        ui::status!("stt.backend is {}; no local model is needed, but downloading anyway.", config.stt.backend);
+        ui::status!(
+            "stt.backend is {}; no local model is needed, but downloading anyway.",
+            config.stt.backend
+        );
     }
     stt::models::download(config.stt.model).await?;
     Ok(())
@@ -36,9 +39,16 @@ pub fn utterance_from_wav(config: &Config, wav: &Path) -> anyhow::Result<Utteran
 }
 
 /// Wait up to `wait` for someone to talk, then record one utterance.
-pub async fn utterance_from_device(config: &Config, wait: Option<Duration>) -> anyhow::Result<Utterance> {
+pub async fn utterance_from_device(
+    config: &Config,
+    wait: Option<Duration>,
+) -> anyhow::Result<Utterance> {
     let mut capture = Capture::open(&config.audio.input)?;
-    ui::meter!("Listening on {} at {} Hz", config.audio.input, capture.rate());
+    ui::meter!(
+        "Listening on {} at {} Hz",
+        config.audio.input,
+        capture.rate()
+    );
     let mut listener = Listener::new(&config.vad, capture.rate(), true);
     let deadline = wait.map(|w| tokio::time::Instant::now() + w);
     let stop = signals::token();
@@ -67,14 +77,22 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-pub async fn listen(config: &Config, creds: &Credentials, wav: Option<PathBuf>, timeout: f64) -> anyhow::Result<()> {
+pub async fn listen(
+    config: &Config,
+    creds: &Credentials,
+    wav: Option<PathBuf>,
+    timeout: f64,
+) -> anyhow::Result<()> {
     let stt = backends::transcriber(config, creds)?;
     ui::status!("Speech recognition: {}", stt.label());
     stt.prepare().await?;
     let utterance = match wav {
         Some(path) => utterance_from_wav(config, &path)?,
         None => {
-            anyhow::ensure!(timeout > 0.0 && timeout <= 600.0, "--timeout must be greater than 0 and at most 600");
+            anyhow::ensure!(
+                timeout > 0.0 && timeout <= 600.0,
+                "--timeout must be greater than 0 and at most 600"
+            );
             utterance_from_device(config, Some(Duration::from_secs_f64(timeout))).await?
         }
     };
@@ -100,8 +118,17 @@ pub async fn agent_check(config: &Config, creds: &Credentials, text: &str) -> an
 }
 
 /// Synthesize speech into a new WAV.
-pub async fn tts_check(config: &Config, creds: &Credentials, text: &str, output: &Path) -> anyhow::Result<()> {
-    anyhow::ensure!(!output.exists(), "{} already exists; choose a new --output", output.display());
+pub async fn tts_check(
+    config: &Config,
+    creds: &Credentials,
+    text: &str,
+    output: &Path,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !output.exists(),
+        "{} already exists; choose a new --output",
+        output.display()
+    );
     let voice = backends::voice(config, creds)?;
     ui::status!("Voice: {}", voice.label());
     voice.prepare().await?;
@@ -130,24 +157,43 @@ pub async fn voice_agent_check(
         config.agent.backend.is_realtime(),
         "voice-agent-check needs agent.backend = \"grok-realtime\""
     );
-    anyhow::ensure!(consent.is_none() || supervised, "--transmit requires --supervised");
-    anyhow::ensure!(!output.exists(), "{} already exists; choose a new --output", output.display());
+    anyhow::ensure!(
+        consent.is_none() || supervised,
+        "--transmit requires --supervised"
+    );
+    anyhow::ensure!(
+        !output.exists(),
+        "{} already exists; choose a new --output",
+        output.display()
+    );
     let settings = crate::realtime::Settings::from_config(config, creds)?;
     let utterance = match wav {
         Some(path) => utterance_from_wav(config, &path)?,
         None => utterance_from_device(config, Some(Duration::from_secs(60))).await?,
     };
     let radio = if supervised {
-        Some(std::sync::Arc::new(crate::commands::hardware::radio(config, consent)?))
+        Some(std::sync::Arc::new(crate::commands::hardware::radio(
+            config, consent,
+        )?))
     } else {
         None
     };
-    ui::status!("Sending {:.1}s of audio to the voice agent (billed API)...", utterance.audio.seconds());
+    ui::status!(
+        "Sending {:.1}s of audio to the voice agent (billed API)...",
+        utterance.audio.seconds()
+    );
     let reply = crate::realtime::single_turn(&settings, &utterance.audio, radio).await?;
     if !reply.heard.is_empty() {
         ui::transcript!("Heard: {}", reply.heard);
     }
-    ui::reply!("Reply: {}", if reply.said.is_empty() { "(no transcript)" } else { &reply.said });
+    ui::reply!(
+        "Reply: {}",
+        if reply.said.is_empty() {
+            "(no transcript)"
+        } else {
+            &reply.said
+        }
+    );
     if reply.audio.is_empty() {
         bail!("the voice agent returned no audio");
     }

@@ -136,11 +136,6 @@ impl Credentials {
         }
     }
 
-    /// Whether a usable value exists, for readiness reports.
-    pub fn has(&self, name: &str) -> bool {
-        self.token(name).is_ok()
-    }
-
     /// A bearer token or API key: non-empty printable ASCII without spaces.
     pub fn token(&self, name: &str) -> anyhow::Result<Secret> {
         match self.get(name) {

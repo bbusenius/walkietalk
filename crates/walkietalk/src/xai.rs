@@ -50,7 +50,9 @@ impl Auth {
     pub fn remedy(&self) -> &'static str {
         match self {
             Auth::Login(_) => "run `grok login`; API keys are never used for this backend",
-            Auth::Key { .. } => "check the billed API key; a Grok login is never used for this backend",
+            Auth::Key { .. } => {
+                "check the billed API key; a Grok login is never used for this backend"
+            }
         }
     }
 }

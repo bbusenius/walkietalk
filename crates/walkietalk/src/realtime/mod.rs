@@ -97,14 +97,25 @@ impl Settings {
             session["tools"] = json!([{"type": "web_search"}]);
         }
         if keyterms && !self.keyterms.is_empty() {
-            let terms: Vec<&String> = self.keyterms.iter().filter(|t| t.chars().count() <= 50).take(100).collect();
+            let terms: Vec<&String> = self
+                .keyterms
+                .iter()
+                .filter(|t| t.chars().count() <= 50)
+                .take(100)
+                .collect();
             session["audio"]["input"]["transcription"] = json!({"keyterms": terms});
         }
         session
     }
 
     async fn connect(&self) -> anyhow::Result<Client> {
-        Client::connect(&self.rt.url, &self.rt.model, &self.key, self.rt.connect_timeout()).await
+        Client::connect(
+            &self.rt.url,
+            &self.rt.model,
+            &self.key,
+            self.rt.connect_timeout(),
+        )
+        .await
     }
 }
 
@@ -136,7 +147,11 @@ async fn receive(client: &mut Client, tx: &mut StreamTx, idle: Duration) -> anyh
     result
 }
 
-async fn receive_inner(client: &mut Client, tx: &mut StreamTx, idle: Duration) -> anyhow::Result<Reply> {
+async fn receive_inner(
+    client: &mut Client,
+    tx: &mut StreamTx,
+    idle: Duration,
+) -> anyhow::Result<Reply> {
     tx.prepare().await?;
     let mut reply = Reply::default();
     let mut said = String::new();
@@ -191,10 +206,19 @@ async fn receive_inner(client: &mut Client, tx: &mut StreamTx, idle: Duration) -
 
 /// Speak fixed text in the realtime voice on a fresh connection. Used for
 /// confirmations and voice station IDs.
-pub async fn speak(settings: &Settings, text: &str, radio: Option<Arc<Radio>>) -> anyhow::Result<Reply> {
+pub async fn speak(
+    settings: &Settings,
+    text: &str,
+    radio: Option<Arc<Radio>>,
+) -> anyhow::Result<Reply> {
     let mut client = settings.connect().await?;
     let result = async {
-        client.configure(settings.session(None, false, false), settings.rt.connect_timeout()).await?;
+        client
+            .configure(
+                settings.session(None, false, false),
+                settings.rt.connect_timeout(),
+            )
+            .await?;
         client
             .send(json!({
                 "type": "conversation.item.create",
@@ -215,20 +239,31 @@ pub async fn speak(settings: &Settings, text: &str, radio: Option<Arc<Radio>>) -
 }
 
 /// One complete turn from recorded audio, on a fresh connection.
-pub async fn single_turn(settings: &Settings, audio: &crate::audio::Clip, radio: Option<Arc<Radio>>) -> anyhow::Result<Reply> {
+pub async fn single_turn(
+    settings: &Settings,
+    audio: &crate::audio::Clip,
+    radio: Option<Arc<Radio>>,
+) -> anyhow::Result<Reply> {
     let mut client = settings.connect().await?;
     let result = async {
         client
-            .configure(settings.session(Some(&settings.instructions), true, true), settings.rt.connect_timeout())
+            .configure(
+                settings.session(Some(&settings.instructions), true, true),
+                settings.rt.connect_timeout(),
+            )
             .await?;
         let pcm = audio.resample(RATE).into_samples();
         anyhow::ensure!(!pcm.is_empty(), "the recording is empty");
         for chunk in pcm.chunks(APPEND_SAMPLES) {
             client.append_audio(chunk).await?;
         }
-        client.send(json!({"type": "input_audio_buffer.commit"})).await?;
         client
-            .wait_for(settings.rt.idle_timeout(), |e| matches!(e, Event::Committed { .. }))
+            .send(json!({"type": "input_audio_buffer.commit"}))
+            .await?;
+        client
+            .wait_for(settings.rt.idle_timeout(), |e| {
+                matches!(e, Event::Committed { .. })
+            })
             .await?;
         client.send(json!({"type": "response.create"})).await?;
         let mut tx = StreamTx::new(radio);
@@ -265,7 +300,10 @@ impl Session {
     }
 
     pub fn label(&self) -> String {
-        format!("grok-realtime ({}, voice {}; {}, billed API)", self.settings.rt.model, self.settings.rt.voice, self.settings.rt.key_env)
+        format!(
+            "grok-realtime ({}, voice {}; {}, billed API)",
+            self.settings.rt.model, self.settings.rt.voice, self.settings.rt.key_env
+        )
     }
 
     pub fn settings(&self) -> &Settings {
@@ -283,8 +321,12 @@ impl Session {
         }
         self.reset().await;
         let mut client = self.settings.connect().await?;
-        let session = self.settings.session(Some(&self.settings.instructions), true, true);
-        client.configure(session, self.settings.rt.connect_timeout()).await?;
+        let session = self
+            .settings
+            .session(Some(&self.settings.instructions), true, true);
+        client
+            .configure(session, self.settings.rt.connect_timeout())
+            .await?;
         self.client = Some(client);
         Ok(())
     }
@@ -301,7 +343,9 @@ impl Session {
     }
 
     fn client(&mut self) -> anyhow::Result<&mut Client> {
-        self.client.as_mut().context("the realtime session is not connected")
+        self.client
+            .as_mut()
+            .context("the realtime session is not connected")
     }
 
     /// Start a new utterance captured at `rate`.
@@ -341,7 +385,9 @@ impl Session {
         if let Some(item) = self.committed.take() {
             self.client()?.delete(&item, timeout).await?;
         } else if self.appended > 0 {
-            self.client()?.send(json!({"type": "input_audio_buffer.clear"})).await?;
+            self.client()?
+                .send(json!({"type": "input_audio_buffer.clear"}))
+                .await?;
         }
         self.appended = 0;
         Ok(())
@@ -350,10 +396,18 @@ impl Session {
     /// Commit the utterance and return the server's transcript of it.
     pub async fn transcript(&mut self) -> anyhow::Result<String> {
         self.flush().await?;
-        anyhow::ensure!(self.appended > 0, "no audio was streamed for this utterance");
+        anyhow::ensure!(
+            self.appended > 0,
+            "no audio was streamed for this utterance"
+        );
         let wait = TRANSCRIPT_WAIT.min(self.settings.rt.idle_timeout());
-        let client = self.client.as_mut().context("the realtime session is not connected")?;
-        client.send(json!({"type": "input_audio_buffer.commit"})).await?;
+        let client = self
+            .client
+            .as_mut()
+            .context("the realtime session is not connected")?;
+        client
+            .send(json!({"type": "input_audio_buffer.commit"}))
+            .await?;
         let deadline = Instant::now() + wait;
         let mut committed: Option<String> = None;
         let mut partial: std::collections::HashMap<String, String> = Default::default();
@@ -375,7 +429,11 @@ impl Session {
             match event {
                 Event::Committed { item_id } => committed = Some(item_id),
                 Event::InputTranscriptFailed => bail!("the realtime transcription failed"),
-                Event::InputTranscript { item_id, text, done } => {
+                Event::InputTranscript {
+                    item_id,
+                    text,
+                    done,
+                } => {
                     if !text.is_empty() {
                         partial.insert(item_id.clone(), text.clone());
                     }
@@ -428,10 +486,20 @@ impl Session {
 
     /// Remember this turn's items and delete the oldest beyond the limit.
     async fn keep_turn(&mut self) {
-        let Some(client) = self.client.as_mut() else { return };
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
         let kept: std::collections::HashSet<&String> = self.turns.iter().flatten().collect();
-        let current: Vec<String> = client.order.iter().filter(|id| !kept.contains(id)).cloned().collect();
-        let roles: Vec<Role> = current.iter().filter_map(|id| client.items.get(id).copied()).collect();
+        let current: Vec<String> = client
+            .order
+            .iter()
+            .filter(|id| !kept.contains(id))
+            .cloned()
+            .collect();
+        let roles: Vec<Role> = current
+            .iter()
+            .filter_map(|id| client.items.get(id).copied())
+            .collect();
         if !(roles.contains(&Role::User) && roles.contains(&Role::Assistant)) {
             // Without both halves the turn cannot be removed cleanly later.
             self.reset().await;
@@ -442,7 +510,9 @@ impl Session {
         while self.turns.len() > self.settings.history_turns {
             let oldest = self.turns.pop_front().expect("non-empty");
             for item in oldest {
-                let Some(client) = self.client.as_mut() else { return };
+                let Some(client) = self.client.as_mut() else {
+                    return;
+                };
                 if client.delete(&item, timeout).await.is_err() {
                     // The reply already aired; start fresh rather than keep unbounded history.
                     self.reset().await;
@@ -460,7 +530,8 @@ pub fn is_ptt_fault(err: &anyhow::Error) -> bool {
 
 /// Whether an error means the API key was refused.
 pub fn is_auth_error(err: &anyhow::Error) -> bool {
-    err.chain().any(|e| e.downcast_ref::<client::AuthError>().is_some())
+    err.chain()
+        .any(|e| e.downcast_ref::<client::AuthError>().is_some())
 }
 
 #[cfg(test)]
@@ -489,7 +560,9 @@ pub mod tests {
                 tokio::spawn(async move {
                     let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                     let mut turn = base;
-                    let tone: Vec<u8> = (0..4800).flat_map(|i: i32| (if i % 2 == 0 { 8000i16 } else { -8000 }).to_le_bytes()).collect();
+                    let tone: Vec<u8> = (0..4800)
+                        .flat_map(|i: i32| (if i % 2 == 0 { 8000i16 } else { -8000 }).to_le_bytes())
+                        .collect();
                     let delta = base64::engine::general_purpose::STANDARD.encode(tone);
                     while let Some(Ok(Message::Text(text))) = ws.next().await {
                         let msg: Value = serde_json::from_str(&text).unwrap();
@@ -518,7 +591,9 @@ pub mod tests {
                             _ => {}
                         }
                         for event in out {
-                            ws.send(Message::Text(event.to_string().into())).await.unwrap();
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
                         }
                     }
                 });
@@ -529,7 +604,10 @@ pub mod tests {
 
     pub fn settings(url: String, history_turns: usize) -> Settings {
         Settings {
-            rt: RealtimeConfig { url, ..Default::default() },
+            rt: RealtimeConfig {
+                url,
+                ..Default::default()
+            },
             key: Secret::new("test-key"),
             web_search: false,
             history_turns,
@@ -539,7 +617,9 @@ pub mod tests {
     }
 
     fn speech() -> Vec<i16> {
-        (0..9600).map(|i| if i % 2 == 0 { 3000 } else { -3000 }).collect()
+        (0..9600)
+            .map(|i| if i % 2 == 0 { 3000 } else { -3000 })
+            .collect()
     }
 
     #[tokio::test]
@@ -573,15 +653,29 @@ pub mod tests {
         }
         assert!(line.changes().contains(&true));
         assert!(!line.keyed());
-        let deletes = log.lock().unwrap().iter().filter(|k| *k == "conversation.item.delete").count();
-        assert_eq!(deletes, 2, "the first turn's user and assistant items are removed");
+        let deletes = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|k| *k == "conversation.item.delete")
+            .count();
+        assert_eq!(
+            deletes, 2,
+            "the first turn's user and assistant items are removed"
+        );
     }
 
     #[tokio::test]
     async fn fixed_text_is_spoken_on_a_fresh_connection() {
         let (url, log) = fake_server(vec![]).await;
-        let reply = speak(&settings(url, 4), "Standing by.", None).await.unwrap();
+        let reply = speak(&settings(url, 4), "Standing by.", None)
+            .await
+            .unwrap();
         assert!(reply.audible);
-        assert!(log.lock().unwrap().contains(&"conversation.item.create".to_string()));
+        assert!(
+            log.lock()
+                .unwrap()
+                .contains(&"conversation.item.create".to_string())
+        );
     }
 }

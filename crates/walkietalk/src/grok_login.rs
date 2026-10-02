@@ -49,14 +49,23 @@ impl GrokLogin {
     fn read(&self) -> anyhow::Result<(Value, String)> {
         let meta = std::fs::metadata(&self.path)
             .map_err(|_| anyhow::anyhow!("no saved Grok login; run `grok login` as this user"))?;
-        anyhow::ensure!(meta.len() <= MAX_AUTH_FILE, "the Grok login file is unexpectedly large");
+        anyhow::ensure!(
+            meta.len() <= MAX_AUTH_FILE,
+            "the Grok login file is unexpectedly large"
+        );
         let text = std::fs::read_to_string(&self.path).context("cannot read the Grok login")?;
-        let store: Value = serde_json::from_str(&text).map_err(|_| anyhow::anyhow!("the Grok login file is invalid; run `grok login`"))?;
+        let store: Value = serde_json::from_str(&text)
+            .map_err(|_| anyhow::anyhow!("the Grok login file is invalid; run `grok login`"))?;
         let account = store
             .as_object()
             .and_then(|map| {
                 map.iter()
-                    .find(|(_, session)| session.get("key").and_then(Value::as_str).is_some_and(|k| !k.is_empty()))
+                    .find(|(_, session)| {
+                        session
+                            .get("key")
+                            .and_then(Value::as_str)
+                            .is_some_and(|k| !k.is_empty())
+                    })
                     .map(|(name, _)| name.clone())
             })
             .context("the Grok login has no access token; run `grok login`")?;
@@ -83,19 +92,32 @@ impl GrokLogin {
         let _guard = REFRESH.lock().await;
         let (mut store, account) = self.read()?;
         let session = &store[&account];
-        let refresh = session.get("refresh_token").and_then(Value::as_str).filter(|s| !s.is_empty());
-        let client_id = session.get("oidc_client_id").and_then(Value::as_str).filter(|s| !s.is_empty());
+        let refresh = session
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let client_id = session
+            .get("oidc_client_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
         let (Some(refresh), Some(client_id)) = (refresh, client_id) else {
             bail!("the Grok login expired; run `grok login`");
         };
         let response = client
             .post(&self.token_url)
-            .form(&[("grant_type", "refresh_token"), ("refresh_token", refresh), ("client_id", client_id)])
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh),
+                ("client_id", client_id),
+            ])
             .send()
             .await
             .map_err(|err| anyhow::anyhow!("Grok login refresh {}", http::without_url(&err)))?;
         if !response.status().is_success() {
-            bail!("the Grok login could not be refreshed (HTTP {}); run `grok login`", response.status().as_u16());
+            bail!(
+                "the Grok login could not be refreshed (HTTP {}); run `grok login`",
+                response.status().as_u16()
+            );
         }
         let payload = http::json(response, 64 * 1024, "Grok login refresh").await?;
         let token = payload
@@ -104,12 +126,22 @@ impl GrokLogin {
             .filter(|t| valid_token(t))
             .context("the Grok login refresh returned no token; run `grok login`")?
             .to_string();
-        let session = store[&account].as_object_mut().context("invalid Grok login entry")?;
+        let session = store[&account]
+            .as_object_mut()
+            .context("invalid Grok login entry")?;
         session.insert("key".into(), Value::String(token.clone()));
-        if let Some(new_refresh) = payload.get("refresh_token").and_then(Value::as_str).filter(|t| valid_token(t)) {
+        if let Some(new_refresh) = payload
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|t| valid_token(t))
+        {
             session.insert("refresh_token".into(), Value::String(new_refresh.into()));
         }
-        if let Some(seconds) = payload.get("expires_in").and_then(Value::as_f64).filter(|s| *s > 0.0 && *s < 1e8) {
+        if let Some(seconds) = payload
+            .get("expires_in")
+            .and_then(Value::as_f64)
+            .filter(|s| *s > 0.0 && *s < 1e8)
+        {
             let expires = jiff::Timestamp::now() + jiff::SignedDuration::from_secs(seconds as i64);
             session.insert("expires_at".into(), Value::String(expires.to_string()));
         }
@@ -118,7 +150,10 @@ impl GrokLogin {
     }
 
     fn write(&self, store: &Value) -> anyhow::Result<()> {
-        let dir = self.path.parent().context("Grok login path has no directory")?;
+        let dir = self
+            .path
+            .parent()
+            .context("Grok login path has no directory")?;
         let tmp = dir.join(format!(".auth.json.{}.tmp", std::process::id()));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -151,7 +186,8 @@ fn expired(session: &Value) -> bool {
     let Ok(expires) = raw.parse::<jiff::Timestamp>() else {
         return false;
     };
-    jiff::Timestamp::now() + jiff::SignedDuration::try_from(SKEW).expect("small duration") >= expires
+    jiff::Timestamp::now() + jiff::SignedDuration::try_from(SKEW).expect("small duration")
+        >= expires
 }
 
 fn valid_token(token: &str) -> bool {
@@ -191,7 +227,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_store(dir.path(), "2999-01-01T00:00:00Z");
         let login = GrokLogin::at(path, "http://127.0.0.1:9/unused".into());
-        let token = login.token(&http::client(Duration::from_secs(1))).await.unwrap();
+        let token = login
+            .token(&http::client(Duration::from_secs(1)))
+            .await
+            .unwrap();
         assert_eq!(token.expose(), "old-token");
     }
 
@@ -199,9 +238,15 @@ mod tests {
     async fn expired_token_is_refreshed_and_saved_preserving_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_store(dir.path(), "2000-01-01T00:00:00Z");
-        let url = token_server(r#"{"access_token":"new-token","refresh_token":"refresh-2","expires_in":3600}"#).await;
+        let url = token_server(
+            r#"{"access_token":"new-token","refresh_token":"refresh-2","expires_in":3600}"#,
+        )
+        .await;
         let login = GrokLogin::at(path.clone(), url);
-        let token = login.token(&http::client(Duration::from_secs(1))).await.unwrap();
+        let token = login
+            .token(&http::client(Duration::from_secs(1)))
+            .await
+            .unwrap();
         assert_eq!(token.expose(), "new-token");
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let session = &saved["user@example"];

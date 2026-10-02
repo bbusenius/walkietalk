@@ -48,7 +48,11 @@ pub struct Item {
 impl Item {
     /// Words before any edit. Voice uses its transcript.
     pub fn original(&self) -> &str {
-        if self.voice { self.transcript.as_deref().unwrap_or("") } else { &self.text }
+        if self.voice {
+            self.transcript.as_deref().unwrap_or("")
+        } else {
+            &self.text
+        }
     }
 
     /// The words to deliver.
@@ -58,7 +62,11 @@ impl Item {
 
     /// Approval needs readable words.
     pub fn readable(&self) -> bool {
-        !self.voice || self.transcript.as_deref().is_some_and(|t| !t.trim().is_empty())
+        !self.voice
+            || self
+                .transcript
+                .as_deref()
+                .is_some_and(|t| !t.trim().is_empty())
     }
 }
 
@@ -111,8 +119,16 @@ impl Review {
         let mut review = Review {
             items: BTreeMap::new(),
             next: 1,
-            aliases: config.messaging.enabled().map(|(s, c)| (s, c.label().to_string())).collect(),
-            transcribe_voice: config.messaging.enabled().map(|(s, c)| (s, c.transcribe_voice)).collect(),
+            aliases: config
+                .messaging
+                .enabled()
+                .map(|(s, c)| (s, c.label().to_string()))
+                .collect(),
+            transcribe_voice: config
+                .messaging
+                .enabled()
+                .map(|(s, c)| (s, c.transcribe_voice))
+                .collect(),
             dispatch: None,
             revision: 1,
             approved_revision: 1,
@@ -194,10 +210,17 @@ impl Review {
     /// queue. An earlier item still under review blocks its contact.
     pub fn approved_head(&self) -> Option<&Item> {
         let mut firsts: BTreeMap<Service, &Item> = BTreeMap::new();
-        for item in self.items.values().filter(|i| i.direction == Direction::Incoming) {
+        for item in self
+            .items
+            .values()
+            .filter(|i| i.direction == Direction::Incoming)
+        {
             firsts.entry(item.service).or_insert(item);
         }
-        firsts.into_values().filter(|i| i.state == State::Approved).min_by_key(|i| i.number)
+        firsts
+            .into_values()
+            .filter(|i| i.state == State::Approved)
+            .min_by_key(|i| i.number)
     }
 
     pub fn get(&self, number: u64) -> Option<&Item> {
@@ -205,19 +228,28 @@ impl Review {
     }
 
     pub fn incoming(&self, service: Service, id: &str) -> Option<&Item> {
-        self.items.values().find(|i| i.direction == Direction::Incoming && i.service == service && i.id == id)
+        self.items
+            .values()
+            .find(|i| i.direction == Direction::Incoming && i.service == service && i.id == id)
     }
 
     pub fn is_approved(&self, service: Service, id: &str) -> bool {
-        self.incoming(service, id).is_some_and(|i| i.state == State::Approved)
+        self.incoming(service, id)
+            .is_some_and(|i| i.state == State::Approved)
     }
 
     pub fn is_waiting(&self, number: u64) -> bool {
-        self.items.get(&number).is_some_and(|i| i.state == State::Waiting)
+        self.items
+            .get(&number)
+            .is_some_and(|i| i.state == State::Waiting)
     }
 
     pub fn revision(&self, approved_view: bool) -> u64 {
-        if approved_view { self.approved_revision } else { self.revision }
+        if approved_view {
+            self.approved_revision
+        } else {
+            self.revision
+        }
     }
 
     /// The item a command for `revision` of a view refers to, if unchanged.
@@ -225,7 +257,11 @@ impl Review {
         if revision != self.revision(approved_view) {
             return None;
         }
-        if approved_view { self.approved_head() } else { self.head() }
+        if approved_view {
+            self.approved_head()
+        } else {
+            self.head()
+        }
     }
 
     /// Why the review head cannot be edited, if it can't.
@@ -237,7 +273,12 @@ impl Review {
             if item.direction == Direction::Outgoing {
                 return Some("Outgoing voice sends the recording; it can't be edited.".into());
             }
-            if !self.transcribe_voice.get(&item.service).copied().unwrap_or(false) {
+            if !self
+                .transcribe_voice
+                .get(&item.service)
+                .copied()
+                .unwrap_or(false)
+            {
                 return Some("This voice message plays as audio; it can't be edited.".into());
             }
             if !item.readable() {
@@ -339,8 +380,16 @@ impl Review {
 
     pub fn snapshot(&self, conversation: String) -> Snapshot {
         Snapshot {
-            waiting: self.items.values().filter(|i| i.state == State::Waiting).count(),
-            approved: self.items.values().filter(|i| i.state == State::Approved).count(),
+            waiting: self
+                .items
+                .values()
+                .filter(|i| i.state == State::Waiting)
+                .count(),
+            approved: self
+                .items
+                .values()
+                .filter(|i| i.state == State::Approved)
+                .count(),
             conversation,
             item: self.head().map(|i| self.view(i)),
             revision: self.revision,
@@ -382,7 +431,11 @@ mod tests {
         let other = r.add_incoming(Service::WhatsApp, "3", false, "c");
         r.approve(second);
         r.approve(other);
-        assert_eq!(r.approved_head().unwrap().number, other, "Signal is blocked by its first message");
+        assert_eq!(
+            r.approved_head().unwrap().number,
+            other,
+            "Signal is blocked by its first message"
+        );
         r.approve(first);
         assert_eq!(r.approved_head().unwrap().number, first);
     }
@@ -394,19 +447,31 @@ mod tests {
         let seen = r.revision(false);
         assert!(r.current(false, seen).is_some());
         r.set_transcript(n, "hello there");
-        assert!(r.current(false, seen).is_none(), "a transcript changes what was shown");
+        assert!(
+            r.current(false, seen).is_none(),
+            "a transcript changes what was shown"
+        );
         let seen = r.revision(false);
         r.edit(n, "hello friend").unwrap();
-        assert!(r.current(false, seen).is_none(), "an edit changes what was shown");
+        assert!(
+            r.current(false, seen).is_none(),
+            "an edit changes what was shown"
+        );
     }
 
     #[test]
     fn edits_normalize_and_restoring_clears_the_mark() {
         let mut r = review();
         let n = r.add_incoming(Service::Signal, "t", false, "see you at noon");
-        assert!(r.edit(n, "  see you at\nnoon ").is_none(), "same words is not an edit");
+        assert!(
+            r.edit(n, "  see you at\nnoon ").is_none(),
+            "same words is not an edit"
+        );
         assert!(r.edit(n, "   ").is_none(), "empty is not an edit");
-        assert_eq!(r.edit(n, "see you at one").as_deref(), Some("see you at noon"));
+        assert_eq!(
+            r.edit(n, "see you at one").as_deref(),
+            Some("see you at noon")
+        );
         assert_eq!(r.get(n).unwrap().content(), "see you at one");
         r.edit(n, "see you at noon").unwrap();
         assert!(r.get(n).unwrap().edited.is_none());
@@ -418,10 +483,22 @@ mod tests {
         let played = r.add_incoming(Service::Signal, "v1", true, "");
         assert!(!r.get(played).unwrap().readable());
         r.set_transcript(played, "hi");
-        assert!(r.edit_block(r.get(played).unwrap()).unwrap().contains("plays as audio"));
-        let out = r.add_outgoing(Service::WhatsApp, "nana hello", Some(Clip::silence(std::time::Duration::from_millis(10), 8000)));
+        assert!(
+            r.edit_block(r.get(played).unwrap())
+                .unwrap()
+                .contains("plays as audio")
+        );
+        let out = r.add_outgoing(
+            Service::WhatsApp,
+            "nana hello",
+            Some(Clip::silence(std::time::Duration::from_millis(10), 8000)),
+        );
         assert!(r.get(out).unwrap().readable());
-        assert!(r.edit_block(r.get(out).unwrap()).unwrap().contains("recording"));
+        assert!(
+            r.edit_block(r.get(out).unwrap())
+                .unwrap()
+                .contains("recording")
+        );
     }
 
     #[test]

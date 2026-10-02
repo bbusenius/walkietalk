@@ -51,7 +51,10 @@ enum Input {
 /// What turns speech into replies.
 enum Brain {
     /// Separate recognition, text agent, and voice.
-    Text { stt: Arc<dyn Transcriber>, conversation: Conversation },
+    Text {
+        stt: Arc<dyn Transcriber>,
+        conversation: Conversation,
+    },
     /// One speech-to-speech session.
     Realtime(Box<realtime::Session>),
 }
@@ -120,7 +123,10 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
     let wait = match (once, options.wav.is_some()) {
         (true, false) => {
             let seconds = options.timeout.unwrap_or(60.0);
-            anyhow::ensure!(seconds > 0.0 && seconds <= 600.0, "--timeout must be greater than 0 and at most 600");
+            anyhow::ensure!(
+                seconds > 0.0 && seconds <= 600.0,
+                "--timeout must be greater than 0 and at most 600"
+            );
             Some(Duration::from_secs_f64(seconds))
         }
         _ => None,
@@ -130,14 +136,20 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
     let realtime = config.agent.backend.is_realtime();
     let brain = if realtime {
         let session = realtime::Session::new(realtime::Settings::from_config(&config, &creds)?);
-        ui::status!("Agent: {} (its own transcripts drive the wake gate)", session.label());
+        ui::status!(
+            "Agent: {} (its own transcripts drive the wake gate)",
+            session.label()
+        );
         Brain::Realtime(Box::new(session))
     } else {
         let stt: Arc<dyn Transcriber> = Arc::from(backends::transcriber(&config, &creds)?);
         ui::status!("Speech recognition: {}", stt.label());
         let agent = backends::text_agent(&config, &creds)?;
         ui::status!("Agent: {}", agent.label());
-        Brain::Text { stt, conversation: Conversation::new(agent, &config, transmit) }
+        Brain::Text {
+            stt,
+            conversation: Conversation::new(agent, &config, transmit),
+        }
     };
 
     // Reserve the config before starting anything else in operator mode.
@@ -152,20 +164,30 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         Some(consent) => {
             // Realtime speaks with its own voice; the configured voice is
             // needed only for messaging.
-            let voice: Option<Arc<dyn crate::tts::Voice>> = if !realtime || config.messaging_enabled() {
-                let voice: Arc<dyn crate::tts::Voice> = Arc::from(backends::voice(&config, &creds)?);
-                voice.prepare().await.context("the voice is not ready; nothing was transmitted")?;
-                ui::status!("Voice: {}", voice.label());
-                Some(voice)
-            } else {
-                None
-            };
+            let voice: Option<Arc<dyn crate::tts::Voice>> =
+                if !realtime || config.messaging_enabled() {
+                    let voice: Arc<dyn crate::tts::Voice> =
+                        Arc::from(backends::voice(&config, &creds)?);
+                    voice
+                        .prepare()
+                        .await
+                        .context("the voice is not ready; nothing was transmitted")?;
+                    ui::status!("Voice: {}", voice.label());
+                    Some(voice)
+                } else {
+                    None
+                };
             let radio = Radio::live(&config, consent)?;
             signals::protect(radio.ptt());
             ui::status!("Transmit enabled: replies are spoken on the radio.");
             if config.radio.station_id.enabled() {
                 let id = &config.radio.station_id;
-                ui::status!("Station ID {} ({:?}, {:?}).", id.callsign, id.mode, id.method);
+                ui::status!(
+                    "Station ID {} ({:?}, {:?}).",
+                    id.callsign,
+                    id.mode,
+                    id.method
+                );
             }
             Some(Air::new(radio, voice, &config))
         }
@@ -182,7 +204,9 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         stt.prepare().await?;
     }
     if config.shutdown.enabled {
-        ui::status!("Remote shutdown enabled: the phrase and code, together or in two transmissions.");
+        ui::status!(
+            "Remote shutdown enabled: the phrase and code, together or in two transmissions."
+        );
     }
 
     let messaging = if config.messaging_enabled() {
@@ -198,7 +222,11 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         };
         let (bridge, inbox) = Bridge::start(&config).await?;
         for (service, contact) in config.messaging.enabled() {
-            ui::status!("Messaging: {service} with \"{}\" (wake \"{}\").", contact.label(), contact.wake);
+            ui::status!(
+                "Messaging: {service} with \"{}\" (wake \"{}\").",
+                contact.label(),
+                contact.wake
+            );
         }
         let operator = match reserved {
             Some(reserved) => match operator::Operator::start(&config, reserved, options.panel) {
@@ -306,7 +334,9 @@ impl Talk {
             return Ok(false);
         }
         ui::meter!("Connecting the voice session...");
-        let Brain::Realtime(session) = &mut self.brain else { return Ok(true) };
+        let Brain::Realtime(session) = &mut self.brain else {
+            return Ok(true);
+        };
         match session.connect().await {
             Ok(()) => Ok(true),
             Err(err) if realtime::is_auth_error(&err) || self.once => Err(err),
@@ -327,7 +357,9 @@ impl Talk {
     async fn next_event(&mut self) -> anyhow::Result<Option<Event>> {
         match &mut self.input {
             Input::Wav(path) => {
-                let Some(path) = path.take() else { return Ok(None) };
+                let Some(path) = path.take() else {
+                    return Ok(None);
+                };
                 let utterance = crate::commands::speech::utterance_from_wav(&self.config, &path)?;
                 if let Brain::Realtime(session) = &mut self.brain {
                     // A file arrives all at once; stream it like live audio.
@@ -351,7 +383,10 @@ impl Talk {
         loop {
             let idle = !listener.speaking();
             let (inbox, commands) = match self.messaging.as_mut() {
-                Some(m) => (Some(&mut m.inbox), m.operator.as_mut().map(|o| &mut o.commands)),
+                Some(m) => (
+                    Some(&mut m.inbox),
+                    m.operator.as_mut().map(|o| &mut o.commands),
+                ),
                 None => (None, None),
             };
             let result = tokio::select! {
@@ -416,7 +451,9 @@ impl Talk {
 
     /// Forward captured audio to the realtime session as it arrives.
     async fn stream(&mut self, heard: &Heard) -> anyhow::Result<()> {
-        let Brain::Realtime(session) = &mut self.brain else { return Ok(()) };
+        let Brain::Realtime(session) = &mut self.brain else {
+            return Ok(());
+        };
         match heard {
             Heard::Speech { new } => session.append(new).await,
             Heard::Discarded => session.discard().await,
@@ -446,7 +483,9 @@ impl Talk {
         };
         match result {
             Ok(text) => Ok(Some(text)),
-            Err(err) if realtime::is_auth_error(&err) || self.once => Err(err.context("transcription failed")),
+            Err(err) if realtime::is_auth_error(&err) || self.once => {
+                Err(err.context("transcription failed"))
+            }
             Err(err) if err.downcast_ref::<realtime::NoTranscript>().is_some() => {
                 ui::warning!("No transcript arrived for that audio; window unchanged.");
                 self.shutdown.cancel();
@@ -466,12 +505,16 @@ impl Talk {
 
     /// Remove a rejected or control utterance from the realtime conversation.
     async fn discard_realtime(&mut self, drop_connection: bool) {
-        let Brain::Realtime(session) = &mut self.brain else { return };
+        let Brain::Realtime(session) = &mut self.brain else {
+            return;
+        };
         if !session.connected() {
             return;
         }
         if let Err(err) = session.discard().await {
-            ui::error!("Could not remove that audio from the voice session ({err:#}); starting a fresh session.");
+            ui::error!(
+                "Could not remove that audio from the voice session ({err:#}); starting a fresh session."
+            );
             session.reset().await;
         } else if drop_connection {
             session.reset().await;
@@ -499,7 +542,13 @@ impl Talk {
         }
         ui::transcript!("Transcript: {text}");
         let decision = self.gate.decide(&text, utterance.started_at);
-        if !matches!(decision, Decision::Traffic { to: Destination::Agent, .. }) {
+        if !matches!(
+            decision,
+            Decision::Traffic {
+                to: Destination::Agent,
+                ..
+            }
+        ) {
             self.discard_realtime(false).await;
         }
         if let Decision::WakeOnly(to) | Decision::Traffic { to, .. } = &decision {
@@ -507,7 +556,9 @@ impl Talk {
         }
         match decision {
             Decision::Empty => ui::ignored!("Ignored: no words recognized."),
-            Decision::NeedsWake => ui::ignored!("Ignored: say \"{}\" first.", self.gate.wake_name()),
+            Decision::NeedsWake => {
+                ui::ignored!("Ignored: say \"{}\" first.", self.gate.wake_name())
+            }
             Decision::Sleep => self.enter_sleep("Sleep heard", None).await?,
             Decision::WakeOnly(Destination::Agent) => {
                 ui::status!("Wake heard; listening for your request.");
@@ -515,8 +566,15 @@ impl Talk {
                 self.say(&confirmation, "Wake confirmation").await?;
                 self.gate.complete_turn(Instant::now());
             }
-            Decision::Traffic { to: Destination::Agent, text, addressed } => {
-                ui::accepted!("Accepted ({}): {text}", if addressed { "wake name" } else { "follow-up" });
+            Decision::Traffic {
+                to: Destination::Agent,
+                text,
+                addressed,
+            } => {
+                ui::accepted!(
+                    "Accepted ({}): {text}",
+                    if addressed { "wake name" } else { "follow-up" }
+                );
                 self.gate.close();
                 match self.brain {
                     Brain::Text { .. } => self.answer(&text).await?,
@@ -524,8 +582,13 @@ impl Talk {
                 }
             }
             Decision::WakeOnly(Destination::Contact(service)) => self.contact_wake(service).await?,
-            Decision::Traffic { to: Destination::Contact(service), text: traffic, .. } => {
-                self.contact_traffic(service, &traffic, &text, &utterance).await?;
+            Decision::Traffic {
+                to: Destination::Contact(service),
+                text: traffic,
+                ..
+            } => {
+                self.contact_traffic(service, &traffic, &text, &utterance)
+                    .await?;
             }
         }
         Ok(Next::Listen)
@@ -565,10 +628,18 @@ impl Talk {
             log(local, "status", "Pending shutdown cancelled.");
         }
         if self.cancel_dispatch() {
-            log(local, "status", "Operator delivery paused; the rest of the message stays approved.");
+            log(
+                local,
+                "status",
+                "Operator delivery paused; the rest of the message stays approved.",
+            );
         }
         self.discard_realtime(false).await;
-        log(local, "status", &format!("{why}; say \"{}\" to start again.", self.gate.wake_name()));
+        log(
+            local,
+            "status",
+            &format!("{why}; say \"{}\" to start again.", self.gate.wake_name()),
+        );
         let confirmation = self.config.sleep_confirmation().to_string();
         self.say(&confirmation, "Sleep confirmation").await?;
         self.refresh_operator()?;
