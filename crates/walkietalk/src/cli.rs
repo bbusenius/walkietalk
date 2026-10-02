@@ -53,6 +53,8 @@ enum Command {
     },
     /// Validate the settings without touching hardware, network, or logins
     ConfigCheck,
+    /// Check that the configured devices and backends are ready (never transmits)
+    Check,
     /// List audio devices and serial ports for the config
     Devices {
         /// Show every ALSA device, not just sound cards by name
@@ -240,6 +242,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             print_summary(&config, &creds);
             ui::status!("No hardware, network, or login was checked.");
             Ok(())
+        }
+        Command::Check => {
+            let (source, config) = global.load_config()?;
+            let creds = global.load_credentials(&source)?;
+            blocking(move || crate::commands::check::run(&config, &creds)).await
         }
         Command::Devices { all } => blocking(move || hardware::devices(all)).await,
         Command::Ptt { seconds, transmit } => {
