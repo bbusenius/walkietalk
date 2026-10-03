@@ -41,6 +41,7 @@ a good dedicated host; see the [installation guide](docs/INSTALL.md#platforms).
 
 | Optional | Role | Reference |
 | --- | --- | --- |
+| **NA6D AIOC Case** | protective covering for the AIOC | [Case](https://na6d.com/products/aioc-case) |
 | **Raspberry Pi** | Dedicated Linux host | [Raspberry Pi](https://www.raspberrypi.com/) |
 | **Midland T51VP3 X-Talker, 2-pack** | More handheld radios | [Midland](https://midlandusa.com/products/t51vp3-x-talker-frs-walkie-talkie-2-pack) |
 
