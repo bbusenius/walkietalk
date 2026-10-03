@@ -154,48 +154,23 @@ struct Input {
     capture: bool,
 }
 
-/// Where the config came from. Only an explicitly named file may key the radio.
-#[derive(Debug, Clone)]
-pub enum ConfigPath {
-    Explicit(PathBuf),
-    Default(PathBuf),
-}
-
-impl ConfigPath {
-    pub fn path(&self) -> &Path {
-        match self {
-            ConfigPath::Explicit(p) | ConfigPath::Default(p) => p,
-        }
-    }
-
-    pub fn is_explicit(&self) -> bool {
-        matches!(self, ConfigPath::Explicit(_))
-    }
-}
-
 impl Global {
-    fn config_path(&self) -> ConfigPath {
-        match &self.config {
-            Some(path) => ConfigPath::Explicit(path.clone()),
-            None => ConfigPath::Default(paths::default_config_file()),
-        }
-    }
-
-    fn load_config(&self) -> anyhow::Result<(ConfigPath, Config)> {
-        let source = self.config_path();
-        if let ConfigPath::Default(path) = &source
-            && !path.exists()
-        {
+    fn load_config(&self) -> anyhow::Result<(PathBuf, Config)> {
+        let path = self
+            .config
+            .clone()
+            .unwrap_or_else(paths::default_config_file);
+        if self.config.is_none() && !path.exists() {
             bail!(
                 "no settings at {}; run `walkietalk init` or pass --config FILE",
                 path.display()
             );
         }
-        let config = Config::load(source.path())?;
-        Ok((source, config))
+        let config = Config::load(&path)?;
+        Ok((path, config))
     }
 
-    fn load_credentials(&self, config: &ConfigPath) -> anyhow::Result<Credentials> {
+    fn load_credentials(&self, config: &Path) -> anyhow::Result<Credentials> {
         if self.no_credentials {
             return Ok(Credentials::environment_only());
         }
@@ -203,7 +178,6 @@ impl Global {
             return Credentials::load(&paths::expand_home(path), true);
         }
         let beside = config
-            .path()
             .canonicalize()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join(credentials::FILE_NAME)));
@@ -268,32 +242,32 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::ConfigCheck => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source).context("credentials")?;
-            ui::status!("Config OK: {}", source.path().display());
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path).context("credentials")?;
+            ui::status!("Config OK: {}", path.display());
             print_summary(&config, &creds);
             ui::status!("No hardware, network, or login was checked.");
             Ok(())
         }
         Command::Check => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source)?;
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path)?;
             blocking(move || crate::commands::check::run(&config, &creds)).await
         }
         Command::Devices { all } => blocking(move || hardware::devices(all)).await,
         Command::Ptt { seconds, transmit } => {
-            let (source, config) = global.load_config()?;
-            let consent = TransmitConsent::grant(transmit, &source)?;
+            let (path, config) = global.load_config()?;
+            let consent = consent(transmit, &path, &config);
             blocking(move || hardware::ptt(&config, consent, seconds)).await
         }
         Command::AgentCheck { text } => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source)?;
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path)?;
             speech::agent_check(&config, &creds, &text).await
         }
         Command::TtsCheck { text, output } => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source)?;
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path)?;
             speech::tts_check(&config, &creds, &text, &output).await
         }
         Command::VoiceAgentCheck {
@@ -302,9 +276,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             supervised,
             transmit,
         } => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source)?;
-            let consent = TransmitConsent::grant(transmit, &source)?;
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path)?;
+            let consent = consent(transmit, &path, &config);
             speech::voice_agent_check(&config, &creds, input.wav, &output, supervised, consent)
                 .await
         }
@@ -313,8 +287,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             speech::models(&config).await
         }
         Command::Listen { input, timeout } => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source)?;
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path)?;
             speech::listen(&config, &creds, input.wav, timeout).await
         }
         Command::Talk {
@@ -324,15 +298,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             timeout,
             panel,
         } => {
-            let (source, config) = global.load_config()?;
-            let creds = global.load_credentials(&source)?;
-            let consent = TransmitConsent::grant(transmit, &source)?;
+            let (path, config) = global.load_config()?;
+            let creds = global.load_credentials(&path)?;
+            let consent = consent(transmit, &path, &config);
             let options = talk::Options {
                 wav: input.wav,
                 consent,
                 once,
                 timeout,
-                config_path: source.path().to_path_buf(),
+                config_path: path,
                 panel,
             };
             talk::run(config, creds, options).await
@@ -344,8 +318,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             timeout,
         } => operator(global, action, approved, text, timeout).await,
         Command::Play { wav, transmit } => {
-            let (source, config) = global.load_config()?;
-            let consent = TransmitConsent::grant(transmit, &source)?;
+            let (path, config) = global.load_config()?;
+            let consent = consent(transmit, &path, &config);
             blocking(move || hardware::play(&config, consent, &wav)).await
         }
     }
@@ -395,6 +369,19 @@ async fn operator(
         bail!("the operator command did not complete; see above");
     }
     Ok(())
+}
+
+/// Grant consent for `--transmit`, naming the settings and port that will key the radio.
+fn consent(transmit: bool, path: &Path, config: &Config) -> Option<TransmitConsent> {
+    let consent = TransmitConsent::grant(transmit);
+    if consent.is_some() {
+        ui::status!(
+            "Transmitting with {}, PTT on {}",
+            path.display(),
+            config.ptt.port.display()
+        );
+    }
+    consent
 }
 
 /// Run blocking work off the async threads.

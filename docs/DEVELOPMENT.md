@@ -32,7 +32,7 @@ The workspace has two crates: `crates/walkietalk` (the bridge) and
 
 - Only `radio` touches the serial line, and only the PTT supervisor thread
   owns it. Keying always has a deadline. A live `Radio` requires a
-  `TransmitConsent`, created only for `--transmit` with an explicit config.
+  `TransmitConsent`, created only for `--transmit`.
 - Prepare audio before keying. Treat PTT errors as fatal.
 - Backends return final text or audio, never transmit, and never fall back to
   another backend or credential.

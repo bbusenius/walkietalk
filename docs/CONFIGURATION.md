@@ -262,9 +262,8 @@ the command.
 | `ptt [--seconds N] [--transmit]` | Key briefly (simulated unless `--transmit`) | Serial with `--transmit` |
 | `play WAV [--transmit]` | Play a WAV over the radio (simulated unless `--transmit`) | Audio and serial with `--transmit` |
 
-`--transmit` always requires `-c` naming the config explicitly. Continuous
-`talk --capture` has no idle limit; `--timeout` applies to `--once` captures.
-`NO_COLOR` turns off colored output.
+Continuous `talk --capture` has no idle limit; `--timeout` applies to
+`--once` captures. `NO_COLOR` turns off colored output.
 
 ## How transmission works
 
