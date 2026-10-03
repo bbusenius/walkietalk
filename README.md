@@ -1,18 +1,12 @@
 # walkietalk
 
-A Linux radio bridge for AI agents and messaging contacts. Speak into a
-walkie-talkie, start with a wake phrase, and ask an AI agent a question or
-send a message to a WhatsApp or Signal contact. Answers and contact messages
-come back over the radio.
-
-- Agents: an offline stub, a Hermes environment, the Codex, Grok, and Claude
-  CLIs with their saved logins, Anthropic's Messages API, or Grok realtime
-  speech-to-speech.
-- Speech recognition: local Whisper, or xAI with a saved Grok login or an API key.
-- Voices: local Piper, xAI with a saved Grok login or an API key, or the voice
-  configured in a Hermes installation.
-- Optional [operator mode](docs/MESSAGING.md#operator-mode) holds every
-  incoming and outgoing message for local review and approval.
+A Linux radio bridge with interchangeable AI agents and voices, including
+optional WhatsApp and Signal messaging. Speak into a walkie-talkie and use
+a configured wake phrase to ask your chosen AI agent a question or send a
+transcribed message to a contact. Hear agent answers and contact messages
+over the radio. Optional [operator mode](docs/MESSAGING.md#operator-mode)
+holds messages for local review and approval. Supported agents include Grok,
+Codex, Hermes, and Claude.
 
 > [!IMPORTANT]
 > You are responsible for the rules of your radio service. Walkietalk does not
