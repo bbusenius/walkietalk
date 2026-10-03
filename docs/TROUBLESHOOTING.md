@@ -13,7 +13,6 @@ backends; never post credentials, CLI login files, or an unredacted config.
 | `walkietalk: command not found` | Add `~/.cargo/bin` to `PATH` (rustup does this for new shells). |
 | "no settings at ~/.config/walkietalk/config.toml" | Run `walkietalk init`, or pass `-c FILE`. |
 | `init` says the directory exists | That protects existing settings. Edit them, or use `--directory`. |
-| "--transmit requires the config to be named explicitly" | Add `-c ~/.config/walkietalk/config.toml`. |
 | Unknown or invalid field | `config-check` lists every problem; compare with `crates/walkietalk/templates/config.toml`. |
 | Credentials file refused | It must be a regular file you own, `chmod 600`, not a symlink. Messages never show its contents. |
 | A new token seems ignored | An exported variable wins over the file, even if empty. Unset it in the shell. |

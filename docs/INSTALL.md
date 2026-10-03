@@ -55,7 +55,6 @@ directory; use `walkietalk init --directory PATH` for another location, and
 pass that config with `-c PATH/config.toml`.
 
 Commands read `~/.config/walkietalk/config.toml` unless you pass `-c FILE`.
-Anything that can transmit requires `-c` to be given explicitly.
 
 ## 4. Local speech recognition
 
@@ -160,8 +159,7 @@ cargo install --locked --path crates/walkietalk-hermes-speech
 ## Running as a service
 
 Walkietalk does not install a service. If you add a systemd user unit, use
-the same user, absolute paths, and an explicit `-c`, and test the exact
-command by hand first.
+the same user and absolute paths, and test the exact command by hand first.
 
 ## Upgrade and remove
 

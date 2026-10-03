@@ -14,26 +14,18 @@ use std::time::{Duration, Instant};
 
 use crate::audio::playback::{AudioOut, DeviceOut, DryOut, Feed, Playback};
 use crate::audio::{Clip, Fit};
-use crate::cli::ConfigPath;
 use crate::config::Config;
 use crate::ui;
 use ptt::{DryLine, Ptt, PttLine, PttOwner, SerialLine};
 
-/// Proof that the user asked to transmit with an explicit config.
+/// Proof that the user asked to transmit.
 #[derive(Debug)]
 pub struct TransmitConsent(());
 
 impl TransmitConsent {
-    /// Consent exists only for `--transmit` with a config named on the command line.
-    pub fn grant(transmit: bool, config: &ConfigPath) -> anyhow::Result<Option<TransmitConsent>> {
-        if !transmit {
-            return Ok(None);
-        }
-        anyhow::ensure!(
-            config.is_explicit(),
-            "--transmit requires the config to be named explicitly with --config"
-        );
-        Ok(Some(TransmitConsent(())))
+    /// Consent exists only for `--transmit`.
+    pub fn grant(transmit: bool) -> Option<TransmitConsent> {
+        transmit.then_some(TransmitConsent(()))
     }
 }
 
@@ -381,14 +373,5 @@ pub mod tests {
             .unwrap_err();
         assert!(err.is_fatal());
         assert!(!line.keyed());
-    }
-
-    #[test]
-    fn consent_requires_transmit_and_an_explicit_config() {
-        let explicit = ConfigPath::Explicit("/x/config.toml".into());
-        let default = ConfigPath::Default("/x/config.toml".into());
-        assert!(TransmitConsent::grant(false, &explicit).unwrap().is_none());
-        assert!(TransmitConsent::grant(true, &default).is_err());
-        assert!(TransmitConsent::grant(true, &explicit).unwrap().is_some());
     }
 }

@@ -1,7 +1,7 @@
 # walkietalk
 
 A Linux radio bridge with interchangeable AI agents and voices, including
-optional WhatsApp and Signal messaging. Speak into a walkie-talkie and use
+optional WhatsApp and Signal messaging. Speak into a walkie-talkie using
 a configured wake phrase to ask your chosen AI agent a question or send a
 transcribed message to a contact. Hear agent answers and contact messages
 over the radio. Optional [operator mode](docs/MESSAGING.md#operator-mode)
@@ -94,11 +94,10 @@ walkietalk talk --capture
 Hold the handheld's talk button, say "Charlotte, why is the sky blue?", and
 release. Expect the transcript and the agent's reply in the terminal.
 
-Speak replies on the radio. Transmitting always needs the config named
-explicitly:
+Speak replies on the radio:
 
 ```bash
-walkietalk -c ~/.config/walkietalk/config.toml talk --capture --transmit
+walkietalk talk --capture --transmit
 ```
 
 Check that the first word is audible and that the gateway radio stops

@@ -139,7 +139,7 @@ station while it transmits.
 ### The panel
 
 ```bash
-walkietalk -c ~/.config/walkietalk/config.toml talk --capture --transmit --panel
+walkietalk talk --capture --transmit --panel
 ```
 
 The panel shows the live radio log above the review controls in the same
