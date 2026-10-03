@@ -35,6 +35,41 @@ ANTHROPIC_API_KEY = "billed-anthropic-api-key"
 Official CLI logins (Codex, Grok, Claude) stay in those CLIs' own stores. A key
 in this file never selects a backend or enables a fallback.
 
+## `[agent]`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `backend` | `"stub"` | `stub`, `hermes`, `codex`, `grok`, `claude`, `claude-api`, or `grok-realtime` |
+| `max_reply_chars` | `600` | Longer text replies are discarded (1 to 2000) |
+| `history_turns` | `8` | Completed request/reply pairs kept as context (1 to 32) |
+| `timeout_seconds` | `60` | Deadline for one text reply, including login checks and web lookups (up to 300) |
+| `web_search` | `true` | Let the agent look up public web information |
+| `instructions` | `""` | Replaces the built-in guidance |
+
+History lives only for one run. A failed reply, or one that could not be
+spoken, is not kept. The selected backend never falls back to another one or
+to billed API access.
+
+`instructions` may use `{max_reply_chars}`, `{spoken_seconds}` (the speech
+budget), and `{max_words}` (two words per second of budget). Write `{{` and
+`}}` for literal braces; other placeholders are config errors. Empty uses
+short, family-friendly, spoken-style guidance that mentions the radio when
+replies are transmitted.
+
+| Section | Fields |
+| --- | --- |
+| `[agent.claude]` | `executable` (default `claude`), `model` (required when selected), `reasoning_effort` |
+| `[agent.claude_api]` | `key_env` (default `ANTHROPIC_API_KEY`), `model` (required when selected), `reasoning_effort` |
+| `[agent.codex]` | `executable` (default `codex`), `model` (empty = CLI default), `reasoning_effort` |
+| `[agent.grok]` | `executable` (default `grok`), `model` (required when selected), `reasoning_effort` |
+| `[agent.hermes]` | `url` (default `http://127.0.0.1:8642`), `token_env` (default `WALKIETALK_HERMES_TOKEN`) |
+| `[agent.realtime]` | `model` (`grok-voice-latest`), `voice` (`eve`), `key_env` (`XAI_API_KEY`), `url` (`wss://api.x.ai/v1/realtime`), `connect_timeout_seconds` (10, up to 120), `idle_timeout_seconds` (60, up to 600) |
+
+`reasoning_effort` is `default` (the model's own) or an explicit level the
+adapter supports: Codex `minimal` to `xhigh`; Grok `none` to `max`; Claude and
+the Claude API `low` to `max`. The default is `low` for quick answers.
+Executables are names on `PATH` or absolute paths, never command lines.
+
 ## `[audio]`
 
 | Field | Default | Meaning |
@@ -45,6 +80,40 @@ in this file never selects a backend or enables a fallback.
 
 Default and sound-server devices (`default`, `pulse`, `pipewire`, `dmix`, ...)
 are refused: pick the radio interface itself.
+
+## `[listening]`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `mode` | `"conversation"` | `conversation`: the wake name opens a follow-up window. `wake-phrase`: every request starts with the name. |
+| `follow_up_seconds` | `30` | How long unaddressed follow-ups are accepted after a reply (up to 600) |
+
+The window refreshes after each completed reply (after the transmitter is
+released and the post-transmit mute, when transmitting). Whether a follow-up
+counts is judged from when the speaker started talking. The window expiring
+never stops the program.
+
+## `[messaging]`
+
+See [messaging](MESSAGING.md) for behavior.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `operator_mode` | `false` | Hold every message for local review |
+
+`[messaging.signal]` and `[messaging.whatsapp]` (each optional):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `wake`, `aliases` | required | Opens this contact's conversation |
+| `to` | required | The contact's number or ID |
+| `sender_alias` | `""` | Spoken label for their messages; empty uses the wake phrase |
+| `empty_queue_reply` | `""` | Spoken when the wake phrase arrives alone and nothing is waiting |
+| `send_as_voice` | `false` | Send the original recording as a voice note instead of its transcript |
+| `transcribe_voice` | `false` | Read incoming voice notes as text with the voice, instead of playing them |
+| `listening` | `{ mode = "conversation", follow_up_seconds = 60 }` | This contact's own listening rules |
+| `account` | `""` | Signal only: the local account number (`+15551234567`) when several are registered |
+| `attachments_dir` | XDG data dir | Signal only: where signal-cli stores attachments |
 
 ## `[ptt]`
 
@@ -85,65 +154,6 @@ With the realtime voice, the ID always uses its own transmission.
 Replies and contact messages carry the ID when it is due; spoken confirmations
 (wake, sleep, shutdown, empty queue) carry it only when an `interval` ID is due.
 
-## `[vad]` (voice detection)
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `threshold` | `0.02` | RMS level (0 to 1) that starts an utterance. Compare with the live meter. |
-| `hangover_ms` | `400` | Silence that ends an utterance (1 to 5000) |
-| `max_utterance_seconds` | `12` | Longest recording (up to 30) |
-
-Bursts with less than a quarter second of speech are ignored as noise.
-
-## `[stt]` (speech recognition)
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `backend` | `"whisper"` | `whisper` (local), `grok` (saved Grok login), or `grok-api` (billed key) |
-| `model` | `"base"` | Whisper model: `tiny`, `base`, or `small` |
-| `timeout_seconds` | `30` | Transcription deadline, including any login refresh (up to 120) |
-| `max_response_bytes` | `1048576` | Cap on each remote response |
-| `api_key_env` | `"XAI_API_KEY"` | Variable holding the key for `grok-api` |
-
-## `[listening]`
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `mode` | `"conversation"` | `conversation`: the wake name opens a follow-up window. `wake-phrase`: every request starts with the name. |
-| `follow_up_seconds` | `30` | How long unaddressed follow-ups are accepted after a reply (up to 600) |
-
-The window refreshes after each completed reply (after the transmitter is
-released and the post-transmit mute, when transmitting). Whether a follow-up
-counts is judged from when the speaker started talking. The window expiring
-never stops the program.
-
-## `[wake]`
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `name` | required | The name that addresses the agent |
-| `aliases` | `[]` | Common mistranscriptions of it |
-| `confirmation` | `""` | Spoken when the name arrives alone; empty stays silent |
-
-Matching compares words, ignoring case and punctuation: "Charlotte, what
-time is it?" matches `charlotte` and sends "what time is it?". Matching is
-exact on words; add aliases for recurring recognition mistakes. When several
-wake phrases start an utterance (the agent's and a contact's), the longest
-wins. In `conversation` mode the name alone opens the follow-up window.
-
-## `[sleep]` (optional)
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `phrase` | required in the section | Closes the open conversation |
-| `aliases` | `[]` | Alternatives |
-| `confirmation` | `""` | Spoken after sleeping; empty stays silent |
-
-Sleep matches the whole utterance, optionally after a wake name ("Charlotte,
-go to sleep"). Mentions inside a longer request are ordinary traffic. Sleep
-never reaches the agent, keeps the conversation history, and requires a wake
-name again. Omit the section to disable it.
-
 ## `[shutdown]` (remote program shutdown)
 
 | Field | Default | Meaning |
@@ -170,40 +180,28 @@ wake phrase may not swallow words of a control said after a shorter one
 (wake `charlotte go` with sleep `go to sleep` is refused). Contacts' wake
 phrases follow the same rules.
 
-## `[agent]`
+## `[sleep]` (optional)
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `backend` | `"stub"` | `stub`, `hermes`, `codex`, `grok`, `claude`, `claude-api`, or `grok-realtime` |
-| `max_reply_chars` | `600` | Longer text replies are discarded (1 to 2000) |
-| `history_turns` | `8` | Completed request/reply pairs kept as context (1 to 32) |
-| `timeout_seconds` | `60` | Deadline for one text reply, including login checks and web lookups (up to 300) |
-| `web_search` | `true` | Let the agent look up public web information |
-| `instructions` | `""` | Replaces the built-in guidance |
+| `phrase` | required in the section | Closes the open conversation |
+| `aliases` | `[]` | Alternatives |
+| `confirmation` | `""` | Spoken after sleeping; empty stays silent |
 
-History lives only for one run. A failed reply, or one that could not be
-spoken, is not kept. The selected backend never falls back to another one or
-to billed API access.
+Sleep matches the whole utterance, optionally after a wake name ("Charlotte,
+go to sleep"). Mentions inside a longer request are ordinary traffic. Sleep
+never reaches the agent, keeps the conversation history, and requires a wake
+name again. Omit the section to disable it.
 
-`instructions` may use `{max_reply_chars}`, `{spoken_seconds}` (the speech
-budget), and `{max_words}` (two words per second of budget). Write `{{` and
-`}}` for literal braces; other placeholders are config errors. Empty uses
-short, family-friendly, spoken-style guidance that mentions the radio when
-replies are transmitted.
+## `[stt]` (speech recognition)
 
-| Section | Fields |
-| --- | --- |
-| `[agent.hermes]` | `url` (default `http://127.0.0.1:8642`), `token_env` (default `WALKIETALK_HERMES_TOKEN`) |
-| `[agent.codex]` | `executable` (default `codex`), `model` (empty = CLI default), `reasoning_effort` |
-| `[agent.grok]` | `executable` (default `grok`), `model` (required when selected), `reasoning_effort` |
-| `[agent.claude]` | `executable` (default `claude`), `model` (required when selected), `reasoning_effort` |
-| `[agent.claude_api]` | `key_env` (default `ANTHROPIC_API_KEY`), `model` (required when selected), `reasoning_effort` |
-| `[agent.realtime]` | `model` (`grok-voice-latest`), `voice` (`eve`), `key_env` (`XAI_API_KEY`), `url` (`wss://api.x.ai/v1/realtime`), `connect_timeout_seconds` (10, up to 120), `idle_timeout_seconds` (60, up to 600) |
-
-`reasoning_effort` is `default` (the model's own) or an explicit level the
-adapter supports: Codex `minimal` to `xhigh`; Grok `none` to `max`; Claude and
-the Claude API `low` to `max`. The default is `low` for quick answers.
-Executables are names on `PATH` or absolute paths, never command lines.
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `backend` | `"whisper"` | `whisper` (local), `grok` (saved Grok login), or `grok-api` (billed key) |
+| `model` | `"base"` | Whisper model: `tiny`, `base`, or `small` |
+| `timeout_seconds` | `30` | Transcription deadline, including any login refresh (up to 120) |
+| `max_response_bytes` | `1048576` | Cap on each remote response |
+| `api_key_env` | `"XAI_API_KEY"` | Variable holding the key for `grok-api` |
 
 ## `[tts]` (voice)
 
@@ -215,31 +213,33 @@ Executables are names on `PATH` or absolute paths, never command lines.
 
 | Section | Fields |
 | --- | --- |
-| `[tts.piper]` | `executable` (default `piper`), `model` (`.onnx` path; `~` and paths relative to the config work) |
 | `[tts.grok]` | `voice` (`eve`), `language` (`en`, or `auto`), `speed` (0.7 to 1.5), `key_env` (for `grok-api`) |
 | `[tts.hermes]` | `url` (default `http://127.0.0.1:8643`), `token_env` |
+| `[tts.piper]` | `executable` (default `piper`), `model` (`.onnx` path; `~` and paths relative to the config work) |
 
-## `[messaging]`
-
-See [messaging](MESSAGING.md) for behavior.
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `operator_mode` | `false` | Hold every message for local review |
-
-`[messaging.whatsapp]` and `[messaging.signal]` (each optional):
+## `[vad]` (voice detection)
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `wake`, `aliases` | required | Opens this contact's conversation |
-| `to` | required | The contact's number or ID |
-| `sender_alias` | `""` | Spoken label for their messages; empty uses the wake phrase |
-| `empty_queue_reply` | `""` | Spoken when the wake phrase arrives alone and nothing is waiting |
-| `send_as_voice` | `false` | Send the original recording as a voice note instead of its transcript |
-| `transcribe_voice` | `false` | Read incoming voice notes as text with the voice, instead of playing them |
-| `listening` | `{ mode = "conversation", follow_up_seconds = 60 }` | This contact's own listening rules |
-| `account` | `""` | Signal only: the local account number (`+15551234567`) when several are registered |
-| `attachments_dir` | XDG data dir | Signal only: where signal-cli stores attachments |
+| `threshold` | `0.02` | RMS level (0 to 1) that starts an utterance. Compare with the live meter. |
+| `hangover_ms` | `400` | Silence that ends an utterance (1 to 5000) |
+| `max_utterance_seconds` | `12` | Longest recording (up to 30) |
+
+Bursts with less than a quarter second of speech are ignored as noise.
+
+## `[wake]`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | The name that addresses the agent |
+| `aliases` | `[]` | Common mistranscriptions of it |
+| `confirmation` | `""` | Spoken when the name arrives alone; empty stays silent |
+
+Matching compares words, ignoring case and punctuation: "Charlotte, what
+time is it?" matches `charlotte` and sends "what time is it?". Matching is
+exact on words; add aliases for recurring recognition mistakes. When several
+wake phrases start an utterance (the agent's and a contact's), the longest
+wins. In `conversation` mode the name alone opens the follow-up window.
 
 ## Commands
 
