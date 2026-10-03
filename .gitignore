@@ -1,6 +1,6 @@
 /target
 *.wav
 !crates/*/tests/data/*.wav
-config.toml
-credentials.toml
+/config.toml
+/credentials.toml
 *.swp
