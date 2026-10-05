@@ -242,6 +242,9 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         ui::meter!("Preparing {}...", stt.label());
         stt.prepare().await?;
     }
+    if config.sarneg.enabled {
+        ui::status!("SARNEG mode: wakes and the shutdown code are spoken as letters of the key.");
+    }
     if config.shutdown.enabled {
         ui::status!(
             "Remote shutdown enabled: the phrase and code, together or in two transmissions."
@@ -261,10 +264,14 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
         };
         let (bridge, inbox) = Bridge::start(&config).await?;
         for (service, contact) in config.messaging.enabled() {
+            let wake = if config.sarneg.enabled {
+                "SARNEG code".to_string()
+            } else {
+                format!("wake phrase \"{}\"", contact.wake_phrase)
+            };
             ui::status!(
-                "Messaging: {service} with \"{}\" (wake \"{}\").",
-                contact.label(),
-                contact.wake
+                "Messaging: {service} with \"{}\" ({wake}).",
+                contact.label()
             );
         }
         let operator = match reserved {
@@ -631,7 +638,7 @@ impl Talk {
         match decision {
             Decision::Empty => ui::ignored!("Ignored: no words recognized."),
             Decision::NeedsWake => {
-                ui::ignored!("Ignored: say \"{}\" first.", self.gate.wake_name())
+                ui::ignored!("Ignored: say {} first.", self.gate.wake_hint())
             }
             Decision::Sleep => self.enter_sleep("Sleep heard", None).await?,
             Decision::WakeOnly(Destination::Agent) => {
@@ -647,7 +654,11 @@ impl Talk {
             } => {
                 ui::accepted!(
                     "Accepted ({}): {text}",
-                    if addressed { "wake name" } else { "follow-up" }
+                    if addressed {
+                        "wake phrase"
+                    } else {
+                        "follow-up"
+                    }
                 );
                 self.gate.close();
                 match self.brain {
@@ -712,7 +723,7 @@ impl Talk {
         log(
             local,
             "status",
-            &format!("{why}; say \"{}\" to start again.", self.gate.wake_name()),
+            &format!("{why}; say {} to start again.", self.gate.wake_hint()),
         );
         let confirmation = self.config.sleep_confirmation().to_string();
         self.say(&confirmation, "Sleep confirmation").await?;

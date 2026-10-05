@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, ListeningConfig, ListeningMode, Service};
 use crate::phrases::{self, Phrase};
+use crate::sarneg::{self, Key};
 
 /// Who traffic goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,14 +44,77 @@ pub enum Decision {
     },
 }
 
-struct Wake {
-    to: Destination,
-    phrase: Phrase,
+/// How speech is addressed: by wake phrases, or in SARNEG mode by codes.
+/// Each list is in configuration order, the agent first.
+enum Wakes {
+    Phrases(Vec<(Destination, Phrase)>),
+    Codes(Key, Vec<(Destination, String)>),
+}
+
+impl Wakes {
+    fn new(config: &Config) -> Wakes {
+        let contacts = || config.messaging.enabled();
+        if let Some(key) = config.sarneg_key() {
+            let codes = std::iter::once((Destination::Agent, config.wake.sarneg_code.clone()))
+                .chain(contacts().map(|(service, contact)| {
+                    (Destination::Contact(service), contact.sarneg_code.clone())
+                }))
+                .collect();
+            return Wakes::Codes(key, codes);
+        }
+        let phrases = |to, first: &String, rest: &[String]| {
+            std::iter::once(first)
+                .chain(rest)
+                .map(move |p| (to, Phrase::new(p)))
+                .collect::<Vec<_>>()
+        };
+        let mut wakes = phrases(
+            Destination::Agent,
+            &config.wake.wake_phrase,
+            &config.wake.aliases,
+        );
+        for (service, contact) in contacts() {
+            wakes.extend(phrases(
+                Destination::Contact(service),
+                &contact.wake_phrase,
+                &contact.aliases,
+            ));
+        }
+        Wakes::Phrases(wakes)
+    }
+
+    /// The longest wake that starts `text`, and the text after it.
+    fn find<'a>(&self, text: &'a str) -> Option<(Destination, &'a str)> {
+        let (to, words) = match self {
+            Wakes::Phrases(wakes) => {
+                let phrases: Vec<Phrase> = wakes.iter().map(|(_, p)| p.clone()).collect();
+                let (index, words) = phrases::longest_prefix(text, &phrases)?;
+                (wakes[index].0, words)
+            }
+            Wakes::Codes(key, codes) => {
+                let numbers: Vec<String> = codes.iter().map(|(_, n)| n.clone()).collect();
+                let (index, words) = sarneg::longest_prefix(key, text, &numbers)?;
+                (codes[index].0, words)
+            }
+        };
+        Some((to, phrases::after_words(text, words)))
+    }
+
+    /// What to say to address `to`, for status lines.
+    fn hint(&self, to: Destination) -> String {
+        match self {
+            Wakes::Phrases(wakes) => wakes
+                .iter()
+                .find(|(t, _)| *t == to)
+                .map_or_else(String::new, |(_, p)| format!("\"{}\"", p.text())),
+            Wakes::Codes(..) => format!("the {to} SARNEG code"),
+        }
+    }
 }
 
 pub struct Gate {
-    wakes: Vec<Wake>,
-    sleep: Vec<Phrase>,
+    wakes: Wakes,
+    sleep: Codes,
     agent: ListeningConfig,
     contacts: Vec<(Service, ListeningConfig)>,
     selected: Option<Destination>,
@@ -59,30 +123,23 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(config: &Config) -> Gate {
-        let mut wakes: Vec<Wake> = std::iter::once(&config.wake.name)
-            .chain(&config.wake.aliases)
-            .map(|p| Wake {
-                to: Destination::Agent,
-                phrase: Phrase::new(p),
-            })
+        let contacts = config
+            .messaging
+            .enabled()
+            .map(|(service, contact)| (service, contact.listening.clone()))
             .collect();
-        let mut contacts = Vec::new();
-        for (service, contact) in config.messaging.enabled() {
-            contacts.push((service, contact.listening.clone()));
-            for p in std::iter::once(&contact.wake).chain(&contact.aliases) {
-                wakes.push(Wake {
-                    to: Destination::Contact(service),
-                    phrase: Phrase::new(p),
-                });
-            }
-        }
         Gate {
-            wakes,
-            sleep: config
-                .sleep_phrases()
-                .into_iter()
-                .map(Phrase::new)
-                .collect(),
+            wakes: Wakes::new(config),
+            sleep: match (config.sarneg_key(), &config.sleep) {
+                (Some(key), Some(sleep)) => Codes::Number(key, sleep.sarneg_code.clone()),
+                _ => Codes::Phrases(
+                    config
+                        .sleep_phrases()
+                        .into_iter()
+                        .map(phrases::normalize)
+                        .collect(),
+                ),
+            },
             agent: config.listening.clone(),
             contacts,
             selected: None,
@@ -125,13 +182,10 @@ impl Gate {
             .filter(|left| !left.is_zero())
     }
 
-    /// The wake name to suggest for the open conversation.
-    pub fn wake_name(&self) -> &str {
-        let to = self.selected.unwrap_or(Destination::Agent);
-        self.wakes
-            .iter()
-            .find(|w| w.to == to)
-            .map_or("", |w| w.phrase.text())
+    /// What to say to wake the open conversation: a quoted phrase, or a
+    /// description of the SARNEG code (never the code itself).
+    pub fn wake_hint(&self) -> String {
+        self.wakes.hint(self.selected.unwrap_or(Destination::Agent))
     }
 
     pub fn decide(&mut self, transcript: &str, started_at: Instant) -> Decision {
@@ -139,14 +193,11 @@ impl Gate {
         if phrases::normalize(text).is_empty() {
             return Decision::Empty;
         }
-        let phrases: Vec<Phrase> = self.wakes.iter().map(|w| w.phrase.clone()).collect();
-        let matched = phrases::longest_prefix(text, &phrases)
-            .map(|(index, words)| (self.wakes[index].to, phrases::after_words(text, words)));
+        let matched = self.wakes.find(text);
         let body = matched.map_or(text, |(_, rest)| rest);
-        if self
-            .sleep
+        if [text, body]
             .iter()
-            .any(|s| s.matches_all(text) || s.matches_all(body))
+            .any(|t| self.sleep.matches(&phrases::normalize(t)))
         {
             self.sleep();
             return Decision::Sleep;
@@ -223,12 +274,11 @@ impl Gate {
                 )
             }
             (ListeningMode::Conversation, None) => {
-                format!("Listening: say \"{}\" to start.", self.wake_name())
+                format!("Listening: say {} to start.", self.wake_hint())
             }
-            (ListeningMode::WakePhrase, _) => format!(
-                "Listening: start each request with \"{}\".",
-                self.wake_name()
-            ),
+            (ListeningMode::WakePhrase, _) => {
+                format!("Listening: start each request with {}.", self.wake_hint())
+            }
         }
     }
 }
@@ -246,11 +296,28 @@ pub enum Control {
     Rejected(&'static str),
 }
 
+/// A control said as a whole utterance (sleep, or the shutdown code):
+/// phrases, or in SARNEG mode a number.
+enum Codes {
+    Phrases(Vec<String>),
+    Number(Key, String),
+}
+
+impl Codes {
+    /// Whether a normalized utterance is exactly the code.
+    fn matches(&self, utterance: &str) -> bool {
+        match self {
+            Codes::Phrases(list) => list.iter().any(|c| c == utterance),
+            Codes::Number(key, number) => sarneg::is_code(key, utterance, number),
+        }
+    }
+}
+
 pub struct Shutdown {
     enabled: bool,
     phrases: Vec<String>,
-    codes: Vec<String>,
-    wakes: Vec<Phrase>,
+    codes: Codes,
+    wakes: Wakes,
     window: Duration,
     armed_until: Option<Instant>,
 }
@@ -265,22 +332,15 @@ impl Shutdown {
                 .filter(|p| !p.is_empty())
                 .collect::<Vec<_>>()
         };
-        let mut wakes: Vec<Phrase> = std::iter::once(&config.wake.name)
-            .chain(&config.wake.aliases)
-            .map(|p| Phrase::new(p))
-            .collect();
-        for (_, contact) in config.messaging.enabled() {
-            wakes.extend(
-                std::iter::once(&contact.wake)
-                    .chain(&contact.aliases)
-                    .map(|p| Phrase::new(p)),
-            );
-        }
+        let codes = match config.sarneg_key() {
+            Some(key) => Codes::Number(key, s.sarneg_code.clone()),
+            None => Codes::Phrases(normalized(&s.code, &s.code_aliases)),
+        };
         Shutdown {
             enabled: s.enabled,
             phrases: normalized(&s.phrase, &s.phrase_aliases),
-            codes: normalized(&s.code, &s.code_aliases),
-            wakes,
+            codes,
+            wakes: Wakes::new(config),
             window: Duration::from_secs_f64(s.confirm_window_seconds),
             armed_until: None,
         }
@@ -309,43 +369,50 @@ impl Shutdown {
         if !self.enabled {
             return Control::None;
         }
-        // The whole utterance, and the utterance after any wake phrase.
+        // The whole utterance, and the utterance after any wake.
         let mut candidates = vec![phrases::normalize(transcript)];
-        for wake in &self.wakes {
-            if let Some((_, words)) =
-                phrases::longest_prefix(transcript, std::slice::from_ref(wake))
-            {
-                candidates.push(phrases::normalize(phrases::after_words(transcript, words)));
-            }
+        if let Some((_, rest)) = self.wakes.find(transcript) {
+            candidates.push(phrases::normalize(rest));
         }
-        let is = |list: &[String]| candidates.iter().any(|c| list.contains(c));
-        let together = self
-            .phrases
+        // The text after a leading shutdown phrase.
+        let after_phrase = |c: &'_ str| -> Vec<String> {
+            self.phrases
+                .iter()
+                .filter_map(|p| c.strip_prefix(p.as_str())?.strip_prefix(' '))
+                .map(str::to_string)
+                .collect()
+        };
+        let together = candidates
             .iter()
-            .flat_map(|p| self.codes.iter().map(move |c| format!("{p} {c}")))
-            .any(|both| candidates.contains(&both));
+            .flat_map(|c| after_phrase(c))
+            .any(|rest| self.codes.matches(&rest));
         if together {
             self.armed_until = None;
             return Control::Confirmed;
         }
-        if is(&self.phrases) {
+        if candidates.iter().any(|c| self.phrases.contains(c)) {
             self.armed_until = Some(now + self.window);
             return Control::Armed;
         }
+        let code = candidates.iter().any(|c| self.codes.matches(c));
         if let Some(until) = self.armed_until.take() {
-            return if is(&self.codes) && started_at < until {
+            return if code && started_at < until {
                 Control::Confirmed
             } else {
                 Control::Rejected("shutdown cancelled: the code was wrong or late")
             };
         }
-        if is(&self.codes) {
+        if code {
             return Control::Rejected("shutdown code ignored: shutdown is not armed");
         }
+        let code_words: &[String] = match &self.codes {
+            Codes::Phrases(list) => list,
+            Codes::Number(..) => &[],
+        };
         let starts_control = candidates.iter().any(|c| {
             self.phrases
                 .iter()
-                .chain(&self.codes)
+                .chain(code_words)
                 .any(|p| c.starts_with(&format!("{p} ")))
         });
         if starts_control {
@@ -367,7 +434,7 @@ mod tests {
     }
 
     const SLEEP: &str = "[sleep]\nphrase = \"go to sleep\"\naliases = [\"stop listening\"]\n";
-    const CONTACTS: &str = "[messaging.whatsapp]\nwake = \"code\"\nto = \"+15550001\"\n[messaging.signal]\nwake = \"code one\"\nto = \"+15550002\"\nlistening = { mode = \"wake-phrase\", follow_up_seconds = 60 }\n";
+    const CONTACTS: &str = "[messaging.whatsapp]\nwake_phrase = \"code\"\nto = \"+15550001\"\n[messaging.signal]\nwake_phrase = \"code one\"\nto = \"+15550002\"\nlistening = { mode = \"wake-phrase\", follow_up_seconds = 60 }\n";
     const SHUTDOWN: &str = "[shutdown]\nenabled = true\nphrase = \"bird\"\nphrase_aliases = [\"picard epsilon\"]\ncode = \"seven\"\ncode_aliases = [\"7\"]\nconfirm_window_seconds = 30\narmed_reply = \"armed\"\nconfirmed_reply = \"goodbye\"\n";
 
     fn secs(t0: Instant, s: u64) -> Instant {
@@ -556,6 +623,140 @@ mod tests {
             Control::Rejected(_)
         ));
         assert_eq!(s.decide("tell me about birds", t0, t0), Control::None);
+    }
+
+    /// Key AFTERSHOCK: agent 762 is O H T, WhatsApp 4518 is R S F C, Signal
+    /// 905 is K A S, and the shutdown code 6338 is H E E C.
+    const SARNEG: &str = "sarneg_code = \"762\"\n[sarneg]\nenabled = true\nkey = \"AFTERSHOCK\"\n[messaging.whatsapp]\nwake_phrase = \"nana\"\nto = \"+15550001\"\nsarneg_code = \"4518\"\n[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+15550002\"\nsarneg_code = \"905\"\n";
+
+    #[test]
+    fn sarneg_codes_route_and_plain_wakes_do_not() {
+        let mut gate = Gate::new(&config(SARNEG));
+        let t0 = Instant::now();
+        assert_eq!(
+            gate.decide("Oscar hotel tango, what time is it?", t0),
+            Decision::Traffic {
+                to: Destination::Agent,
+                text: "what time is it?".into(),
+                addressed: true
+            }
+        );
+        assert_eq!(
+            gate.decide("R S F C I need a hand", t0),
+            Decision::Traffic {
+                to: Destination::Contact(Service::WhatsApp),
+                text: "I need a hand".into(),
+                addressed: true
+            }
+        );
+        assert_eq!(
+            gate.decide("kilo alfa sierra", t0),
+            Decision::WakeOnly(Destination::Contact(Service::Signal))
+        );
+        gate.sleep();
+        for plain in ["charlotte, what time is it?", "nana hello", "grandma"] {
+            assert_eq!(gate.decide(plain, t0), Decision::NeedsWake, "{plain}");
+        }
+        assert_eq!(
+            gate.decide("oscar hotel echo hello", t0),
+            Decision::NeedsWake,
+            "a wrong letter"
+        );
+        assert_eq!(
+            gate.status(t0),
+            "Listening: say the agent SARNEG code to start."
+        );
+    }
+
+    #[test]
+    fn sarneg_follow_ups_need_no_code_and_sleep_has_its_own() {
+        // The sleep code 338 is E E C.
+        let extra = format!("{SARNEG}{SLEEP}sarneg_code = \"338\"\n");
+        let mut gate = Gate::new(&config(&extra));
+        let t0 = Instant::now();
+        let _ = gate.decide("O H T hi", t0);
+        gate.complete_turn(t0);
+        assert!(matches!(
+            gate.decide("and then?", secs(t0, 1)),
+            Decision::Traffic {
+                addressed: false,
+                ..
+            }
+        ));
+        // The plain phrase is ordinary follow-up traffic in SARNEG mode.
+        assert!(matches!(
+            gate.decide("go to sleep", secs(t0, 2)),
+            Decision::Traffic {
+                addressed: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            gate.decide("Echo, echo, charlie.", secs(t0, 3)),
+            Decision::Sleep
+        );
+        let _ = gate.decide("O H T hi", secs(t0, 4));
+        assert_eq!(
+            gate.decide("oscar hotel tango, E E C", secs(t0, 5)),
+            Decision::Sleep,
+            "after a wake code"
+        );
+    }
+
+    #[test]
+    fn sarneg_shutdown_keeps_the_phrase_and_codes_the_number() {
+        let extra = format!("{SARNEG}{SHUTDOWN}sarneg_code = \"6338\"\n");
+        let mut s = Shutdown::new(&config(&extra));
+        let t0 = Instant::now();
+        assert_eq!(s.decide("Bird.", t0, t0), Control::Armed);
+        assert_eq!(
+            s.decide("hotel echo echo charlie", secs(t0, 5), secs(t0, 6)),
+            Control::Confirmed
+        );
+        assert_eq!(
+            s.decide("Oscar hotel tango, picard epsilon, H E E C", t0, t0),
+            Control::Confirmed,
+            "together, after the agent's code"
+        );
+        // The phrase code no longer works, and never reaches the agent.
+        assert_eq!(s.decide("bird", t0, t0), Control::Armed);
+        assert!(matches!(
+            s.decide("seven", secs(t0, 1), secs(t0, 1)),
+            Control::Rejected(_)
+        ));
+        assert!(matches!(s.decide("bird 7", t0, t0), Control::Rejected(_)));
+        assert!(
+            matches!(s.decide("H E E C", t0, t0), Control::Rejected(_)),
+            "the code alone is not armed"
+        );
+        assert_eq!(
+            s.decide("O H T, tell me about birds", t0, t0),
+            Control::None
+        );
+    }
+
+    #[test]
+    fn a_wake_code_spelled_with_as_in_is_a_wake_alone() {
+        let mut gate = Gate::new(&config(SARNEG));
+        assert_eq!(
+            gate.decide("K as in King, A as in Andy, S as in Sam.", Instant::now()),
+            Decision::WakeOnly(Destination::Contact(Service::Signal))
+        );
+    }
+
+    #[test]
+    fn switching_sarneg_off_restores_the_phrases() {
+        let off = SARNEG.replace("enabled = true", "enabled = false");
+        let mut gate = Gate::new(&config(&off));
+        let t0 = Instant::now();
+        assert!(matches!(
+            gate.decide("charlotte hi", t0),
+            Decision::Traffic {
+                to: Destination::Agent,
+                ..
+            }
+        ));
+        assert_eq!(gate.decide("O H T hi", secs(t0, 60)), Decision::NeedsWake);
     }
 
     #[test]

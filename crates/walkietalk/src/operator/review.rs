@@ -407,7 +407,7 @@ mod tests {
 
     fn review() -> Review {
         let text = format!(
-            "{MINIMAL}\n[messaging]\noperator_mode = true\n[messaging.whatsapp]\nwake = \"nana\"\nto = \"+1555\"\ntranscribe_voice = true\n[messaging.signal]\nwake = \"grandma\"\nto = \"+1666\"\n"
+            "{MINIMAL}\n[messaging]\noperator_mode = true\n[messaging.whatsapp]\nwake_phrase = \"nana\"\nto = \"+1555\"\ntranscribe_voice = true\n[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+1666\"\n"
         );
         Review::new(&Config::parse(&text, "/".into()).unwrap())
     }

@@ -148,7 +148,7 @@ impl Talk {
         };
         let (name, mode, contact) = match to {
             Destination::Agent => (
-                self.config.wake.name.clone(),
+                self.config.wake.wake_phrase.clone(),
                 self.config.listening.mode,
                 false,
             ),
