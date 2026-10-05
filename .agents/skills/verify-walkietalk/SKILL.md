@@ -71,6 +71,8 @@ Stable handles: subcommand names (`config-check`, `check`, `talk`, `operator`), 
 
 Feature recipes live in [`features/`](features/README.md). Drive one mapped feature per prove unless asked for more.
 
+Agent-solo transmit (no second radio): after doctor `hardware=ready`, `helpers/solo-tx.sh` or `helpers/run.sh talk-transmit -- walkietalk play WAV --transmit`.
+
 ## Evidence
 
 Root (survives cleanup):
@@ -90,7 +92,7 @@ Proof standards:
 
 - Exercise the real user path (`walkietalk …`), not internal test fakes.
 - Capture the action and the resulting state (exit code + summarizing lines).
-- For transmit features, observe that keying was intended only with `--transmit` and that doctor had hardware; never claim transmit proof from a simulated `ptt` without `--transmit`.
+- For transmit features, observe that keying was intended only with `--transmit` and that doctor had hardware; never claim transmit proof from a simulated `ptt` / `play` without `--transmit`. Agent-solo TX proof is `play WAV --transmit` (see `features/talk-transmit.md`), evidenced by consent + `Finished; transmitter released.`
 - Mocks only where the product already isolates (unit tests are not this skill).
 
 ## Cleanup
@@ -115,6 +117,7 @@ All under `.agents/skills/verify-walkietalk/helpers/`; invoke from that director
 | `doctor.sh` | Run `config-check`, `devices`, and `check`; print a one-line hardware verdict |
 | `run.sh <feature-id> -- <command…>` | Create `artifacts/<feature-id>/<run-id>/`, run the command, save streams/exit |
 | `cleanup.sh [tmux-session]` | End the named tmux session if present; leave artifacts alone |
+| `solo-tx.sh [duration]` | Build a short tone WAV and run `play WAV --transmit` via `run.sh` (agent-solo TX) |
 
 Example:
 

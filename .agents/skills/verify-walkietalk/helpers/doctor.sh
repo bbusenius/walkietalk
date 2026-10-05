@@ -10,8 +10,10 @@ echo "=== walkietalk --version ==="
 walkietalk --version
 
 echo "=== config-check ==="
+set +e
 walkietalk config-check
 cc=$?
+set -e
 
 echo "=== devices ==="
 walkietalk devices || true
