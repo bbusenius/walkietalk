@@ -393,7 +393,7 @@ mod tests {
     use super::*;
 
     fn contact() -> ContactConfig {
-        toml::from_str("wake = \"grandma\"\nto = \"+15557654321\"\n").unwrap()
+        toml::from_str("wake_phrase = \"grandma\"\nto = \"+15557654321\"\n").unwrap()
     }
 
     #[test]

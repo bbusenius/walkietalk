@@ -408,7 +408,10 @@ fn print_summary(config: &Config, creds: &Credentials) {
         config.listening.follow_up_seconds
     );
     for (service, contact) in config.messaging.enabled() {
-        ui::status!("Messaging: {service} via wake \"{}\"", contact.wake);
+        ui::status!(
+            "Messaging: {service} via wake phrase \"{}\"",
+            contact.wake_phrase
+        );
     }
     if config.messaging.operator_mode {
         ui::status!("Operator mode: every message waits for local review");

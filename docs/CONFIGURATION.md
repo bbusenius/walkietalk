@@ -85,7 +85,7 @@ are refused: pick the radio interface itself.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `"conversation"` | `conversation`: the wake name opens a follow-up window. `wake-phrase`: every request starts with the name. |
+| `mode` | `"conversation"` | `conversation`: the wake phrase opens a follow-up window. `wake-phrase`: every request starts with the wake phrase. |
 | `follow_up_seconds` | `30` | How long unaddressed follow-ups are accepted after a reply (up to 600) |
 
 The window refreshes after each completed reply (after the transmitter is
@@ -105,7 +105,8 @@ See [messaging](MESSAGING.md) for behavior.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `wake`, `aliases` | required | Opens this contact's conversation |
+| `wake_phrase`, `aliases` | required | Opens this contact's conversation |
+| `sarneg_code` | `""` | Opens it in [SARNEG mode](#sarneg-optional-coded-wakes) instead |
 | `to` | required | The contact's number or ID |
 | `sender_alias` | `""` | Spoken label for their messages; empty uses the wake phrase |
 | `empty_queue_reply` | `""` | Spoken when the wake phrase arrives alone and nothing is waiting |
@@ -154,19 +155,68 @@ With the realtime voice, the ID always uses its own transmission.
 Replies and contact messages carry the ID when it is due; spoken confirmations
 (wake, sleep, shutdown, empty queue) carry it only when an `interval` ID is due.
 
+## `[sarneg]` (optional coded wakes)
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Wake by SARNEG codes instead of wake phrases |
+| `key` | `""` | Ten letters with none repeated, such as `AFTERSHOCK`; required when enabled |
+
+SARNEG (Search and Rescue Numerical Encryption Grid) sends a number as letters
+of a shared key: the key's letter at position *d* stands for digit *d*. With
+`AFTERSHOCK` (A=0, F=1, T=2, ... K=9), the number `762` is spoken as "O H T"
+or "oscar hotel tango".
+
+When it is on, the agent and each contact wake by their `sarneg_code`
+(`[wake]` and the messaging sections), and their wake phrases no longer
+match. Remote shutdown is still armed by its plain phrase, but confirmed by
+`shutdown.sarneg_code` instead of `code`. Sleep uses `sleep.sarneg_code`
+instead of its phrases, said alone or after a wake code. Follow-ups work as
+before. Turning the mode off restores the phrases, and neither set of
+settings is erased. One key serves every code, so changing the key changes
+what is said without changing the numbers.
+
+Each transcript word is read deterministically: a word of the NATO phonetic
+alphabet stands for its first letter, a single letter stands for itself, and
+any other word is ignored. A single letter may be clarified with "as in" and a
+word that starts with it ("A as in Andy", "M as in Mike"); the clarification
+counts as part of that one letter. "For" is not accepted ("T for the weather"
+would lose words of the request). The official spellings (`alfa` through
+`zulu`, including `juliett`, `whiskey`, and `x-ray`) and the variants `alpha`,
+`juliet`, `whisky`, and `xray` are accepted. The letters are decoded with the
+key and must equal the number exactly. A wake code must begin with the first
+spoken letter, and the request is whatever follows its last letter ("oscar
+hotel tango, what time is it?"). Phonetic words are the more reliable choice:
+recognizers often write spoken letters as words ("oh", "see") or run them
+together ("OHT"), and those do not count.
+
+Codes are at least 3 digits, with no upper limit, written as strings so
+leading zeros are kept (`"0762"`). The minimum keeps ordinary words that are
+also letters ("Mike", "a") from waking anything on their own. The active
+codes must differ, and none may begin with another.
+The key and codes are checked even while the mode is off. With the realtime
+agent, the model hears the code and is told to ignore it. With
+`send_as_voice`, the recording sent to the contact includes the code.
+
+You are responsible for using SARNEG mode within the rules of your radio
+service. See the
+[FCC's GMRS page](https://www.fcc.gov/wireless/bureau-divisions/mobility-division/general-mobile-radio-service-gmrs)
+and [47 CFR Part 95, Subpart E](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-95/subpart-E).
+
 ## `[shutdown]` (remote program shutdown)
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Turn the feature on |
 | `phrase`, `phrase_aliases` | | Arms shutdown |
-| `code`, `code_aliases` | | Confirms it |
+| `code`, `code_aliases` | | Confirms it (optional in SARNEG mode) |
+| `sarneg_code` | `""` | Confirms it in [SARNEG mode](#sarneg-optional-coded-wakes), instead of `code` |
 | `confirm_window_seconds` | `30` | Time allowed between phrase and code (up to 300) |
 | `armed_reply` | | Spoken when the phrase alone arms shutdown |
 | `confirmed_reply` | | Spoken after the code, before exiting |
 
 Say the phrase and code together, or the phrase and then the code within the
-window (the wake name is optional). The code alone, a wrong code, or a late one
+window (the wake phrase is optional). The code alone, a wrong code, or a late one
 does nothing and cancels arming. Shutdown phrases never reach the agent or a
 contact. Shutdown only exits walkietalk; anyone listening on the channel can
 hear the phrase, so treat it as a convenience, not security. Replies are
@@ -174,7 +224,7 @@ spoken only with `--transmit`.
 
 ### Phrase rules
 
-Wake names, aliases, sleep phrases, shutdown phrases, and codes must all be
+Wake phrases, aliases, sleep phrases, shutdown phrases, and codes must all be
 distinct, and spoken confirmations must differ from all of them. A longer
 wake phrase may not swallow words of a control said after a shorter one
 (wake `charlotte go` with sleep `go to sleep` is refused). Contacts' wake
@@ -187,11 +237,12 @@ phrases follow the same rules.
 | `phrase` | required in the section | Closes the open conversation |
 | `aliases` | `[]` | Alternatives |
 | `confirmation` | `""` | Spoken after sleeping; empty stays silent |
+| `sarneg_code` | `""` | Closes it in [SARNEG mode](#sarneg-optional-coded-wakes) instead of the phrases; required there when the section is present |
 
-Sleep matches the whole utterance, optionally after a wake name ("Charlotte,
+Sleep matches the whole utterance, optionally after a wake phrase ("Charlotte,
 go to sleep"). Mentions inside a longer request are ordinary traffic. Sleep
 never reaches the agent, keeps the conversation history, and requires a wake
-name again. Omit the section to disable it.
+phrase again. Omit the section to disable it.
 
 ## `[stt]` (speech recognition)
 
@@ -231,15 +282,16 @@ Bursts with less than a quarter second of speech are ignored as noise.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `name` | required | The name that addresses the agent |
+| `wake_phrase` | required | The phrase that addresses the agent |
 | `aliases` | `[]` | Common mistranscriptions of it |
-| `confirmation` | `""` | Spoken when the name arrives alone; empty stays silent |
+| `confirmation` | `""` | Spoken when the phrase arrives alone; empty stays silent |
+| `sarneg_code` | `""` | Wakes the agent in [SARNEG mode](#sarneg-optional-coded-wakes) instead |
 
 Matching compares words, ignoring case and punctuation: "Charlotte, what
 time is it?" matches `charlotte` and sends "what time is it?". Matching is
 exact on words; add aliases for recurring recognition mistakes. When several
 wake phrases start an utterance (the agent's and a contact's), the longest
-wins. In `conversation` mode the name alone opens the follow-up window.
+wins. In `conversation` mode the phrase alone opens the follow-up window.
 
 ## Commands
 

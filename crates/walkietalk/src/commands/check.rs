@@ -136,16 +136,28 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
             crate::config::Service::WhatsApp => "wacli",
             crate::config::Service::Signal => "signal-cli",
         };
+        let wake = if config.sarneg.enabled {
+            "SARNEG code".to_string()
+        } else {
+            format!("wake phrase \"{}\"", contact.wake_phrase)
+        };
         r.line(
             &format!("{service} ({tool})"),
-            program(tool).map(|p| format!("{p}; wake \"{}\"", contact.wake)),
+            program(tool).map(|p| format!("{p}; {wake}")),
         );
         r.line("ffmpeg", program("ffmpeg"));
     }
 
     ui::status!("{}", Gate::new(config).status(std::time::Instant::now()));
     if let Some(sleep) = &config.sleep {
-        ui::status!("Sleep phrase: \"{}\"", sleep.phrase);
+        if config.sarneg.enabled {
+            ui::status!("Sleep: SARNEG code");
+        } else {
+            ui::status!("Sleep phrase: \"{}\"", sleep.phrase);
+        }
+    }
+    if config.sarneg.enabled {
+        ui::status!("SARNEG mode: on");
     }
     if config.shutdown.enabled {
         ui::status!("Remote shutdown: enabled");

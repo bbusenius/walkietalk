@@ -27,7 +27,7 @@ backends; never post credentials, CLI login files, or an unredacted config.
 | "no speech within the wait limit" | That is `listen` or `talk --once`. Compare the RMS meter with `[vad] threshold`, check the gateway radio's volume, or lower the threshold. Continuous `talk` has no idle limit. |
 | Speech cut into pieces | Raise `[vad] hangover_ms`. |
 | Wrong words | Inspect with `listen --capture`. Add `[wake] aliases` for recurring mistakes; try a larger Whisper model. |
-| "Ignored: say ... first" | In `wake-phrase` mode every request needs the name; in `conversation` mode the follow-up window may have ended. |
+| "Ignored: say ... first" | In `wake-phrase` mode every request needs the wake phrase; in `conversation` mode the follow-up window may have ended. |
 
 ## Agents and voices
 

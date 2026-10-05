@@ -104,7 +104,7 @@ independent adapters:
   and custom model providers must be inactive. The CLI runs with an empty home
   directory (keeping `GROK_HOME` for the login), and only web search is
   allowed, when enabled.
-- `[stt] backend = "grok"`: xAI speech-to-text. Wake names and sleep phrases
+- `[stt] backend = "grok"`: xAI speech-to-text. Wake phrases and sleep phrases
   are sent as recognition hints; the shutdown code is not.
 - `[tts] backend = "grok"`: xAI text-to-speech with `[tts.grok]` voice,
   language, and speed.
