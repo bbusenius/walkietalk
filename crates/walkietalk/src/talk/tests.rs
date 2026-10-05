@@ -307,7 +307,7 @@ async fn station_id_follows_the_reply_and_is_sent_once_per_interval() {
     assert_eq!(ids, 1, "the interval has not passed for the second reply");
 }
 
-const CONTACT: &str = "[messaging.signal]\nwake = \"grandma\"\nto = \"+15557654321\"\nsender_alias = \"Nana\"\nempty_queue_reply = \"No new messages.\"\n";
+const CONTACT: &str = "[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+15557654321\"\nsender_alias = \"Nana\"\nempty_queue_reply = \"No new messages.\"\n";
 
 #[tokio::test]
 async fn contact_traffic_is_sent_and_empty_queue_is_announced() {

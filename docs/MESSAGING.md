@@ -9,14 +9,14 @@ Install the tools first ([installation](INSTALL.md#7-messaging-tools-optional)).
 
 ```toml
 [messaging.whatsapp]
-wake = "nana"
+wake_phrase = "nana"
 aliases = ["nanna"]
 to = "+15551234567"
 sender_alias = "Nana"
 empty_queue_reply = "No new messages, over."
 
 [messaging.signal]
-wake = "grandma"
+wake_phrase = "grandma"
 to = "+15557654321"
 account = ""            # the local number, if signal-cli has several
 ```
@@ -25,7 +25,7 @@ account = ""            # the local number, if signal-cli has several
 
 The radio is in one conversation at a time: the agent or one contact. A
 contact's wake phrase opens that contact and closes the agent; the agent's
-wake name does the reverse; the sleep phrase closes whichever is open. Remote
+wake phrase does the reverse; the sleep phrase closes whichever is open. Remote
 shutdown is checked before any of them. Each contact has its own `listening`
 mode and follow-up window (default `conversation`, 60 s).
 

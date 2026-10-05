@@ -122,7 +122,7 @@ impl Settings {
 /// The wake phrase stays in the audio, so tell the model to treat it as a
 /// routing prefix rather than part of the question or its own name.
 fn routing_instructions(guidance: &str, config: &Config) -> String {
-    let mut names: Vec<&str> = vec![config.wake.name.as_str()];
+    let mut names: Vec<&str> = vec![config.wake.wake_phrase.as_str()];
     names.extend(config.wake.aliases.iter().map(String::as_str));
     names.dedup();
     let names = serde_json::to_string(&names).expect("names serialize");

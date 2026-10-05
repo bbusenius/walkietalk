@@ -1,4 +1,4 @@
-//! Word-level phrase matching for wake names and spoken controls.
+//! Word-level phrase matching for wake phrases and spoken controls.
 //!
 //! Speech recognizers vary in case and punctuation, so phrases are compared
 //! as sequences of lowercase words. Matching is exact on those words; it is

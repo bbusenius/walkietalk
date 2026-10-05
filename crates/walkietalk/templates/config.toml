@@ -56,12 +56,12 @@ follow_up_seconds = 30        # unaddressed follow-ups accepted this long after 
 # operator_mode = false       # hold every message for local review
 #
 # [messaging.signal]
-# wake = "grandma"
+# wake_phrase = "grandma"
 # to = "+15557654321"
 # account = ""                # local sending number when several are registered
 #
 # [messaging.whatsapp]
-# wake = "nana"
+# wake_phrase = "nana"
 # aliases = []
 # to = "+15551234567"
 # sender_alias = ""           # spoken sender label; empty uses the wake phrase
@@ -132,6 +132,6 @@ hangover_ms = 400             # silence that ends an utterance
 max_utterance_seconds = 12
 
 [wake]
-name = "charlotte"
+wake_phrase = "charlotte"
 aliases = ["charlot", "sharlot"]
-confirmation = ""             # spoken when the name arrives alone; empty stays silent
+confirmation = ""             # spoken when the phrase arrives alone; empty stays silent

@@ -85,7 +85,7 @@ are refused: pick the radio interface itself.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `"conversation"` | `conversation`: the wake name opens a follow-up window. `wake-phrase`: every request starts with the name. |
+| `mode` | `"conversation"` | `conversation`: the wake phrase opens a follow-up window. `wake-phrase`: every request starts with the wake phrase. |
 | `follow_up_seconds` | `30` | How long unaddressed follow-ups are accepted after a reply (up to 600) |
 
 The window refreshes after each completed reply (after the transmitter is
@@ -105,7 +105,7 @@ See [messaging](MESSAGING.md) for behavior.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `wake`, `aliases` | required | Opens this contact's conversation |
+| `wake_phrase`, `aliases` | required | Opens this contact's conversation |
 | `to` | required | The contact's number or ID |
 | `sender_alias` | `""` | Spoken label for their messages; empty uses the wake phrase |
 | `empty_queue_reply` | `""` | Spoken when the wake phrase arrives alone and nothing is waiting |
@@ -166,7 +166,7 @@ Replies and contact messages carry the ID when it is due; spoken confirmations
 | `confirmed_reply` | | Spoken after the code, before exiting |
 
 Say the phrase and code together, or the phrase and then the code within the
-window (the wake name is optional). The code alone, a wrong code, or a late one
+window (the wake phrase is optional). The code alone, a wrong code, or a late one
 does nothing and cancels arming. Shutdown phrases never reach the agent or a
 contact. Shutdown only exits walkietalk; anyone listening on the channel can
 hear the phrase, so treat it as a convenience, not security. Replies are
@@ -174,7 +174,7 @@ spoken only with `--transmit`.
 
 ### Phrase rules
 
-Wake names, aliases, sleep phrases, shutdown phrases, and codes must all be
+Wake phrases, aliases, sleep phrases, shutdown phrases, and codes must all be
 distinct, and spoken confirmations must differ from all of them. A longer
 wake phrase may not swallow words of a control said after a shorter one
 (wake `charlotte go` with sleep `go to sleep` is refused). Contacts' wake
@@ -188,10 +188,10 @@ phrases follow the same rules.
 | `aliases` | `[]` | Alternatives |
 | `confirmation` | `""` | Spoken after sleeping; empty stays silent |
 
-Sleep matches the whole utterance, optionally after a wake name ("Charlotte,
+Sleep matches the whole utterance, optionally after a wake phrase ("Charlotte,
 go to sleep"). Mentions inside a longer request are ordinary traffic. Sleep
 never reaches the agent, keeps the conversation history, and requires a wake
-name again. Omit the section to disable it.
+phrase again. Omit the section to disable it.
 
 ## `[stt]` (speech recognition)
 
@@ -231,15 +231,15 @@ Bursts with less than a quarter second of speech are ignored as noise.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `name` | required | The name that addresses the agent |
+| `wake_phrase` | required | The phrase that addresses the agent |
 | `aliases` | `[]` | Common mistranscriptions of it |
-| `confirmation` | `""` | Spoken when the name arrives alone; empty stays silent |
+| `confirmation` | `""` | Spoken when the phrase arrives alone; empty stays silent |
 
 Matching compares words, ignoring case and punctuation: "Charlotte, what
 time is it?" matches `charlotte` and sends "what time is it?". Matching is
 exact on words; add aliases for recurring recognition mistakes. When several
 wake phrases start an utterance (the agent's and a contact's), the longest
-wins. In `conversation` mode the name alone opens the follow-up window.
+wins. In `conversation` mode the phrase alone opens the follow-up window.
 
 ## Commands
 

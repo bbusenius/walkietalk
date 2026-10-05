@@ -298,9 +298,9 @@ impl ListeningConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ListeningMode {
-    /// Every request starts with the wake name.
+    /// Every request starts with the wake phrase.
     WakePhrase,
-    /// The wake name opens a follow-up window.
+    /// The wake phrase opens a follow-up window.
     Conversation,
 }
 
@@ -316,11 +316,11 @@ impl fmt::Display for ListeningMode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WakeConfig {
-    pub name: String,
-    /// Common mistranscriptions of the name.
+    pub wake_phrase: String,
+    /// Common mistranscriptions of the phrase.
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// Spoken when the name arrives with no request; empty stays silent.
+    /// Spoken when the phrase arrives with no request; empty stays silent.
     #[serde(default)]
     pub confirmation: String,
 }
@@ -740,7 +740,7 @@ impl fmt::Display for Service {
 #[serde(deny_unknown_fields)]
 pub struct ContactConfig {
     /// Wake phrase that opens this contact's conversation.
-    pub wake: String,
+    pub wake_phrase: String,
     #[serde(default)]
     pub aliases: Vec<String>,
     /// Destination number or ID.
@@ -770,7 +770,7 @@ impl ContactConfig {
     /// Label spoken before a contact's message.
     pub fn label(&self) -> &str {
         if self.sender_alias.trim().is_empty() {
-            self.wake.trim()
+            self.wake_phrase.trim()
         } else {
             self.sender_alias.trim()
         }
@@ -815,7 +815,7 @@ impl Config {
     fn normalize(&mut self) {
         let trim = |s: &mut String| *s = s.trim().to_string();
         let trim_all = |v: &mut Vec<String>| v.iter_mut().for_each(|s| *s = s.trim().to_string());
-        trim(&mut self.wake.name);
+        trim(&mut self.wake.wake_phrase);
         trim_all(&mut self.wake.aliases);
         trim(&mut self.wake.confirmation);
         if let Some(sleep) = &mut self.sleep {
@@ -840,7 +840,7 @@ impl Config {
             .into_iter()
             .flatten()
         {
-            trim(&mut contact.wake);
+            trim(&mut contact.wake_phrase);
             trim_all(&mut contact.aliases);
             trim(&mut contact.to);
             trim(&mut contact.sender_alias);
@@ -1186,7 +1186,7 @@ impl Config {
     fn check_phrases(&self, v: &mut Validator) {
         let mut wakes: Vec<(String, Vec<&str>)> = vec![(
             "wake".into(),
-            std::iter::once(self.wake.name.as_str())
+            std::iter::once(self.wake.wake_phrase.as_str())
                 .chain(self.wake.aliases.iter().map(String::as_str))
                 .collect(),
         )];
@@ -1194,7 +1194,7 @@ impl Config {
             let key = format!("messaging.{}", service_key(service));
             wakes.push((
                 key,
-                std::iter::once(contact.wake.as_str())
+                std::iter::once(contact.wake_phrase.as_str())
                     .chain(contact.aliases.iter().map(String::as_str))
                     .collect(),
             ));
@@ -1331,7 +1331,7 @@ impl Config {
                 v.fail(format!("{field} must differ from the {owner} phrases"));
             }
         }
-        // A longer wake name must not swallow the words of a control spoken
+        // A longer wake phrase must not swallow the words of a control spoken
         // after a shorter one, e.g. wake "charlotte go" vs. "charlotte, go to sleep".
         let all_wakes: Vec<Phrase> = wakes
             .iter()
@@ -1502,7 +1502,7 @@ pub mod tests_support {
         [ptt]
         port = "/dev/serial/by-id/usb-AIOC"
         [wake]
-        name = "charlotte"
+        wake_phrase = "charlotte"
         aliases = ["charlot"]
     "#;
 }
@@ -1634,14 +1634,15 @@ mod tests {
 
     #[test]
     fn messaging_wake_cannot_collide_with_agent_wake() {
-        let p = problems("[messaging.signal]\nwake = \"charlotte\"\nto = \"+15551234567\"\n");
+        let p =
+            problems("[messaging.signal]\nwake_phrase = \"charlotte\"\nto = \"+15551234567\"\n");
         assert!(p.contains("used by both"), "{p}");
     }
 
     #[test]
     fn longer_wake_cannot_swallow_a_control_phrase() {
         let p = problems(
-            "[sleep]\nphrase = \"go to sleep\"\n[messaging.whatsapp]\nwake = \"charlotte go\"\nto = \"+15551234567\"\n",
+            "[sleep]\nphrase = \"go to sleep\"\n[messaging.whatsapp]\nwake_phrase = \"charlotte go\"\nto = \"+15551234567\"\n",
         );
         assert!(p.contains("swallow"), "{p}");
     }

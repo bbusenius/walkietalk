@@ -71,7 +71,7 @@ Edit `~/.config/walkietalk/config.toml`:
 
 - `[audio] input` and `output`: the AIOC's `plughw:CARD=...` names from `devices`.
 - `[ptt] port`: the AIOC's `/dev/serial/by-id/...` path. It keys with DTR.
-- `[wake] name`: the name you will say to address the agent, plus aliases for
+- `[wake] wake_phrase`: the phrase you will say to address the agent, plus aliases for
   common mistranscriptions.
 - `[agent] backend`, `[stt] backend`, `[tts] backend`: see [backends](docs/BACKENDS.md).
 
