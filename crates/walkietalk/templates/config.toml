@@ -1,146 +1,186 @@
-# Walkietalk settings. See the configuration reference in docs/CONFIGURATION.md.
-# Sections for backends you do not select may be removed.
+# Walkietalk settings. Each option lists its accepted values; the full
+# reference is docs/CONFIGURATION.md. Check your edits with
+# `walkietalk config-check`, then restart `talk`.
+#
+# Only [audio], [ptt], and [wake] are required. Everything else has a default,
+# and sections for backends you do not select may be removed. Unknown fields
+# are errors. Tokens and API keys belong in credentials.toml, never here:
+# fields named *_env hold the NAME of an environment variable, not its value.
 
 [agent]
-backend = "stub"              # stub, hermes, codex, grok, claude, claude-api, or grok-realtime
-max_reply_chars = 600
-history_turns = 8
-timeout_seconds = 60
-web_search = true
-instructions = ""             # empty uses built-in guidance; placeholders {max_reply_chars} {spoken_seconds} {max_words}
+# Who answers requests. "stub" always returns a fixed pretend reply and needs
+# nothing; "grok-realtime" is the speech-to-speech voice agent.
+# Values: stub, hermes, codex, grok, claude, claude-api, grok-realtime
+backend = "stub"
+max_reply_chars = 600         # longer text replies are discarded; 1 to 2000
+history_turns = 8             # request/reply pairs kept as context; 1 to 32
+timeout_seconds = 60          # deadline for one text reply; up to 300
+web_search = true             # let the agent look up public web information
+# Replaces the built-in guidance. Empty uses short, family-friendly,
+# spoken-style guidance. Placeholders: {max_reply_chars} {spoken_seconds}
+# {max_words}; write {{ and }} for literal braces.
+instructions = ""
 
-[agent.claude]
+# reasoning_effort below is "default" (the model's own) or a level the adapter
+# supports. Executables are names on PATH or absolute paths, never command
+# lines, and a model is required for the backend you select.
+
+[agent.claude]                # backend = "claude": the Claude CLI
 executable = "claude"
 model = "claude-sonnet-5"
-reasoning_effort = "low"
+reasoning_effort = "low"      # default, low, medium, high, xhigh, or max
 
-[agent.claude_api]
-key_env = "ANTHROPIC_API_KEY"
+[agent.claude_api]            # backend = "claude-api": billed Anthropic API
+key_env = "ANTHROPIC_API_KEY" # name of the variable holding the key
 model = "claude-sonnet-5"
-reasoning_effort = "low"
+reasoning_effort = "low"      # default, low, medium, high, xhigh, or max
 
-[agent.codex]
+[agent.codex]                 # backend = "codex": the Codex CLI
 executable = "codex"
 model = ""                    # empty uses the CLI default
-reasoning_effort = "low"
+reasoning_effort = "low"      # default, minimal, low, medium, high, or xhigh
 
-[agent.grok]
+[agent.grok]                  # backend = "grok": the Grok CLI
 executable = "grok"
 model = "grok-4.7"
-reasoning_effort = "low"
+reasoning_effort = "low"      # default, none, minimal, low, medium, high, xhigh, or max
 
-[agent.hermes]
-url = "http://127.0.0.1:8642"
+[agent.hermes]                # backend = "hermes": your local Hermes service
+url = "http://127.0.0.1:8642" # http(s) base URL, no credentials or query
 token_env = "WALKIETALK_HERMES_TOKEN"
 
-[agent.realtime]
+[agent.realtime]              # backend = "grok-realtime": billed voice agent
 model = "grok-voice-latest"
 voice = "eve"
 key_env = "XAI_API_KEY"
-url = "wss://api.x.ai/v1/realtime"
-connect_timeout_seconds = 10
-idle_timeout_seconds = 60
+url = "wss://api.x.ai/v1/realtime"   # wss:// URL, no credentials
+connect_timeout_seconds = 10  # up to 120
+idle_timeout_seconds = 60     # up to 600
 
 [audio]
-# Exact names from `walkietalk devices`. Pick the radio interface itself.
+# Exact names from `walkietalk devices`. Pick the radio interface itself:
+# default and sound-server devices (default, pulse, pipewire, dmix) are refused.
 input = "plughw:CARD=AllInOneCable,DEV=0"
 output = "plughw:CARD=AllInOneCable,DEV=0"
-gain = 1.0                    # above 1 amplifies and may clip
+gain = 1.0                    # outgoing level multiplier, above 0 up to 16;
+                              # above 1 amplifies and may clip
 
 [listening]
+# conversation: the wake phrase opens a follow-up window.
+# wake-phrase: every request must start with the wake phrase.
 mode = "conversation"         # conversation or wake-phrase
-follow_up_seconds = 30        # unaddressed follow-ups accepted this long after a reply
+follow_up_seconds = 30        # unaddressed follow-ups accepted this long after
+                              # a reply; up to 600
 
 # Messaging contacts are optional. Uncomment a section to enable it.
+# See docs/MESSAGING.md for behavior.
 # [messaging]
-# operator_mode = false       # hold every message for local review
+# operator_mode = false       # true holds every message for local review
 #
 # [messaging.signal]
-# wake_phrase = "grandma"
+# wake_phrase = "grandma"     # opens this contact's conversation
+# aliases = []                # common mistranscriptions of the wake phrase
 # sarneg_code = ""            # SARNEG mode: the number that wakes this contact
-# to = "+15557654321"
-# account = ""                # local sending number when several are registered
+# to = "+15557654321"         # the contact's number or ID
+# sender_alias = ""           # spoken sender label; empty uses the wake phrase
+# empty_queue_reply = ""      # spoken when the wake phrase arrives and nothing waits
+# send_as_voice = false       # true sends your recording instead of its transcript
+# transcribe_voice = false    # true reads incoming voice notes aloud as text
+# listening = { mode = "conversation", follow_up_seconds = 60 }  # this contact's rules
+# account = ""                # Signal only: local sending number when several
+#                             # are registered, in +countrycode format
+# attachments_dir = ""        # Signal only: where signal-cli stores attachments;
+#                             # absolute or ~/ path, default is the XDG data dir
 #
 # [messaging.whatsapp]
 # wake_phrase = "nana"
 # aliases = []
 # sarneg_code = ""
 # to = "+15551234567"
-# sender_alias = ""           # spoken sender label; empty uses the wake phrase
+# sender_alias = ""
 # empty_queue_reply = ""
 # send_as_voice = false
 # transcribe_voice = false
 # listening = { mode = "conversation", follow_up_seconds = 60 }
 
 [ptt]
+# Serial device that keys the radio; an absolute /dev path, ideally by-id.
 port = "/dev/serial/by-id/REPLACE-with-your-interface"
-line = "dtr"                  # dtr keys the AIOC; the other line is held low
+line = "dtr"                  # dtr (keys the AIOC) or rts; the other line is held low
 
 [radio]
-max_tx_seconds = 10           # hard cap for one transmission
-settle_seconds = 0.2          # key-up delay before audio
-post_tx_mute_seconds = 2      # listening pause after unkey; 0 disables
+max_tx_seconds = 10           # hard cap for one transmission, settle included;
+                              # up to 600, and at least 1 s above settle_seconds
+settle_seconds = 0.2          # key-up delay before audio, so the first word is
+                              # not clipped; 0 to 2
+post_tx_mute_seconds = 2      # listening pause after unkey; 0 to 30, 0 disables
 
 [radio.station_id]
 callsign = ""                 # your granted station ID; empty disables identification
 mode = "end-of-reply"         # off, end-of-reply, or interval
-method = "voice"              # voice or morse
-interval_seconds = 900
+method = "voice"              # voice speaks the call sign; morse sends an 800 Hz
+                              # tone (letters, digits, and spaces only)
+interval_seconds = 900        # for mode = "interval"; up to 1800
 
 [sarneg]                      # optional: wakes and the shutdown code spoken as key letters
-enabled = false
-key = ""                      # 10 letters, none repeated, e.g. "AFTERSHOCK"
+enabled = false               # true matches sarneg_code numbers instead of phrases
+key = ""                      # 10 letters, none repeated, e.g. "AFTERSHOCK";
+                              # required when enabled. Letter at position d means digit d.
 
 [shutdown]                    # remote program shutdown, phrase plus code
 enabled = false
-phrase = "initiate self-destruct"
-phrase_aliases = ["initiate self destruct"]
-code = "alpha 7"
-code_aliases = ["alpha seven"]
+phrase = "initiate self-destruct"                   # arms shutdown
+phrase_aliases = ["initiate self destruct"]         # alternatives for the phrase
+code = "alpha 7"                                    # confirms it
+code_aliases = ["alpha seven"]                      # alternatives for the code
 sarneg_code = ""              # SARNEG mode: replaces code; the phrase still arms
-confirm_window_seconds = 30
-armed_reply = "Self-destruct sequence armed. What is the code?"
-confirmed_reply = "Self-destruct in five seconds."
+confirm_window_seconds = 30   # time allowed between phrase and code; up to 300
+armed_reply = "Self-destruct sequence armed. What is the code?"   # spoken when armed
+confirmed_reply = "Self-destruct in five seconds."                # spoken before exiting
 
-[sleep]                       # optional; remove to disable
-phrase = "go to sleep"
-aliases = ["stop listening"]
-confirmation = "Standing by."
+[sleep]                       # optional; remove the section to disable sleep
+phrase = "go to sleep"        # closes the open conversation
+aliases = ["stop listening"]  # alternatives for the phrase
+confirmation = "Standing by." # spoken after sleeping; empty stays silent
 sarneg_code = ""              # SARNEG mode: replaces the phrases
 
 [stt]
 backend = "whisper"           # whisper (local), grok (saved Grok login), or grok-api (billed key)
 model = "base"                # whisper: tiny, base, or small; download with `walkietalk models`
-timeout_seconds = 30
-max_response_bytes = 1048576  # cap on each remote response
-api_key_env = "XAI_API_KEY"   # grok-api only
+timeout_seconds = 30          # transcription deadline; up to 120
+max_response_bytes = 1048576  # cap on each remote response; 1 to 16777216
+api_key_env = "XAI_API_KEY"   # grok-api only; name of the variable holding the key
 
 [tts]
 backend = "piper"             # piper, grok (saved login), grok-api (billed key), or hermes
-timeout_seconds = 30
-peak_normalize = false
+timeout_seconds = 30          # synthesis deadline; up to 120
+peak_normalize = false        # true scales speech so its loudest peak reaches
+                              # full scale; audio.gain still applies
 
 [tts.grok]
 voice = "eve"
-language = "en"
+language = "en"               # language code such as en, or auto
 speed = 1.0                   # 0.7 to 1.5
 key_env = "XAI_API_KEY"       # grok-api only
 
 [tts.hermes]
-url = "http://127.0.0.1:8643"
+url = "http://127.0.0.1:8643" # http(s) base URL, no credentials or query
 token_env = "WALKIETALK_HERMES_TOKEN"
 
 [tts.piper]
-executable = "piper"
+executable = "piper"          # name on PATH or an absolute path
+# .onnx voice file; ~ and paths relative to this config both work.
 model = "~/.local/share/walkietalk/piper/en_US-amy-medium.onnx"
 
 [vad]
-threshold = 0.02              # RMS level that starts speech; compare with the live meter
-hangover_ms = 400             # silence that ends an utterance
-max_utterance_seconds = 12
+threshold = 0.02              # RMS level (above 0 to 1) that starts speech;
+                              # compare with the live meter
+hangover_ms = 400             # silence that ends an utterance; 1 to 5000, and
+                              # shorter than max_utterance_seconds
+max_utterance_seconds = 12    # longest single recording; up to 30
 
 [wake]
-wake_phrase = "charlotte"
-aliases = ["charlot", "sharlot"]
+wake_phrase = "charlotte"     # the phrase that addresses the agent
+aliases = ["charlot", "sharlot"]   # common mistranscriptions of it
 confirmation = ""             # spoken when the phrase arrives alone; empty stays silent
 sarneg_code = ""              # SARNEG mode: the number that wakes the agent
