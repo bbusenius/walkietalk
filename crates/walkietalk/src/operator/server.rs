@@ -234,7 +234,7 @@ mod tests {
 
     fn shared() -> Shared {
         let text = format!(
-            "{}\n[messaging]\noperator_mode = true\n[messaging.signal]\nwake = \"grandma\"\nto = \"+1555\"\n",
+            "{}\n[messaging]\noperator_mode = true\n[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+1555\"\n",
             crate::config::tests_support::MINIMAL
         );
         let config = Config::parse(&text, "/".into()).unwrap();

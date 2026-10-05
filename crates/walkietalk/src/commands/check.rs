@@ -138,7 +138,7 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
         };
         r.line(
             &format!("{service} ({tool})"),
-            program(tool).map(|p| format!("{p}; wake \"{}\"", contact.wake)),
+            program(tool).map(|p| format!("{p}; wake phrase \"{}\"", contact.wake_phrase)),
         );
         r.line("ffmpeg", program("ffmpeg"));
     }

@@ -62,16 +62,16 @@ pub fn transcriber(config: &Config, creds: &Credentials) -> anyhow::Result<Box<d
     })
 }
 
-/// Names the recognizer should expect: wake names and sleep phrases.
+/// Names the recognizer should expect: wake phrases and sleep phrases.
 /// The shutdown code is deliberately left out.
 pub fn keyterms(config: &Config) -> Vec<String> {
-    let mut terms: Vec<String> = std::iter::once(&config.wake.name)
+    let mut terms: Vec<String> = std::iter::once(&config.wake.wake_phrase)
         .chain(&config.wake.aliases)
         .cloned()
         .collect();
     for (_, contact) in config.messaging.enabled() {
         terms.extend(
-            std::iter::once(&contact.wake)
+            std::iter::once(&contact.wake_phrase)
                 .chain(&contact.aliases)
                 .cloned(),
         );

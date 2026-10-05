@@ -59,7 +59,7 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(config: &Config) -> Gate {
-        let mut wakes: Vec<Wake> = std::iter::once(&config.wake.name)
+        let mut wakes: Vec<Wake> = std::iter::once(&config.wake.wake_phrase)
             .chain(&config.wake.aliases)
             .map(|p| Wake {
                 to: Destination::Agent,
@@ -69,7 +69,7 @@ impl Gate {
         let mut contacts = Vec::new();
         for (service, contact) in config.messaging.enabled() {
             contacts.push((service, contact.listening.clone()));
-            for p in std::iter::once(&contact.wake).chain(&contact.aliases) {
+            for p in std::iter::once(&contact.wake_phrase).chain(&contact.aliases) {
                 wakes.push(Wake {
                     to: Destination::Contact(service),
                     phrase: Phrase::new(p),
@@ -125,8 +125,8 @@ impl Gate {
             .filter(|left| !left.is_zero())
     }
 
-    /// The wake name to suggest for the open conversation.
-    pub fn wake_name(&self) -> &str {
+    /// The wake phrase to suggest for the open conversation.
+    pub fn wake_phrase(&self) -> &str {
         let to = self.selected.unwrap_or(Destination::Agent);
         self.wakes
             .iter()
@@ -223,11 +223,11 @@ impl Gate {
                 )
             }
             (ListeningMode::Conversation, None) => {
-                format!("Listening: say \"{}\" to start.", self.wake_name())
+                format!("Listening: say \"{}\" to start.", self.wake_phrase())
             }
             (ListeningMode::WakePhrase, _) => format!(
                 "Listening: start each request with \"{}\".",
-                self.wake_name()
+                self.wake_phrase()
             ),
         }
     }
@@ -265,13 +265,13 @@ impl Shutdown {
                 .filter(|p| !p.is_empty())
                 .collect::<Vec<_>>()
         };
-        let mut wakes: Vec<Phrase> = std::iter::once(&config.wake.name)
+        let mut wakes: Vec<Phrase> = std::iter::once(&config.wake.wake_phrase)
             .chain(&config.wake.aliases)
             .map(|p| Phrase::new(p))
             .collect();
         for (_, contact) in config.messaging.enabled() {
             wakes.extend(
-                std::iter::once(&contact.wake)
+                std::iter::once(&contact.wake_phrase)
                     .chain(&contact.aliases)
                     .map(|p| Phrase::new(p)),
             );
@@ -367,7 +367,7 @@ mod tests {
     }
 
     const SLEEP: &str = "[sleep]\nphrase = \"go to sleep\"\naliases = [\"stop listening\"]\n";
-    const CONTACTS: &str = "[messaging.whatsapp]\nwake = \"code\"\nto = \"+15550001\"\n[messaging.signal]\nwake = \"code one\"\nto = \"+15550002\"\nlistening = { mode = \"wake-phrase\", follow_up_seconds = 60 }\n";
+    const CONTACTS: &str = "[messaging.whatsapp]\nwake_phrase = \"code\"\nto = \"+15550001\"\n[messaging.signal]\nwake_phrase = \"code one\"\nto = \"+15550002\"\nlistening = { mode = \"wake-phrase\", follow_up_seconds = 60 }\n";
     const SHUTDOWN: &str = "[shutdown]\nenabled = true\nphrase = \"bird\"\nphrase_aliases = [\"picard epsilon\"]\ncode = \"seven\"\ncode_aliases = [\"7\"]\nconfirm_window_seconds = 30\narmed_reply = \"armed\"\nconfirmed_reply = \"goodbye\"\n";
 
     fn secs(t0: Instant, s: u64) -> Instant {
