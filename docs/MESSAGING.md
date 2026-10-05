@@ -37,8 +37,8 @@ mode and follow-up window (default `conversation`, 60 s).
 
 With `send_as_voice = true` the original recording is sent as an Ogg/Opus
 voice note instead of its transcript; the recording includes the wake phrase
-if it was spoken in the same transmission. A failed voice send never falls
-back to text. Without operator mode, a failed send is reported and, with
+(or SARNEG code) if it was spoken in the same transmission. A failed voice
+send never falls back to text. Without operator mode, a failed send is reported and, with
 `--transmit`, spoken on the radio. Messages are not resent automatically.
 
 ## Incoming messages

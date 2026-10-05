@@ -62,21 +62,27 @@ pub fn transcriber(config: &Config, creds: &Credentials) -> anyhow::Result<Box<d
     })
 }
 
-/// Names the recognizer should expect: wake phrases and sleep phrases.
-/// The shutdown code is deliberately left out.
+/// Names the recognizer should expect: wake and sleep phrases, or the NATO
+/// phonetic alphabet in SARNEG mode. The shutdown code is deliberately left out.
 pub fn keyterms(config: &Config) -> Vec<String> {
-    let mut terms: Vec<String> = std::iter::once(&config.wake.wake_phrase)
-        .chain(&config.wake.aliases)
-        .cloned()
-        .collect();
-    for (_, contact) in config.messaging.enabled() {
+    let mut terms: Vec<String> = Vec::new();
+    if config.sarneg.enabled {
+        terms.extend(crate::sarneg::phonetic_words().map(String::from));
+    } else {
         terms.extend(
-            std::iter::once(&contact.wake_phrase)
-                .chain(&contact.aliases)
+            std::iter::once(&config.wake.wake_phrase)
+                .chain(&config.wake.aliases)
                 .cloned(),
         );
+        for (_, contact) in config.messaging.enabled() {
+            terms.extend(
+                std::iter::once(&contact.wake_phrase)
+                    .chain(&contact.aliases)
+                    .cloned(),
+            );
+        }
+        terms.extend(config.sleep_phrases().into_iter().map(String::from));
     }
-    terms.extend(config.sleep_phrases().into_iter().map(String::from));
     terms
 }
 

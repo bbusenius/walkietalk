@@ -92,7 +92,8 @@ struct Rig {
 fn rig(extra: &str, transcripts: Vec<&'static str>, out: FakeOut) -> Rig {
     // No post-transmit pause, so tests run quickly.
     let config = Config::parse(
-        &format!("{MINIMAL}\n[radio]\npost_tx_mute_seconds = 0\n{extra}"),
+        // `extra` follows [wake], so it may begin with wake settings.
+        &format!("{MINIMAL}\n{extra}\n[radio]\npost_tx_mute_seconds = 0\n"),
         "/".into(),
     )
     .unwrap();
@@ -262,6 +263,41 @@ async fn shutdown_phrase_and_code_stop_after_confirming() {
         r.agent.seen.lock().unwrap().is_empty(),
         "controls never reach the agent"
     );
+}
+
+#[tokio::test]
+async fn sarneg_mode_wakes_by_code_and_shuts_down_by_phrase_then_code() {
+    // Key AFTERSHOCK: the agent's 762 is O H T; the shutdown code 6338 is H E E C.
+    let sarneg = "sarneg_code = \"762\"\n[sarneg]\nenabled = true\nkey = \"AFTERSHOCK\"\n[shutdown]\nenabled = true\nphrase = \"bird\"\nsarneg_code = \"6338\"\narmed_reply = \"Armed.\"\nconfirmed_reply = \"Goodbye.\"\n";
+    let mut r = rig(
+        sarneg,
+        vec![
+            "charlotte, plain names are ignored",
+            "Oscar hotel tango, what time is it?",
+            "bird",
+            "hotel echo echo charlie",
+        ],
+        FakeOut::default(),
+    );
+    for _ in 0..4 {
+        speak(&r.frames).await;
+    }
+    run(&mut r).await.unwrap();
+    let asked: Vec<String> = r
+        .agent
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, q)| q.clone())
+        .collect();
+    assert_eq!(
+        asked,
+        ["what time is it?"],
+        "only the request after the code reaches the agent"
+    );
+    let said = r.voice.said.lock().unwrap();
+    assert_eq!(said[said.len() - 2..], ["Armed.", "Goodbye."]);
 }
 
 #[tokio::test]

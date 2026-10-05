@@ -18,6 +18,7 @@ mod paths;
 mod phrases;
 mod radio;
 mod realtime;
+mod sarneg;
 mod setup;
 mod signals;
 mod stt;
