@@ -57,12 +57,14 @@ follow_up_seconds = 30        # unaddressed follow-ups accepted this long after 
 #
 # [messaging.signal]
 # wake_phrase = "grandma"
+# sarneg_code = ""            # SARNEG mode: the number that wakes this contact
 # to = "+15557654321"
 # account = ""                # local sending number when several are registered
 #
 # [messaging.whatsapp]
 # wake_phrase = "nana"
 # aliases = []
+# sarneg_code = ""
 # to = "+15551234567"
 # sender_alias = ""           # spoken sender label; empty uses the wake phrase
 # empty_queue_reply = ""
@@ -85,12 +87,17 @@ mode = "end-of-reply"         # off, end-of-reply, or interval
 method = "voice"              # voice or morse
 interval_seconds = 900
 
+[sarneg]                      # optional: wakes and the shutdown code spoken as key letters
+enabled = false
+key = ""                      # 10 letters, none repeated, e.g. "AFTERSHOCK"
+
 [shutdown]                    # remote program shutdown, phrase plus code
 enabled = false
 phrase = "initiate self-destruct"
 phrase_aliases = ["initiate self destruct"]
 code = "alpha 7"
 code_aliases = ["alpha seven"]
+sarneg_code = ""              # SARNEG mode: replaces code; the phrase still arms
 confirm_window_seconds = 30
 armed_reply = "Self-destruct sequence armed. What is the code?"
 confirmed_reply = "Self-destruct in five seconds."
@@ -99,6 +106,7 @@ confirmed_reply = "Self-destruct in five seconds."
 phrase = "go to sleep"
 aliases = ["stop listening"]
 confirmation = "Standing by."
+sarneg_code = ""              # SARNEG mode: replaces the phrases
 
 [stt]
 backend = "whisper"           # whisper (local), grok (saved Grok login), or grok-api (billed key)
@@ -135,3 +143,4 @@ max_utterance_seconds = 12
 wake_phrase = "charlotte"
 aliases = ["charlot", "sharlot"]
 confirmation = ""             # spoken when the phrase arrives alone; empty stays silent
+sarneg_code = ""              # SARNEG mode: the number that wakes the agent

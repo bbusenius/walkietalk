@@ -33,6 +33,8 @@ pub struct Config {
     pub stt: SttConfig,
     #[serde(default)]
     pub listening: ListeningConfig,
+    #[serde(default)]
+    pub sarneg: SarnegConfig,
     pub wake: WakeConfig,
     pub sleep: Option<SleepConfig>,
     #[serde(default)]
@@ -323,6 +325,19 @@ pub struct WakeConfig {
     /// Spoken when the phrase arrives with no request; empty stays silent.
     #[serde(default)]
     pub confirmation: String,
+    /// Number that wakes the agent in SARNEG mode.
+    #[serde(default)]
+    pub sarneg_code: String,
+}
+
+/// SARNEG mode: wakes and the shutdown code are spoken as letters of a
+/// shared key instead of as phrases.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SarnegConfig {
+    pub enabled: bool,
+    /// Ten letters, none repeated; the letter at position d stands for digit d.
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -333,6 +348,9 @@ pub struct SleepConfig {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub confirmation: String,
+    /// The sleep code in SARNEG mode, as a number.
+    #[serde(default)]
+    pub sarneg_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -343,6 +361,8 @@ pub struct ShutdownConfig {
     pub phrase_aliases: Vec<String>,
     pub code: String,
     pub code_aliases: Vec<String>,
+    /// The code in SARNEG mode, as a number.
+    pub sarneg_code: String,
     /// How long after the phrase the code is accepted.
     pub confirm_window_seconds: f64,
     /// Spoken when the phrase alone arms shutdown.
@@ -359,6 +379,7 @@ impl Default for ShutdownConfig {
             phrase_aliases: Vec::new(),
             code: String::new(),
             code_aliases: Vec::new(),
+            sarneg_code: String::new(),
             confirm_window_seconds: 30.0,
             armed_reply: String::new(),
             confirmed_reply: String::new(),
@@ -743,6 +764,9 @@ pub struct ContactConfig {
     pub wake_phrase: String,
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Number that opens this contact's conversation in SARNEG mode.
+    #[serde(default)]
+    pub sarneg_code: String,
     /// Destination number or ID.
     pub to: String,
     /// Spoken sender label; empty uses the wake phrase.
@@ -818,15 +842,19 @@ impl Config {
         trim(&mut self.wake.wake_phrase);
         trim_all(&mut self.wake.aliases);
         trim(&mut self.wake.confirmation);
+        trim(&mut self.wake.sarneg_code);
+        trim(&mut self.sarneg.key);
         if let Some(sleep) = &mut self.sleep {
             trim(&mut sleep.phrase);
             trim_all(&mut sleep.aliases);
             trim(&mut sleep.confirmation);
+            trim(&mut sleep.sarneg_code);
         }
         let s = &mut self.shutdown;
         for field in [
             &mut s.phrase,
             &mut s.code,
+            &mut s.sarneg_code,
             &mut s.armed_reply,
             &mut s.confirmed_reply,
         ] {
@@ -842,6 +870,7 @@ impl Config {
         {
             trim(&mut contact.wake_phrase);
             trim_all(&mut contact.aliases);
+            trim(&mut contact.sarneg_code);
             trim(&mut contact.to);
             trim(&mut contact.sender_alias);
             trim(&mut contact.empty_queue_reply);
@@ -878,6 +907,14 @@ impl Config {
         self.sleep.as_ref().map_or("", |s| s.confirmation.as_str())
     }
 
+    /// The key, when SARNEG mode is on.
+    pub fn sarneg_key(&self) -> Option<crate::sarneg::Key> {
+        self.sarneg
+            .enabled
+            .then(|| crate::sarneg::Key::parse(&self.sarneg.key))
+            .flatten()
+    }
+
     /// Whether any messaging contact needs the speech voice even with realtime.
     pub fn messaging_enabled(&self) -> bool {
         self.messaging.any_enabled()
@@ -889,6 +926,7 @@ impl Config {
         self.check_radio(&mut v);
         self.check_vad_and_stt(&mut v);
         self.check_phrases(&mut v);
+        self.check_sarneg(&mut v);
         self.check_agent(&mut v);
         self.check_tts(&mut v);
         self.check_messaging(&mut v);
@@ -1232,7 +1270,6 @@ impl Config {
         if s.enabled {
             for (field, value) in [
                 ("shutdown.phrase", &s.phrase),
-                ("shutdown.code", &s.code),
                 ("shutdown.armed_reply", &s.armed_reply),
                 ("shutdown.confirmed_reply", &s.confirmed_reply),
             ] {
@@ -1246,12 +1283,19 @@ impl Config {
                     .chain(s.phrase_aliases.iter().map(String::as_str))
                     .collect(),
             ));
-            controls.push((
-                "shutdown.code".into(),
-                std::iter::once(s.code.as_str())
-                    .chain(s.code_aliases.iter().map(String::as_str))
-                    .collect(),
-            ));
+            // SARNEG mode uses shutdown.sarneg_code, so the phrase code may be unset.
+            if !s.code.is_empty() {
+                controls.push((
+                    "shutdown.code".into(),
+                    std::iter::once(s.code.as_str())
+                        .chain(s.code_aliases.iter().map(String::as_str))
+                        .collect(),
+                ));
+            } else if !self.sarneg.enabled {
+                v.fail("shutdown.code is required when shutdown is enabled");
+            } else if !s.code_aliases.is_empty() {
+                v.fail("shutdown.code is required when shutdown.code_aliases are set");
+            }
             v.finite_range(
                 "shutdown.confirm_window_seconds",
                 s.confirm_window_seconds,
@@ -1349,6 +1393,64 @@ impl Config {
                             wake.text()
                         ));
                     }
+                }
+            }
+        }
+    }
+
+    fn check_sarneg(&self, v: &mut Validator) {
+        let key = &self.sarneg.key;
+        if (self.sarneg.enabled || !key.is_empty()) && crate::sarneg::Key::parse(key).is_none() {
+            v.fail("sarneg.key must be 10 letters with none repeated");
+        }
+        // Codes are checked even while the mode is off, so turning it on
+        // never reveals a bad one. Only the active ones are required.
+        let mut codes: Vec<(String, &str, bool)> =
+            vec![("wake.sarneg_code".into(), &self.wake.sarneg_code, true)];
+        for (service, contact) in self.messaging.enabled() {
+            codes.push((
+                format!("messaging.{}.sarneg_code", service_key(service)),
+                &contact.sarneg_code,
+                true,
+            ));
+        }
+        if let Some(sleep) = &self.sleep {
+            codes.push(("sleep.sarneg_code".into(), &sleep.sarneg_code, true));
+        }
+        codes.push((
+            "shutdown.sarneg_code".into(),
+            &self.shutdown.sarneg_code,
+            self.shutdown.enabled,
+        ));
+        for (field, code, _) in &codes {
+            if !code.is_empty() && !crate::sarneg::valid_number(code) {
+                v.fail(format!("{field} must be at least 3 digits"));
+            }
+        }
+        if !self.sarneg.enabled {
+            return;
+        }
+        let active: Vec<(&String, &str)> = codes
+            .iter()
+            .filter(|(_, _, active)| *active)
+            .map(|(field, code, _)| (field, *code))
+            .collect();
+        for (field, code) in &active {
+            if code.is_empty() {
+                v.fail(format!("{field} is required when sarneg is enabled"));
+            }
+        }
+        // A code that begins another would leave the boundary between code
+        // and traffic ambiguous.
+        for (i, (field, code)) in active.iter().enumerate() {
+            for (other, other_code) in &active[..i] {
+                if !code.is_empty()
+                    && !other_code.is_empty()
+                    && (code.starts_with(other_code) || other_code.starts_with(code))
+                {
+                    v.fail(format!(
+                        "{other} and {field} must differ, and neither may begin with the other"
+                    ));
                 }
             }
         }
@@ -1622,6 +1724,101 @@ mod tests {
         let p = problems("[shutdown]\nenabled = true\n");
         assert!(p.contains("shutdown.phrase"));
         assert!(p.contains("shutdown.code"));
+    }
+
+    const SHUTDOWN_REPLIES: &str = "[shutdown]\nenabled = true\nphrase = \"bird\"\narmed_reply = \"armed\"\nconfirmed_reply = \"bye\"\n";
+
+    #[test]
+    fn sarneg_is_off_and_keeps_its_settings_while_off() {
+        assert!(!parse("").unwrap().sarneg.enabled);
+        // Codes may sit unused, and the phrase settings still apply.
+        let config = parse(&format!(
+            "sarneg_code = \"762\"\n[sarneg]\nkey = \"aftershock\"\n{SHUTDOWN_REPLIES}code = \"seven\"\nsarneg_code = \"6338\"\n"
+        ))
+        .unwrap();
+        assert!(config.sarneg_key().is_none());
+        assert_eq!(config.wake.sarneg_code, "762");
+        assert!(
+            problems(&format!("{SHUTDOWN_REPLIES}sarneg_code = \"6338\"\n"))
+                .contains("shutdown.code is required")
+        );
+    }
+
+    #[test]
+    fn sarneg_settings_are_checked_even_while_off() {
+        let p = problems("sarneg_code = \"76a\"\n[sarneg]\nkey = \"AFTERSHOCA\"\n");
+        assert!(
+            p.contains("sarneg.key must be 10 letters with none repeated"),
+            "{p}"
+        );
+        assert!(
+            p.contains("wake.sarneg_code must be at least 3 digits"),
+            "{p}"
+        );
+        assert!(problems("sarneg_code = \"seven\"\n").contains("wake.sarneg_code"));
+        assert!(problems("sarneg_code = \"76\"\n").contains("at least 3 digits"));
+    }
+
+    #[test]
+    fn sarneg_mode_requires_a_key_and_every_active_code() {
+        let p = problems(&format!(
+            "[sarneg]\nenabled = true\n[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+1555\"\n{SHUTDOWN_REPLIES}"
+        ));
+        for field in [
+            "sarneg.key",
+            "wake.sarneg_code is required",
+            "messaging.signal.sarneg_code is required",
+            "shutdown.sarneg_code is required",
+        ] {
+            assert!(p.contains(field), "{field}: {p}");
+        }
+        assert!(
+            !p.contains("shutdown.code"),
+            "the phrase code is optional: {p}"
+        );
+        // A disabled shutdown needs no code.
+        assert!(
+            parse("sarneg_code = \"762\"\n[sarneg]\nenabled = true\nkey = \"AFTERSHOCK\"\n")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn sarneg_codes_may_not_begin_one_another() {
+        let base = "[sarneg]\nenabled = true\nkey = \"AFTERSHOCK\"\n[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+1555\"\n";
+        for (agent, signal) in [("762", "762"), ("762", "7621"), ("7621", "762")] {
+            let p = problems(&format!(
+                "sarneg_code = \"{agent}\"\n{base}sarneg_code = \"{signal}\"\n"
+            ));
+            assert!(
+                p.contains("neither may begin with the other"),
+                "{agent} {signal}: {p}"
+            );
+        }
+        assert!(
+            parse(&format!(
+                "sarneg_code = \"762\"\n{base}sarneg_code = \"7612\"\n"
+            ))
+            .is_ok()
+        );
+        let p = problems(&format!(
+            "sarneg_code = \"762\"\n[sarneg]\nenabled = true\nkey = \"AFTERSHOCK\"\n{SHUTDOWN_REPLIES}sarneg_code = \"762\"\n"
+        ));
+        assert!(
+            p.contains("wake.sarneg_code and shutdown.sarneg_code"),
+            "{p}"
+        );
+    }
+
+    #[test]
+    fn sarneg_sleep_code_is_required_with_a_sleep_section() {
+        let base = "sarneg_code = \"762\"\n[sarneg]\nenabled = true\nkey = \"AFTERSHOCK\"\n[sleep]\nphrase = \"go to sleep\"\n";
+        assert!(problems(base).contains("sleep.sarneg_code is required"));
+        assert!(
+            problems(&format!("{base}sarneg_code = \"7621\"\n"))
+                .contains("wake.sarneg_code and sleep.sarneg_code")
+        );
+        assert!(parse(&format!("{base}sarneg_code = \"338\"\n")).is_ok());
     }
 
     #[test]

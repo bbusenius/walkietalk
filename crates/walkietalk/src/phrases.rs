@@ -24,7 +24,8 @@ fn word_spans(text: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-fn lower_words(text: &str) -> Vec<String> {
+/// The lowercase words of `text`.
+pub fn words(text: &str) -> Vec<String> {
     word_spans(text)
         .into_iter()
         .map(|(s, e)| text[s..e].to_lowercase())
@@ -33,7 +34,7 @@ fn lower_words(text: &str) -> Vec<String> {
 
 /// Lowercase words joined by single spaces; punctuation and spacing ignored.
 pub fn normalize(text: &str) -> String {
-    lower_words(text).join(" ")
+    words(text).join(" ")
 }
 
 /// A configured phrase, pre-split into words.
@@ -47,7 +48,7 @@ impl Phrase {
     pub fn new(text: &str) -> Phrase {
         Phrase {
             text: text.to_string(),
-            words: lower_words(text),
+            words: words(text),
         }
     }
 
@@ -63,17 +64,12 @@ impl Phrase {
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
-
-    /// Whether the whole utterance is exactly this phrase.
-    pub fn matches_all(&self, utterance: &str) -> bool {
-        !self.is_empty() && lower_words(utterance) == self.words
-    }
 }
 
 /// The longest phrase that starts `utterance`, as (index into `phrases`,
 /// words consumed). Ties go to the earlier phrase.
 pub fn longest_prefix(utterance: &str, phrases: &[Phrase]) -> Option<(usize, usize)> {
-    let words = lower_words(utterance);
+    let words = words(utterance);
     phrases
         .iter()
         .enumerate()
@@ -137,12 +133,5 @@ mod tests {
             after_words("Rain bow trout -- tell me a joke.", 3),
             "tell me a joke."
         );
-    }
-
-    #[test]
-    fn whole_utterance_match_is_exact() {
-        let sleep = Phrase::new("go to sleep");
-        assert!(sleep.matches_all("Go to sleep."));
-        assert!(!sleep.matches_all("I want to go to sleep"));
     }
 }

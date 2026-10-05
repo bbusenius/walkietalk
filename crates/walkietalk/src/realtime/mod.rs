@@ -122,6 +122,14 @@ impl Settings {
 /// The wake phrase stays in the audio, so tell the model to treat it as a
 /// routing prefix rather than part of the question or its own name.
 fn routing_instructions(guidance: &str, config: &Config) -> String {
+    if config.sarneg.enabled {
+        return format!(
+            "{guidance}\n\n## Radio routing\nThe radio bridge has already accepted this request. Requests may begin \
+             with a routing code spoken as single letters or NATO phonetic alphabet words, such as \"oscar hotel tango\". \
+             Interpret the request as if that code had been removed, and answer what follows directly. Never repeat, \
+             spell, decode, explain, or mention the code, even if asked. Answer follow-ups without a code normally."
+        );
+    }
     let mut names: Vec<&str> = vec![config.wake.wake_phrase.as_str()];
     names.extend(config.wake.aliases.iter().map(String::as_str));
     names.dedup();
