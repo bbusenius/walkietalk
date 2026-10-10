@@ -80,6 +80,13 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
+    /// Write the Morse station ID to a new WAV file (no hardware)
+    MorseCheck {
+        /// Call sign to send [default: radio.station_id.callsign]
+        callsign: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+    },
     /// One realtime speech-to-speech turn saved to a new WAV (grok-realtime)
     VoiceAgentCheck {
         #[command(flatten)]
@@ -270,6 +277,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let creds = global.load_credentials(&path)?;
             speech::tts_check(&config, &creds, &text, &output).await
         }
+        Command::MorseCheck { callsign, output } => {
+            let (_, config) = global.load_config()?;
+            speech::morse_check(&config, callsign.as_deref(), &output)
+        }
         Command::VoiceAgentCheck {
             input,
             output,
@@ -418,5 +429,38 @@ fn print_summary(config: &Config, creds: &Credentials) {
     }
     if let Some(path) = creds.path() {
         ui::status!("Credentials file: {}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("walkietalk").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn morse_check_takes_an_optional_call_sign_and_a_required_output() {
+        let Command::MorseCheck { callsign, output } =
+            parse(&["morse-check", "TEST123", "--output", "id.wav"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected morse-check");
+        };
+        assert_eq!(callsign.as_deref(), Some("TEST123"));
+        assert_eq!(output, PathBuf::from("id.wav"));
+
+        let Command::MorseCheck { callsign, .. } = parse(&["morse-check", "--output", "id.wav"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected morse-check");
+        };
+        assert_eq!(callsign, None);
+
+        assert!(parse(&["morse-check", "TEST123"]).is_err());
+        assert!(parse(&["morse-check", "--transmit", "--output", "id.wav"]).is_err());
     }
 }

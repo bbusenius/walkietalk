@@ -82,6 +82,7 @@ config itself. See the [configuration reference](docs/CONFIGURATION.md).
 walkietalk models        # download the local Whisper model
 walkietalk config-check  # validate without touching anything
 walkietalk check         # confirm devices and backends are ready; never transmits
+walkietalk morse-check --output id.wav  # write the Morse station ID to a WAV; never transmits
 ```
 
 ## Run

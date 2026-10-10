@@ -61,7 +61,7 @@ listening continues. A failed or unspoken reply is not kept as context.
 | Replies cut off at the end | They exceed the speech budget (`max_tx_seconds` minus `settle_seconds` minus 0.35 s); ask for shorter answers or raise `max_tx_seconds`. |
 | The bridge hears its own reply | Raise `[radio] post_tx_mute_seconds`. |
 | "PTT fault" | A key or release failed. Turn the radio off, check the cable and port, then restart. |
-| Station ID error stops `talk` | A due ID could not be prepared or sent. For Morse, use only letters, digits, and spaces. |
+| Station ID error stops `talk` | A due ID could not be prepared or sent. For Morse, use only letters, digits, and spaces. `morse-check --output FILE` tests the call sign without the radio. |
 
 Ctrl+C or SIGTERM releases the transmitter; a second Ctrl+C exits at once. If
 the gateway radio stays keyed, turn it off: power loss, `kill -9`, USB

@@ -151,6 +151,8 @@ between them. The interval restarts only after the ID was transmitted in full.
 If a due ID cannot be prepared or transmitted, `talk` stops with an error
 (after recording a reply that already went out). Morse is generated locally
 and accepts letters, digits, and spaces; a space separates a unit number.
+To hear the Morse ID without the radio, run
+`walkietalk morse-check --output id.wav` and play the file on any speaker.
 With the realtime voice, the ID always uses its own transmission.
 Replies and contact messages carry the ID when it is due; spoken confirmations
 (wake, sleep, shutdown, empty queue) carry it only when an `interval` ID is due.
@@ -306,6 +308,7 @@ the command.
 | `check` | Confirm devices exist, the serial port is accessible, and backends are ready | No streams, no keying, no requests |
 | `agent-check [TEXT]` | Ask the text agent one question | The agent only |
 | `tts-check TEXT --output FILE` | Synthesize speech to a new WAV | The voice only |
+| `morse-check [CALLSIGN] --output FILE` | Write the Morse station ID to a new WAV; the call sign defaults to `[radio.station_id] callsign` | No hardware |
 | `voice-agent-check (WAV \| --capture) --output FILE [--supervised [--transmit]]` | One realtime turn saved to a new WAV; `--supervised` runs the transmit logic (simulated unless `--transmit`) | Billed realtime API |
 | `models` | Download the Whisper model | Network, once |
 | `listen (WAV \| --capture) [--timeout N]` | Transcribe one utterance | Never transmits |
