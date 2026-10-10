@@ -144,6 +144,36 @@ pub async fn tts_check(
     Ok(())
 }
 
+/// Write the Morse station ID into a new WAV. This builds no radio and opens
+/// no audio device, so it cannot key the transmitter.
+pub fn morse_check(config: &Config, callsign: Option<&str>, output: &Path) -> anyhow::Result<()> {
+    let callsign = morse_callsign(config, callsign)?;
+    anyhow::ensure!(
+        !output.exists(),
+        "{} already exists; choose a new --output",
+        output.display()
+    );
+    let clip = crate::audio::morse::morse(callsign)?;
+    clip.write_new_wav(output)?;
+    ui::status!(
+        "Wrote {}: Morse for {callsign}, {} Hz mono, {:.2}s. No hardware opened.",
+        output.display(),
+        clip.rate(),
+        clip.seconds()
+    );
+    Ok(())
+}
+
+/// The call sign to send: the argument, otherwise `[radio.station_id] callsign`.
+fn morse_callsign<'a>(config: &'a Config, callsign: Option<&'a str>) -> anyhow::Result<&'a str> {
+    let callsign = callsign.unwrap_or(&config.radio.station_id.callsign).trim();
+    anyhow::ensure!(
+        !callsign.is_empty(),
+        "no call sign; pass one or set callsign under [radio.station_id]"
+    );
+    Ok(callsign)
+}
+
 /// One realtime speech-to-speech turn, saved to a new WAV.
 pub async fn voice_agent_check(
     config: &Config,
@@ -239,4 +269,74 @@ async fn station_id_after(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tests_support::MINIMAL;
+
+    fn config(extra: &str) -> Config {
+        Config::parse(
+            &format!("{MINIMAL}\n{extra}"),
+            PathBuf::from("/etc/walkietalk"),
+        )
+        .unwrap()
+    }
+
+    const WITH_CALLSIGN: &str = "[radio.station_id]\ncallsign = \"TEST123\"\n";
+
+    #[test]
+    fn call_sign_defaults_to_the_config() {
+        assert_eq!(
+            morse_callsign(&config(WITH_CALLSIGN), None).unwrap(),
+            "TEST123"
+        );
+    }
+
+    #[test]
+    fn an_explicit_call_sign_wins() {
+        let config = config(WITH_CALLSIGN);
+        assert_eq!(
+            morse_callsign(&config, Some(" TEST 456 ")).unwrap(),
+            "TEST 456"
+        );
+    }
+
+    #[test]
+    fn a_missing_call_sign_is_an_error() {
+        let err = morse_callsign(&config(""), None).unwrap_err().to_string();
+        assert!(err.contains("[radio.station_id]"), "{err}");
+    }
+
+    #[test]
+    fn writes_the_id_without_opening_hardware() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(WITH_CALLSIGN);
+        // Opening either device would fail, so success proves neither was touched.
+        config.ptt.port = dir.path().join("no-such-serial-port");
+        config.audio.output = "no-such-playback-device".into();
+        let output = dir.path().join("id.wav");
+        morse_check(&config, None, &output).unwrap();
+        assert!(!config.ptt.port.exists());
+        let clip = Clip::read_wav(&output, Duration::from_secs(60)).unwrap();
+        assert_eq!(clip.rate(), crate::config::RADIO_RATE);
+        // TEST123 is 57 units of tones and element gaps plus six 3-unit letter
+        // gaps: 75 units of 60 ms at 20 words per minute.
+        assert_eq!(clip.len(), 75 * 2_880);
+    }
+
+    #[test]
+    fn refuses_punctuation_and_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(WITH_CALLSIGN);
+        let output = dir.path().join("id.wav");
+        let err = morse_check(&config, Some("TEST-123"), &output).unwrap_err();
+        assert!(err.to_string().contains("Morse cannot send '-'"), "{err}");
+        assert!(!output.exists());
+
+        std::fs::write(&output, b"keep").unwrap();
+        assert!(morse_check(&config, None, &output).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"keep");
+    }
 }
