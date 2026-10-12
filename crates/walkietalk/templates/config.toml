@@ -182,5 +182,5 @@ max_utterance_seconds = 12    # longest single recording; up to 30
 [wake]
 wake_phrase = "charlotte"     # the phrase that addresses the agent
 aliases = ["charlot", "sharlot"]   # common mistranscriptions of it
-confirmation = ""             # spoken when the phrase arrives alone; empty stays silent
+confirmation = "Wake phrase received! Over!"  # spoken when the phrase arrives alone; empty stays silent
 sarneg_code = ""              # SARNEG mode: the number that wakes the agent
