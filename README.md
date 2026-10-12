@@ -47,6 +47,25 @@ a good dedicated host; see the [installation guide](docs/INSTALL.md#platforms).
 
 ## Install
 
+On Omarchy or Arch, install the build tools from the Arch repositories, then
+install Rust with the `rustup` package:
+
+```bash
+omarchy pkg add base-devel pkgconf cmake clang alsa-lib ffmpeg git rustup
+rustup default stable
+export PATH="$HOME/.cargo/bin:$PATH"
+git clone https://github.com/bbusenius/walkietalk.git
+cd walkietalk
+cargo install --locked --path crates/walkietalk
+walkietalk --version
+```
+
+On plain Arch, `sudo pacman -S --needed` installs those packages. The `export`
+above applies to the current shell. Put that same line in `~/.bashrc` so later
+shells can find `walkietalk`. The [installation guide](docs/INSTALL.md) covers
+that line, Piper, the Whisper model, ALSA device names, serial permissions,
+messaging tools, and upgrades.
+
 On Ubuntu or Debian, with [Rust](https://rustup.rs) installed:
 
 ```bash
@@ -56,9 +75,6 @@ cd walkietalk
 cargo install --locked --path crates/walkietalk
 walkietalk --version
 ```
-
-The [installation guide](docs/INSTALL.md) covers Piper, the Whisper model,
-serial permissions, messaging tools, and upgrades.
 
 ## Set up
 
@@ -77,6 +93,22 @@ Edit `~/.config/walkietalk/config.toml`:
 
 Tokens and API keys go in `credentials.toml` beside the config, never in the
 config itself. See the [configuration reference](docs/CONFIGURATION.md).
+
+The PTT port is writable by a group, not by every user. On Omarchy or Arch
+that group is `uucp` (Arch has no `dialout` group). On Ubuntu or Debian it is
+`dialout`. If `id -nG` does not list it:
+
+```bash
+# Omarchy or Arch
+sudo usermod -aG uucp "$USER"
+
+# Ubuntu or Debian
+sudo usermod -aG dialout "$USER"
+```
+
+Log out and back in, then confirm with `id -nG`. Run walkietalk as your
+normal user. The [installation guide](docs/INSTALL.md#serial-permissions) has
+the permission checks.
 
 ```bash
 walkietalk models        # download the local Whisper model

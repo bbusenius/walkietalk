@@ -2,9 +2,9 @@
 
 ## Platforms
 
-Walkietalk runs on Linux with ALSA audio: Ubuntu, Debian, and Raspberry Pi
-OS (64-bit) on x86_64 or ARM64. Hardware access uses ALSA devices and a USB
-serial port; macOS and Windows are not supported.
+Walkietalk runs on Linux with ALSA audio: Omarchy, Arch Linux, Ubuntu,
+Debian, and Raspberry Pi OS (64-bit) on x86_64 or ARM64. Hardware access uses
+ALSA devices and a USB serial port; macOS and Windows are not supported.
 
 On a Raspberry Pi 4 or 5, local Whisper `tiny` or `base` keeps transcription
 quick; `small` is noticeably slower there. Remote recognition (xAI) or the
@@ -12,23 +12,55 @@ realtime voice moves that work off the Pi.
 
 ## 1. System packages and Rust
 
+### Omarchy or Arch Linux
+
+```bash
+omarchy pkg add base-devel pkgconf cmake clang alsa-lib ffmpeg git rustup
+rustup default stable
+```
+
+`omarchy pkg add` installs those Arch packages. On plain Arch, without the
+`omarchy` command:
+
+```bash
+sudo pacman -S --needed base-devel pkgconf cmake clang alsa-lib ffmpeg git rustup
+rustup default stable
+```
+
+The `rustup` package installs the toolchain manager. `rustup default stable`
+downloads Rust 1.95 or newer. `cargo` and `rustc` are then `/usr/bin/cargo`
+and `/usr/bin/rustc`. Programs from `cargo install`, including `walkietalk`,
+go in `~/.cargo/bin`. Add that directory to `PATH` in `~/.bashrc`:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Open a new shell before running `walkietalk`.
+
+### Ubuntu or Debian
+
 ```bash
 sudo apt update
 sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev ffmpeg git
 ```
-
-| Package | Why |
-| --- | --- |
-| `build-essential`, `pkg-config` | Compiling |
-| `cmake`, `clang`, `libclang-dev` | Building whisper.cpp for local speech recognition |
-| `libasound2-dev` | ALSA audio |
-| `ffmpeg` | Voice notes and the Hermes speech companion; not needed otherwise |
 
 Install Rust with [rustup](https://rustup.rs) (Rust 1.95 or newer):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+The installer adds `~/.cargo/bin` to `PATH` for new shells.
+
+| Omarchy or Arch | Ubuntu or Debian | Why |
+| --- | --- | --- |
+| `base-devel` | `build-essential` | Compiling |
+| `pkgconf` | `pkg-config` | Finds libraries while compiling |
+| `cmake`, `clang` | `cmake`, `clang`, `libclang-dev` | Building whisper.cpp. On Arch, `clang` includes libclang |
+| `alsa-lib` | `libasound2-dev` | ALSA audio. On Arch the headers are in `alsa-lib` |
+| `ffmpeg` | `ffmpeg` | Voice notes and the Hermes speech companion; not needed otherwise |
+| `git` | `git` | Cloning the repository |
 
 ## 2. Build and install
 
@@ -71,7 +103,22 @@ never downloads anything.
 
 ## 5. Piper voice (local speech)
 
-Piper is a separate program. One way to install it:
+Piper is a separate program.
+
+On Omarchy or Arch:
+
+```bash
+omarchy pkg add python-pipx
+pipx install piper-tts
+```
+
+On plain Arch, `sudo pacman -S --needed python-pipx` is the same install. The
+Arch package named `piper` configures gaming mice; it is a different program.
+`pipx` puts `piper` in `~/.local/bin`. Omarchy already has that directory on
+`PATH`. On plain Arch, run `pipx ensurepath` and open a new shell if `piper`
+is still not found.
+
+On Ubuntu or Debian:
 
 ```bash
 sudo apt install pipx
@@ -99,7 +146,23 @@ Expect a 48 kHz mono WAV and "No hardware opened."
 ## 6. Connect the AIOC
 
 Plug the AIOC into the computer with a USB data cable and into the gateway
-radio, then:
+radio.
+
+On Omarchy and Arch, ALSA ships with extended device hints off
+(`defaults.namehint.extended off` in `/usr/share/alsa/alsa.conf`). Until you
+turn them on, `walkietalk devices` prints no cards, and a
+`plughw:CARD=<name>` setting fails `check`. `devices --all` still lists
+numbered names such as `plughw:CARD=0,DEV=0`, and those numbers change when
+you replug the interface.
+
+Create `~/.asoundrc` if you do not have one, and add this line:
+
+```
+defaults.namehint.extended on
+```
+
+Open a new shell. The desktop default stays PipeWire; the line only adds the
+hardware names to the device list.
 
 ```bash
 walkietalk devices
@@ -112,7 +175,9 @@ ALSA device if you need something unusual.
 
 Keep the desktop's sound server away from the AIOC: in your desktop sound
 settings, set the AIOC's profile to "Off" (or disable it in `pavucontrol`).
-Otherwise it may be busy when walkietalk opens it.
+Otherwise it may be busy when walkietalk opens it. On Omarchy the sound server
+is PipeWire, and `pavucontrol` is not installed. Install it if you want that
+window.
 
 ### Serial permissions
 
@@ -121,9 +186,14 @@ ls -l /dev/serial/by-id/
 id -nG
 ```
 
-If the port belongs to the `dialout` group and you are not in it:
+The port's group is `uucp` on Omarchy and Arch, and `dialout` on Ubuntu and
+Debian. Arch has no `dialout` group. If you are not in the port's group:
 
 ```bash
+# Omarchy or Arch
+sudo usermod -aG uucp "$USER"
+
+# Ubuntu or Debian
 sudo usermod -aG dialout "$USER"
 ```
 

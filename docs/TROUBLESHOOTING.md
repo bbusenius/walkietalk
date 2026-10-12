@@ -8,9 +8,9 @@ backends; never post credentials, CLI login files, or an unredacted config.
 
 | Symptom | What to check |
 | --- | --- |
-| Build fails in `whisper-rs-sys` | Install `cmake`, `clang`, and `libclang-dev`. |
-| Build fails mentioning `alsa` | Install `libasound2-dev` and `pkg-config`. |
-| `walkietalk: command not found` | Add `~/.cargo/bin` to `PATH` (rustup does this for new shells). |
+| Build fails in `whisper-rs-sys` | Install `cmake` and `clang`. On Ubuntu or Debian also install `libclang-dev`. On Arch, `clang` includes libclang. |
+| Build fails mentioning `alsa` | Install `libasound2-dev` and `pkg-config` on Ubuntu or Debian. On Arch, install `alsa-lib` and `pkgconf`. |
+| `walkietalk: command not found` | Add `~/.cargo/bin` to `PATH`. The rustup.rs installer does this for new shells. Arch's `rustup` package does not; add `export PATH="$HOME/.cargo/bin:$PATH"` to `~/.bashrc` and open a new shell. |
 | "no settings at ~/.config/walkietalk/config.toml" | Run `walkietalk init`, or pass `-c FILE`. |
 | `init` says the directory exists | That protects existing settings. Edit them, or use `--directory`. |
 | Unknown or invalid field | `config-check` lists every problem; compare with `crates/walkietalk/templates/config.toml`. |
@@ -21,9 +21,9 @@ backends; never post credentials, CLI login files, or an unredacted config.
 
 | Symptom | What to check |
 | --- | --- |
-| "no audio device named ..." | Run `walkietalk devices` again after reconnecting and copy the exact `plughw:CARD=...` name. |
+| "no audio device named ..." | Run `walkietalk devices` again after reconnecting and copy the exact `plughw:CARD=...` name. On Omarchy or Arch, if `devices` prints no cards, add `defaults.namehint.extended on` to `~/.asoundrc` and open a new shell ([ALSA names](INSTALL.md#6-connect-the-aioc)). |
 | "cannot open audio device ... may be in use" | Close other audio programs and turn the AIOC's profile off in the desktop sound settings. |
-| Serial "No such file" or permission errors | Check `/dev/serial/by-id/` and your `dialout` membership ([serial permissions](INSTALL.md#serial-permissions)). Never run as root. |
+| Serial "No such file" or permission errors | Check `/dev/serial/by-id/` and your group membership: `dialout` on Ubuntu or Debian, `uucp` on Omarchy or Arch ([serial permissions](INSTALL.md#serial-permissions)). Never run as root. |
 | "no speech within the wait limit" | That is `listen` or `talk --once`. Compare the RMS meter with `[vad] threshold`, check the gateway radio's volume, or lower the threshold. Continuous `talk` has no idle limit. |
 | Speech cut into pieces | Raise `[vad] hangover_ms`. |
 | Wrong words | Inspect with `listen --capture`. Add `[wake] aliases` for recurring mistakes; try a larger Whisper model. |
