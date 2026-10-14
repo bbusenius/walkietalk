@@ -19,7 +19,7 @@ web_search = true             # let the agent look up public web information
 # Replaces the built-in guidance. Empty uses short, family-friendly,
 # spoken-style guidance. Placeholders: {max_reply_chars} {spoken_seconds}
 # {max_words}; write {{ and }} for literal braces.
-instructions = ""
+instructions = "Answer in short, plain, spoken-style sentences suitable for a family. Use at most {max_reply_chars} characters. This answer will be spoken on a radio. Aim for one short sentence, at most {max_words} words, to fit within {spoken_seconds} seconds. Use radio words like over, copy, roger, stand by, go ahead, and out, when appropriate"
 
 # reasoning_effort below is "default" (the model's own) or a level the adapter
 # supports. Executables are names on PATH or absolute paths, never command
@@ -37,7 +37,7 @@ reasoning_effort = "low"      # default, low, medium, high, xhigh, or max
 
 [agent.codex]                 # backend = "codex": the Codex CLI
 executable = "codex"
-model = ""                    # empty uses the CLI default
+model = "gpt-6-luna"          # empty uses the CLI default
 reasoning_effort = "low"      # default, minimal, low, medium, high, or xhigh
 
 [agent.grok]                  # backend = "grok": the Grok CLI
@@ -62,7 +62,7 @@ idle_timeout_seconds = 60     # up to 600
 # default and sound-server devices (default, pulse, pipewire, dmix) are refused.
 input = "plughw:CARD=AllInOneCable,DEV=0"
 output = "plughw:CARD=AllInOneCable,DEV=0"
-gain = 1.0                    # outgoing level multiplier, above 0 up to 16;
+gain = 0.9                    # outgoing level multiplier, above 0 up to 16;
                               # above 1 amplifies and may clip
 
 [listening]
@@ -128,7 +128,7 @@ key = ""                      # 10 letters, none repeated, e.g. "AFTERSHOCK";
                               # required when enabled. Letter at position d means digit d.
 
 [shutdown]                    # remote program shutdown, phrase plus code
-enabled = false
+enabled = true
 phrase = "initiate self-destruct"                   # arms shutdown
 phrase_aliases = ["initiate self destruct"]         # alternatives for the phrase
 code = "alpha 7"                                    # confirms it
@@ -141,7 +141,7 @@ confirmed_reply = "Self-destruct in five seconds."                # spoken befor
 [sleep]                       # optional; remove the section to disable sleep
 phrase = "go to sleep"        # closes the open conversation
 aliases = ["stop listening"]  # alternatives for the phrase
-confirmation = "Standing by." # spoken after sleeping; empty stays silent
+confirmation = "Standing by. Out." # spoken after sleeping; empty stays silent
 sarneg_code = ""              # SARNEG mode: replaces the phrases
 
 [stt]
@@ -177,7 +177,7 @@ threshold = 0.02              # RMS level (above 0 to 1) that starts speech;
                               # compare with the live meter
 hangover_ms = 400             # silence that ends an utterance; 1 to 5000, and
                               # shorter than max_utterance_seconds
-max_utterance_seconds = 12    # longest single recording; up to 30
+max_utterance_seconds = 30    # longest single recording; up to 30
 
 [wake]
 wake_phrase = "charlotte"     # the phrase that addresses the agent
