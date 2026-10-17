@@ -8,6 +8,13 @@ over the radio. Optional [operator mode](docs/MESSAGING.md#operator-mode)
 holds messages for local review and approval. Supported agents include Grok,
 Codex, Hermes, and Claude.
 
+Want a hand? [Relay](https://x.ai/bot/HVbym4T7Gof6G7C9CFS-V) is a Grok Bot
+companion for walkietalk. It can help you choose gear, get a GMRS license,
+install and configure walkietalk, run it for you, and handle changes and
+upgrades later. It also answers GMRS rule questions, teaches radio lingo like
+"roger," "over," and 10-codes, and makes a printable SARNEG code booklet kids
+can fill in and use with walkietalk's SARNEG mode.
+
 > [!IMPORTANT]
 > You are responsible for the rules of your radio service. Walkietalk does not
 > decide whether a transmission is permitted. Optional
@@ -46,6 +53,10 @@ a good dedicated host; see the [installation guide](docs/INSTALL.md#platforms).
 | **Midland T51VP3 X-Talker, 2-pack** | More handheld radios | [Midland](https://midlandusa.com/products/t51vp3-x-talker-frs-walkie-talkie-2-pack) |
 
 ## Install
+
+Prefer a guided setup? Import [Relay](https://x.ai/bot/HVbym4T7Gof6G7C9CFS-V)
+into Grok Bot and it will help you install and configure walkietalk on your
+computer.
 
 On Omarchy or Arch, install the build tools from the Arch repositories, then
 install Rust with the `rustup` package:
@@ -139,6 +150,7 @@ transmitting afterwards. Ctrl+C stops the bridge and releases the transmitter.
 
 ## Guides
 
+- [Relay, a Grok Bot setup assistant](https://x.ai/bot/HVbym4T7Gof6G7C9CFS-V)
 - [Installation](docs/INSTALL.md)
 - [Configuration reference and commands](docs/CONFIGURATION.md)
 - [Backend setup](docs/BACKENDS.md)
