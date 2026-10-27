@@ -80,8 +80,7 @@ impl Conversation {
             text.push(' ');
         }
         text.push_str(if config.agent.web_search {
-            "You may search the public web when the question needs current information. \
-             Do not run commands, change files, read local files, or contact other people. "
+            "You may search the public web when the question needs current information. "
         } else {
             "Do not search the web. "
         });

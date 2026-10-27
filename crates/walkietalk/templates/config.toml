@@ -49,6 +49,8 @@ reasoning_effort = "low"      # default, none, minimal, low, medium, high, xhigh
 [agent.hermes]                # backend = "hermes": your local Hermes service
 url = "http://127.0.0.1:8642" # http(s) base URL, no credentials or query
 token_env = "WALKIETALK_HERMES_TOKEN"
+model = ""                    # empty uses the Hermes profile's model
+reasoning_effort = "low"      # default (the profile's), none, or a level such as low
 
 [agent.realtime]              # backend = "grok-realtime" or "grok-realtime-api"
 model = "grok-voice-latest"

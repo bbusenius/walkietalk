@@ -62,7 +62,7 @@ replies are transmitted.
 | `[agent.claude_api]` | `key_env` (default `ANTHROPIC_API_KEY`), `model` (required when selected), `reasoning_effort` |
 | `[agent.codex]` | `executable` (default `codex`), `model` (empty = CLI default), `reasoning_effort` |
 | `[agent.grok]` | `executable` (default `grok`), `model` (required when selected), `reasoning_effort` |
-| `[agent.hermes]` | `url` (default `http://127.0.0.1:8642`), `token_env` (default `WALKIETALK_HERMES_TOKEN`) |
+| `[agent.hermes]` | `url` (default `http://127.0.0.1:8642`), `token_env` (default `WALKIETALK_HERMES_TOKEN`), `model` (empty uses the profile's), `reasoning_effort` (`default` uses the profile's) |
 | `[agent.realtime]` | `model` (`grok-voice-latest`), `voice` (`eve`), `key_env` (`XAI_API_KEY`, for `grok-realtime-api`), `url` (`wss://api.x.ai/v1/realtime`), `connect_timeout_seconds` (10, up to 120), `idle_timeout_seconds` (60, up to 600) |
 
 `reasoning_effort` is `default` (the model's own) or an explicit level the

@@ -477,6 +477,10 @@ pub struct HermesAgentConfig {
     /// Hermes API base URL, without `/v1`.
     pub url: String,
     pub token_env: String,
+    /// Model requested for each run; empty uses the Hermes profile's.
+    pub model: String,
+    /// Reasoning requested for each run; `default` uses the profile's.
+    pub reasoning_effort: ReasoningEffort,
 }
 
 impl Default for HermesAgentConfig {
@@ -484,6 +488,8 @@ impl Default for HermesAgentConfig {
         Self {
             url: "http://127.0.0.1:8642".into(),
             token_env: "WALKIETALK_HERMES_TOKEN".into(),
+            model: String::new(),
+            reasoning_effort: ReasoningEffort::Default,
         }
     }
 }
@@ -1061,6 +1067,7 @@ impl Config {
         }
         v.http_url("agent.hermes.url", &a.hermes.url);
         v.env_name("agent.hermes.token_env", &a.hermes.token_env);
+        v.model_id("agent.hermes.model", &a.hermes.model, true);
         for (name, cli, efforts) in [
             (
                 "codex",

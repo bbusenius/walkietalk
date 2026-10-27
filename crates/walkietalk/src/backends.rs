@@ -15,8 +15,7 @@ pub fn text_agent(config: &Config, creds: &Credentials) -> anyhow::Result<Box<dy
     Ok(match a.backend {
         AgentBackend::Stub => Box::new(agent::Stub),
         AgentBackend::Hermes => Box::new(agent::hermes::Hermes::new(
-            &a.hermes.url,
-            &a.hermes.token_env,
+            &a.hermes,
             creds.clone(),
             a.timeout(),
         )),

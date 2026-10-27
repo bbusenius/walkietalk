@@ -48,6 +48,8 @@ backend = "hermes"
 [agent.hermes]
 url = "http://127.0.0.1:8642"          # without /v1
 token_env = "WALKIETALK_HERMES_TOKEN"
+model = ""                             # empty uses the profile's model
+reasoning_effort = "low"               # "default" uses the profile's reasoning
 ```
 
 and in `credentials.toml`:
@@ -60,7 +62,17 @@ The bridge sends the request, its guidance, and the bounded radio history as
 a run, polls it, and stops the run if the reply is abandoned. Raise
 `[agent] timeout_seconds` if your environment needs longer. `web_search = false`
 asks Hermes not to search; the tools Hermes offers are still decided by its
-profile. For Hermes's voice, see [Hermes speech](HERMES-SPEECH.md). Do not
+profile, and anything it allows without approval can be requested over the
+radio. Runs that ask for approval are refused.
+
+`model` and `reasoning_effort` are requested for each radio run, so radio
+turns can use a faster model than the profile's other clients without changing
+the profile; its instructions, skills, memory, and tools stay the same.
+`reasoning_effort` is `default`, `none` (reasoning off), or a level such as
+`low`; which levels apply depends on the model. Restart `talk` after changing
+either setting.
+
+For Hermes's voice, see [Hermes speech](HERMES-SPEECH.md). Do not
 expose the bearer-protected API on an untrusted network; use an SSH tunnel.
 
 ## Codex
