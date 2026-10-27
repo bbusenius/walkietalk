@@ -21,6 +21,11 @@ const MAX_AUTH_FILE: u64 = 1024 * 1024;
 /// Refresh a little before the stated expiry.
 const SKEW: Duration = Duration::from_secs(60);
 
+/// The token endpoint refused the saved refresh grant; retrying cannot help.
+#[derive(Debug, thiserror::Error)]
+#[error("the Grok login was refused (HTTP {0}); run `grok login`")]
+pub struct Rejected(pub u16);
+
 #[derive(Debug, Clone)]
 pub struct GrokLogin {
     path: PathBuf,
@@ -123,10 +128,14 @@ impl GrokLogin {
             .send()
             .await
             .map_err(|err| anyhow::anyhow!("Grok login refresh {}", http::without_url(&err)))?;
-        if !response.status().is_success() {
+        let status = response.status();
+        if matches!(status.as_u16(), 400 | 401 | 403) {
+            bail!(Rejected(status.as_u16()));
+        }
+        if !status.is_success() {
             bail!(
                 "the Grok login could not be refreshed (HTTP {}); run `grok login`",
-                response.status().as_u16()
+                status.as_u16()
             );
         }
         let payload = http::json(response, 64 * 1024, "Grok login refresh").await?;

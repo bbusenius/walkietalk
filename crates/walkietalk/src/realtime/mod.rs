@@ -22,6 +22,7 @@ use crate::audio::stream::StreamResampler;
 use crate::config::{Config, RealtimeConfig};
 use crate::credentials::{Credentials, Secret};
 use crate::radio::{Radio, TxError};
+use crate::xai::Auth;
 use client::{Client, Event, Role};
 use tx::{RATE, StreamTx};
 
@@ -53,7 +54,9 @@ pub struct Reply {
 #[derive(Clone)]
 pub struct Settings {
     pub rt: RealtimeConfig,
-    pub key: Secret,
+    pub auth: Auth,
+    /// For refreshing a saved login.
+    pub http: reqwest::Client,
     pub web_search: bool,
     pub history_turns: usize,
     pub instructions: String,
@@ -62,9 +65,13 @@ pub struct Settings {
 
 impl Settings {
     pub fn from_config(config: &Config, creds: &Credentials) -> anyhow::Result<Settings> {
-        let key = creds
-            .token(&config.agent.realtime.key_env)
-            .context("grok-realtime needs a billed xAI API key; a Grok login is never used")?;
+        let auth = crate::backends::realtime_auth(config, creds);
+        auth.check().context(match auth {
+            Auth::Login(_) => "grok-realtime needs the saved Grok login; an API key is never used",
+            Auth::Key { .. } => {
+                "grok-realtime-api needs a billed xAI API key; a Grok login is never used"
+            }
+        })?;
         let limits = Limits {
             max_reply_chars: config.agent.max_reply_chars,
             spoken_seconds: config.radio.speech_budget().as_secs_f64(),
@@ -72,7 +79,8 @@ impl Settings {
         let guidance = instructions::guidance(&config.agent.instructions, limits, true);
         Ok(Settings {
             rt: config.agent.realtime.clone(),
-            key,
+            auth,
+            http: crate::http::client(config.agent.realtime.connect_timeout()),
             web_search: config.agent.web_search,
             history_turns: config.agent.history_turns,
             instructions: routing_instructions(&guidance, config),
@@ -108,14 +116,27 @@ impl Settings {
         session
     }
 
+    /// Connect with a current token. A refused saved login is refreshed and
+    /// tried once more; a refused key is not retried.
     async fn connect(&self) -> anyhow::Result<Client> {
-        Client::connect(
-            &self.rt.url,
-            &self.rt.model,
-            &self.key,
-            self.rt.connect_timeout(),
-        )
-        .await
+        let key = self.auth.token(&self.http).await?;
+        let result = match self.open(&key).await {
+            Err(err) if is_auth_error(&err) => match self.auth.retry_token(&self.http).await {
+                Some(key) => self.open(&key?).await,
+                None => Err(err),
+            },
+            other => other,
+        };
+        result.map_err(|err| match err.downcast_ref::<client::AuthError>() {
+            Some(refused) => {
+                client::AuthError(format!("{}; {}", refused.0, self.auth.remedy())).into()
+            }
+            None => err,
+        })
+    }
+
+    async fn open(&self, key: &Secret) -> anyhow::Result<Client> {
+        Client::connect(&self.rt.url, &self.rt.model, key, self.rt.connect_timeout()).await
     }
 }
 
@@ -309,8 +330,10 @@ impl Session {
 
     pub fn label(&self) -> String {
         format!(
-            "grok-realtime ({}, voice {}; {}, billed API)",
-            self.settings.rt.model, self.settings.rt.voice, self.settings.rt.key_env
+            "grok-realtime ({}, voice {}; {})",
+            self.settings.rt.model,
+            self.settings.rt.voice,
+            self.settings.auth.describe()
         )
     }
 
@@ -536,10 +559,12 @@ pub fn is_ptt_fault(err: &anyhow::Error) -> bool {
     err.downcast_ref::<TxError>().is_some_and(TxError::is_fatal)
 }
 
-/// Whether an error means the API key was refused.
+/// Whether an error means the key or saved login was refused.
 pub fn is_auth_error(err: &anyhow::Error) -> bool {
-    err.chain()
-        .any(|e| e.downcast_ref::<client::AuthError>().is_some())
+    err.chain().any(|e| {
+        e.downcast_ref::<client::AuthError>().is_some()
+            || e.downcast_ref::<crate::grok_login::Rejected>().is_some()
+    })
 }
 
 #[cfg(test)]
@@ -616,7 +641,11 @@ pub mod tests {
                 url,
                 ..Default::default()
             },
-            key: Secret::new("test-key"),
+            auth: Auth::Key {
+                env: "XAI_API_KEY".into(),
+                creds: Credentials::for_tests(&[("XAI_API_KEY", "test-key")], |_| None),
+            },
+            http: crate::http::client(Duration::from_secs(1)),
             web_search: false,
             history_turns,
             instructions: "Be brief.".into(),
@@ -671,6 +700,80 @@ pub mod tests {
             deletes, 2,
             "the first turn's user and assistant items are removed"
         );
+    }
+
+    /// Accepts the handshake only with `Bearer good`, counting attempts.
+    async fn guarded_server() -> (String, Arc<Mutex<usize>>) {
+        use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/realtime", listener.local_addr().unwrap());
+        let attempts = Arc::new(Mutex::new(0));
+        let count = attempts.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                *count.lock().unwrap() += 1;
+                // The callback signature is fixed by tungstenite.
+                #[allow(clippy::result_large_err)]
+                let check = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                    if req.headers()["authorization"] == "Bearer good" {
+                        return Ok(resp);
+                    }
+                    let mut refused = ErrorResponse::new(None);
+                    *refused.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+                    Err(refused)
+                };
+                if let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, check).await {
+                    while let Some(Ok(_)) = ws.next().await {}
+                }
+            }
+        });
+        (url, attempts)
+    }
+
+    async fn token_server(attempts: Arc<Mutex<usize>>) -> String {
+        let app = axum::Router::new().route(
+            "/token",
+            axum::routing::post(move || async move {
+                *attempts.lock().unwrap() += 1;
+                r#"{"access_token":"good","expires_in":3600}"#
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/token")
+    }
+
+    #[tokio::test]
+    async fn refused_login_is_refreshed_and_retried_once() {
+        let (url, handshakes) = guarded_server().await;
+        let refreshes = Arc::new(Mutex::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let store = json!({"account": {
+            "key": "revoked",
+            "refresh_token": "refresh",
+            "oidc_client_id": "client",
+            "expires_at": "2999-01-01T00:00:00Z",
+        }});
+        std::fs::write(&path, store.to_string()).unwrap();
+        let mut s = settings(url, 4);
+        s.auth = Auth::Login(crate::grok_login::GrokLogin::at(
+            path,
+            token_server(refreshes.clone()).await,
+        ));
+        s.connect().await.unwrap().close().await;
+        assert_eq!(*handshakes.lock().unwrap(), 2);
+        assert_eq!(*refreshes.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn refused_key_is_not_retried() {
+        let (url, handshakes) = guarded_server().await;
+        let err = settings(url, 4).connect().await.err().unwrap();
+        assert!(is_auth_error(&err));
+        assert!(err.to_string().contains("billed API key"), "{err}");
+        assert_eq!(*handshakes.lock().unwrap(), 1);
     }
 
     #[tokio::test]

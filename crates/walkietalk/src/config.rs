@@ -441,12 +441,18 @@ pub enum AgentBackend {
     Grok,
     Claude,
     ClaudeApi,
+    /// Speech-to-speech with the saved Grok login.
     GrokRealtime,
+    /// Speech-to-speech with a billed xAI key.
+    GrokRealtimeApi,
 }
 
 impl AgentBackend {
     pub fn is_realtime(self) -> bool {
-        self == AgentBackend::GrokRealtime
+        matches!(
+            self,
+            AgentBackend::GrokRealtime | AgentBackend::GrokRealtimeApi
+        )
     }
 }
 
@@ -460,6 +466,7 @@ impl fmt::Display for AgentBackend {
             AgentBackend::Claude => "claude",
             AgentBackend::ClaudeApi => "claude-api",
             AgentBackend::GrokRealtime => "grok-realtime",
+            AgentBackend::GrokRealtimeApi => "grok-realtime-api",
         })
     }
 }
@@ -570,6 +577,7 @@ impl fmt::Display for ReasoningEffort {
 pub struct RealtimeConfig {
     pub model: String,
     pub voice: String,
+    /// Variable holding the billed key; used only by `grok-realtime-api`.
     pub key_env: String,
     pub url: String,
     pub connect_timeout_seconds: f64,

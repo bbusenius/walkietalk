@@ -71,12 +71,16 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
 
     if config.agent.backend.is_realtime() {
         let rt = &config.agent.realtime;
+        let auth = backends::realtime_auth(config, creds);
         r.line(
             "voice agent",
-            creds.token(&rt.key_env).map(|_| {
+            auth.check().map(|()| {
                 format!(
-                    "grok-realtime {} voice {}; {} set",
-                    rt.model, rt.voice, rt.key_env
+                    "{} {} voice {}; {}",
+                    config.agent.backend,
+                    rt.model,
+                    rt.voice,
+                    auth.describe()
                 )
             }),
         );
@@ -108,7 +112,9 @@ pub fn run(config: &Config, creds: &Credentials) -> anyhow::Result<()> {
                 }
                 AgentBackend::Claude => program(&a.claude.executable).map(|_| ()),
                 AgentBackend::ClaudeApi => creds.token(&a.claude_api.key_env).map(|_| ()),
-                AgentBackend::Stub | AgentBackend::GrokRealtime => Ok(()),
+                AgentBackend::Stub | AgentBackend::GrokRealtime | AgentBackend::GrokRealtimeApi => {
+                    Ok(())
+                }
             }
             .map(|()| agent.label())
         });
