@@ -39,7 +39,7 @@ in this file never selects a backend or enables a fallback.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `backend` | `"stub"` | `stub`, `hermes`, `codex`, `grok`, `claude`, `claude-api`, or `grok-realtime` |
+| `backend` | `"stub"` | `stub`, `hermes`, `codex`, `grok`, `claude`, `claude-api`, `grok-realtime` (saved Grok login), or `grok-realtime-api` (billed key) |
 | `max_reply_chars` | `600` | Longer text replies are discarded (1 to 2000) |
 | `history_turns` | `8` | Completed request/reply pairs kept as context (1 to 32) |
 | `timeout_seconds` | `60` | Deadline for one text reply, including login checks and web lookups (up to 300) |
@@ -63,7 +63,7 @@ replies are transmitted.
 | `[agent.codex]` | `executable` (default `codex`), `model` (empty = CLI default), `reasoning_effort` |
 | `[agent.grok]` | `executable` (default `grok`), `model` (required when selected), `reasoning_effort` |
 | `[agent.hermes]` | `url` (default `http://127.0.0.1:8642`), `token_env` (default `WALKIETALK_HERMES_TOKEN`) |
-| `[agent.realtime]` | `model` (`grok-voice-latest`), `voice` (`eve`), `key_env` (`XAI_API_KEY`), `url` (`wss://api.x.ai/v1/realtime`), `connect_timeout_seconds` (10, up to 120), `idle_timeout_seconds` (60, up to 600) |
+| `[agent.realtime]` | `model` (`grok-voice-latest`), `voice` (`eve`), `key_env` (`XAI_API_KEY`, for `grok-realtime-api`), `url` (`wss://api.x.ai/v1/realtime`), `connect_timeout_seconds` (10, up to 120), `idle_timeout_seconds` (60, up to 600) |
 
 `reasoning_effort` is `default` (the model's own) or an explicit level the
 adapter supports: Codex `minimal` to `xhigh`; Grok `none` to `max`; Claude and
@@ -309,7 +309,7 @@ the command.
 | `agent-check [TEXT]` | Ask the text agent one question | The agent only |
 | `tts-check TEXT --output FILE` | Synthesize speech to a new WAV | The voice only |
 | `morse-check [CALLSIGN] --output FILE` | Write the Morse station ID to a new WAV; the call sign defaults to `[radio.station_id] callsign` | No hardware |
-| `voice-agent-check (WAV \| --capture) --output FILE [--supervised [--transmit]]` | One realtime turn saved to a new WAV; `--supervised` runs the transmit logic (simulated unless `--transmit`) | Billed realtime API |
+| `voice-agent-check (WAV \| --capture) --output FILE [--supervised [--transmit]]` | One realtime turn saved to a new WAV; `--supervised` runs the transmit logic (simulated unless `--transmit`) | The realtime API (saved login or billed key) |
 | `models` | Download the Whisper model | Network, once |
 | `listen (WAV \| --capture) [--timeout N]` | Transcribe one utterance | Never transmits |
 | `talk (WAV \| --capture) [--transmit] [--once] [--timeout N] [--panel]` | The bridge | Transmits only with `--transmit` |

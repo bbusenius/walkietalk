@@ -11,6 +11,7 @@
 # Who answers requests. "stub" always returns a fixed pretend reply and needs
 # nothing; "grok-realtime" is the speech-to-speech voice agent.
 # Values: stub, hermes, codex, grok, claude, claude-api, grok-realtime
+# (saved Grok login), grok-realtime-api (billed key)
 backend = "stub"
 max_reply_chars = 600         # longer text replies are discarded; 1 to 2000
 history_turns = 8             # request/reply pairs kept as context; 1 to 32
@@ -49,10 +50,10 @@ reasoning_effort = "low"      # default, none, minimal, low, medium, high, xhigh
 url = "http://127.0.0.1:8642" # http(s) base URL, no credentials or query
 token_env = "WALKIETALK_HERMES_TOKEN"
 
-[agent.realtime]              # backend = "grok-realtime": billed voice agent
+[agent.realtime]              # backend = "grok-realtime" or "grok-realtime-api"
 model = "grok-voice-latest"
 voice = "eve"
-key_env = "XAI_API_KEY"
+key_env = "XAI_API_KEY"       # grok-realtime-api only
 url = "wss://api.x.ai/v1/realtime"   # wss:// URL, no credentials
 connect_timeout_seconds = 10  # up to 120
 idle_timeout_seconds = 60     # up to 600

@@ -32,7 +32,7 @@ backends; never post credentials, CLI login files, or an unredacted config.
 ## Agents and voices
 
 Use `agent-check` to test the agent alone and `tts-check` to test the voice
-alone; neither opens the radio. For `grok-realtime`, use `voice-agent-check`.
+alone; neither opens the radio. For `grok-realtime` and `grok-realtime-api`, use `voice-agent-check`.
 
 | Symptom | Action |
 | --- | --- |

@@ -2,9 +2,9 @@
 
 Speech recognition (`[stt] backend`), the agent (`[agent] backend`), and the
 voice (`[tts] backend`) are chosen independently. Alternatively,
-`[agent] backend = "grok-realtime"` handles all three in one speech-to-speech
-session. A failed login never switches to another backend or from a
-subscription login to billed API access.
+`[agent] backend = "grok-realtime"` (or `grok-realtime-api`) handles all
+three in one speech-to-speech session. A failed login never switches to
+another backend or from a subscription login to billed API access.
 
 | Choice | Recognition | Agent | Voice | Authentication |
 | --- | --- | --- | --- | --- |
@@ -15,7 +15,8 @@ subscription login to billed API access.
 | xAI API | `grok-api` | | `grok-api` | `XAI_API_KEY`, billed |
 | Claude CLI | | `claude` | | Claude Code's saved account login |
 | Anthropic API | | `claude-api` | | `ANTHROPIC_API_KEY`, billed |
-| Grok realtime | combined | `grok-realtime` | combined | `XAI_API_KEY`, billed |
+| Grok realtime | combined | `grok-realtime` | combined | Grok's saved login |
+| xAI realtime API | combined | `grok-realtime-api` | combined | `XAI_API_KEY`, billed |
 
 Check each piece on its own before running the radio:
 
@@ -175,8 +176,11 @@ Web search uses Anthropic's server-side tool when enabled.
 ## Grok realtime
 
 `[agent] backend = "grok-realtime"` streams captured audio to xAI's realtime
-voice and plays its spoken reply as it arrives. It uses `XAI_API_KEY` (or
-`[agent.realtime] key_env`), billed per use; the Grok login is never used.
+voice and plays its spoken reply as it arrives. It uses the saved Grok login
+(`grok login`), like the `grok` speech backends; access depends on your
+account. `grok-realtime-api` is the same session on a billed key,
+`XAI_API_KEY` (or `[agent.realtime] key_env`). Neither ever falls back to the
+other.
 
 Try one turn without the radio:
 
@@ -204,5 +208,7 @@ How it works in `talk`:
   `transcribe_voice` is on.
 
 The realtime session uses its own `connect_timeout_seconds` and
-`idle_timeout_seconds`, not `[agent] timeout_seconds`. A rejected key stops
-`talk`; network failures are retried each second.
+`idle_timeout_seconds`, not `[agent] timeout_seconds`. Each connection reads
+the login, refreshing an expired token; a rejected login token is refreshed and
+tried once more. A rejected key or login stops `talk`; network failures are
+retried each second.

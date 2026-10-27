@@ -87,7 +87,7 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
-    /// One realtime speech-to-speech turn saved to a new WAV (grok-realtime)
+    /// One realtime speech-to-speech turn saved to a new WAV (grok-realtime or grok-realtime-api)
     VoiceAgentCheck {
         #[command(flatten)]
         input: Input,
@@ -407,7 +407,10 @@ async fn blocking<T: Send + 'static>(
 fn print_summary(config: &Config, creds: &Credentials) {
     let realtime = config.agent.backend.is_realtime();
     if realtime {
-        ui::status!("Agent: grok-realtime (speech-to-speech; replaces STT, agent, and voice)");
+        ui::status!(
+            "Agent: {} (speech-to-speech; replaces STT, agent, and voice)",
+            config.agent.backend
+        );
     } else {
         ui::status!("Speech recognition: {}", config.stt.backend);
         ui::status!("Agent: {}", config.agent.backend);

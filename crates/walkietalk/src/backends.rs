@@ -34,10 +34,22 @@ pub fn text_agent(config: &Config, creds: &Credentials) -> anyhow::Result<Box<dy
             a.max_reply_chars,
             a.timeout(),
         )),
-        AgentBackend::GrokRealtime => bail!(
-            "agent.backend grok-realtime is a speech-to-speech session, not a text agent; use voice-agent-check or talk"
+        AgentBackend::GrokRealtime | AgentBackend::GrokRealtimeApi => bail!(
+            "agent.backend {} is a speech-to-speech session, not a text agent; use voice-agent-check or talk",
+            a.backend
         ),
     })
+}
+
+/// The credential for the realtime voice agent.
+pub fn realtime_auth(config: &Config, creds: &Credentials) -> Auth {
+    match config.agent.backend {
+        AgentBackend::GrokRealtimeApi => Auth::Key {
+            env: config.agent.realtime.key_env.clone(),
+            creds: creds.clone(),
+        },
+        _ => Auth::Login(GrokLogin::locate()),
+    }
 }
 
 pub fn transcriber(config: &Config, creds: &Credentials) -> anyhow::Result<Box<dyn Transcriber>> {

@@ -104,7 +104,7 @@ impl Client {
                 let status = response.status().as_u16();
                 if status == 401 || status == 403 {
                     bail!(AuthError(format!(
-                        "realtime authentication failed (HTTP {status}); check the billed API key"
+                        "realtime authentication failed (HTTP {status})"
                     )));
                 }
                 bail!("realtime connection refused (HTTP {status})");

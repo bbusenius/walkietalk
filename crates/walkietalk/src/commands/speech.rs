@@ -185,7 +185,7 @@ pub async fn voice_agent_check(
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         config.agent.backend.is_realtime(),
-        "voice-agent-check needs agent.backend = \"grok-realtime\""
+        "voice-agent-check needs agent.backend = \"grok-realtime\" or \"grok-realtime-api\""
     );
     anyhow::ensure!(
         consent.is_none() || supervised,
@@ -210,8 +210,9 @@ pub async fn voice_agent_check(
         None
     };
     ui::status!(
-        "Sending {:.1}s of audio to the voice agent (billed API)...",
-        utterance.audio.seconds()
+        "Sending {:.1}s of audio to the voice agent ({})...",
+        utterance.audio.seconds(),
+        settings.auth.describe()
     );
     let reply = crate::realtime::single_turn(&settings, &utterance.audio, radio.clone()).await?;
     if let Some(radio) = radio.filter(|_| live && reply.audible) {
