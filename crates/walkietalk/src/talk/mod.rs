@@ -598,7 +598,7 @@ impl Talk {
             Err(err) if err.downcast_ref::<realtime::NoTranscript>().is_some() => {
                 ui::warning!("No transcript arrived for that audio; window unchanged.");
                 self.shutdown.cancel();
-                self.discard_realtime(true).await;
+                self.discard_realtime(false).await;
                 Ok(None)
             }
             Err(err) => {
@@ -622,7 +622,7 @@ impl Talk {
         }
         if let Err(err) = session.discard().await {
             ui::error!(
-                "Could not remove that audio from the voice session ({err:#}); starting a fresh session."
+                "Could not remove that audio from the voice session ({err:#}); reconnecting."
             );
             session.reset().await;
         } else if drop_connection {
@@ -645,8 +645,7 @@ impl Talk {
         }
         if text.trim().is_empty() {
             ui::ignored!("Ignored: no words recognized.");
-            // An empty result can leave the realtime connection unusable.
-            self.discard_realtime(true).await;
+            self.discard_realtime(false).await;
             return Ok(Next::Listen);
         }
         ui::transcript!("Transcript: {text}");

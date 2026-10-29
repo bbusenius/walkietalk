@@ -10,7 +10,6 @@
 pub mod client;
 pub mod tx;
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +22,7 @@ use crate::config::{Config, RealtimeConfig};
 use crate::credentials::{Credentials, Secret};
 use crate::radio::{BreakIn, Radio, TxError};
 use crate::xai::Auth;
-use client::{Client, Event, Role};
+use client::{Client, Event};
 pub use tx::Ending;
 use tx::{RATE, StreamTx};
 
@@ -72,7 +71,6 @@ pub struct Settings {
     /// For refreshing a saved login.
     pub http: reqwest::Client,
     pub web_search: bool,
-    pub history_turns: usize,
     /// Most transmissions one reply may use.
     pub max_transmissions: usize,
     pub instructions: String,
@@ -98,7 +96,6 @@ impl Settings {
             auth,
             http: crate::http::client(config.agent.realtime.connect_timeout()),
             web_search: config.agent.web_search,
-            history_turns: config.agent.history_turns,
             max_transmissions: config.radio.max_reply_transmissions,
             instructions: routing_instructions(&guidance, config),
             keyterms: crate::backends::keyterms(config),
@@ -136,10 +133,15 @@ impl Settings {
     /// Connect with a current token. A refused saved login is refreshed and
     /// tried once more; a refused key is not retried.
     async fn connect(&self) -> anyhow::Result<Client> {
+        self.connect_to(None).await
+    }
+
+    /// Connect, resuming the conversation `resume` when given.
+    async fn connect_to(&self, resume: Option<&str>) -> anyhow::Result<Client> {
         let key = self.auth.token(&self.http).await?;
-        let result = match self.open(&key).await {
+        let result = match self.open(&key, resume).await {
             Err(err) if is_auth_error(&err) => match self.auth.retry_token(&self.http).await {
-                Some(key) => self.open(&key?).await,
+                Some(key) => self.open(&key?, resume).await,
                 None => Err(err),
             },
             other => other,
@@ -152,8 +154,15 @@ impl Settings {
         })
     }
 
-    async fn open(&self, key: &Secret) -> anyhow::Result<Client> {
-        Client::connect(&self.rt.url, &self.rt.model, key, self.rt.connect_timeout()).await
+    async fn open(&self, key: &Secret, resume: Option<&str>) -> anyhow::Result<Client> {
+        Client::connect(
+            &self.rt.url,
+            &self.rt.model,
+            resume,
+            key,
+            self.rt.connect_timeout(),
+        )
+        .await
     }
 }
 
@@ -261,12 +270,12 @@ async fn receive_inner(
             cancelled = true;
         }
     }
+    reply.said = heard.said();
     if tx.stopped()
         && let Some(text) = heard.note(tx.aired())
     {
         client.note(&text).await?;
     }
-    reply.said = heard.said();
     reply.audio = std::mem::take(&mut tx.audio);
     reply.audible = tx.audible;
     reply.truncated = tx.truncated;
@@ -441,8 +450,8 @@ pub struct Session {
     pending: Vec<i16>,
     appended: usize,
     committed: Option<String>,
-    /// Item IDs of each completed turn, oldest first.
-    turns: VecDeque<Vec<String>>,
+    /// The server's ID for the conversation; reconnecting resumes it.
+    conversation: Option<String>,
 }
 
 impl Session {
@@ -454,7 +463,7 @@ impl Session {
             pending: Vec::new(),
             appended: 0,
             committed: None,
-            turns: VecDeque::new(),
+            conversation: None,
         }
     }
 
@@ -481,18 +490,27 @@ impl Session {
             return Ok(());
         }
         self.reset().await;
-        let mut client = self.settings.connect().await?;
-        let session = self
+        let mut client = self
+            .settings
+            .connect_to(self.conversation.as_deref())
+            .await?;
+        let mut session = self
             .settings
             .session(Some(&self.settings.instructions), true, true);
+        // The server keeps the turns so a new connection can resume them;
+        // it drops them after 30 minutes without use.
+        session["resumption"] = json!({"enabled": true});
         client
             .configure(session, self.settings.rt.connect_timeout())
             .await?;
+        if client.conversation.is_some() {
+            self.conversation = client.conversation.clone();
+        }
         self.client = Some(client);
         Ok(())
     }
 
-    /// Drop the connection and the remote conversation with it.
+    /// Drop the connection. The next one resumes the conversation.
     pub async fn reset(&mut self) {
         if let Some(client) = self.client.take() {
             client.close().await;
@@ -500,7 +518,6 @@ impl Session {
         self.pending.clear();
         self.appended = 0;
         self.committed = None;
-        self.turns.clear();
     }
 
     fn client(&mut self) -> anyhow::Result<&mut Client> {
@@ -571,6 +588,8 @@ impl Session {
             .await?;
         let deadline = Instant::now() + wait;
         let mut committed: Option<String> = None;
+        // Items the server created; a commit it never transcribed has none.
+        let mut created = std::collections::HashSet::new();
         let mut partial: std::collections::HashMap<String, String> = Default::default();
         let mut empty_at: Option<Instant> = None;
         let outcome = loop {
@@ -589,12 +608,16 @@ impl Session {
             };
             match event {
                 Event::Committed { item_id } => committed = Some(item_id),
+                Event::ItemAdded { item_id } => {
+                    created.insert(item_id);
+                }
                 Event::InputTranscriptFailed => bail!("the realtime transcription failed"),
                 Event::InputTranscript {
                     item_id,
                     text,
                     done,
                 } => {
+                    created.insert(item_id.clone());
                     if !text.is_empty() {
                         partial.insert(item_id.clone(), text.clone());
                     }
@@ -611,7 +634,8 @@ impl Session {
                 _ => {}
             }
         };
-        self.committed = committed.clone();
+        // Only an item that exists can be deleted later.
+        self.committed = committed.clone().filter(|id| created.contains(id));
         match (outcome, committed) {
             (Some(text), _) => Ok(text),
             (None, Some(item)) => match partial.remove(&item) {
@@ -625,7 +649,7 @@ impl Session {
 
     /// Ask for a reply to the committed audio and transmit it as it streams,
     /// pausing at `break_in` between transmissions. A failed or silent reply
-    /// resets the conversation so the next turn starts fresh.
+    /// drops the connection; the next one resumes the conversation.
     pub async fn respond(
         &mut self,
         radio: Option<Arc<Radio>>,
@@ -643,49 +667,10 @@ impl Session {
         .await;
         self.committed = None;
         self.appended = 0;
-        match &result {
-            Ok(reply) if reply.audible && !reply.truncated => self.keep_turn().await,
-            _ => self.reset().await,
+        if !matches!(&result, Ok(reply) if reply.audible && !reply.truncated) {
+            self.reset().await;
         }
         result
-    }
-
-    /// Remember this turn's items and delete the oldest beyond the limit.
-    async fn keep_turn(&mut self) {
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        let kept: std::collections::HashSet<&String> = self.turns.iter().flatten().collect();
-        let current: Vec<String> = client
-            .order
-            .iter()
-            .filter(|id| !kept.contains(id))
-            .cloned()
-            .collect();
-        let roles: Vec<Role> = current
-            .iter()
-            .filter_map(|id| client.items.get(id).copied())
-            .collect();
-        if !(roles.contains(&Role::User) && roles.contains(&Role::Assistant)) {
-            // Without both halves the turn cannot be removed cleanly later.
-            self.reset().await;
-            return;
-        }
-        self.turns.push_back(current);
-        let timeout = self.settings.rt.connect_timeout();
-        while self.turns.len() > self.settings.history_turns {
-            let oldest = self.turns.pop_front().expect("non-empty");
-            for item in oldest {
-                let Some(client) = self.client.as_mut() else {
-                    return;
-                };
-                if client.delete(&item, timeout).await.is_err() {
-                    // The reply already aired; start fresh rather than keep unbounded history.
-                    self.reset().await;
-                    return;
-                }
-            }
-        }
     }
 }
 
@@ -718,7 +703,7 @@ pub mod tests {
         let url = format!("ws://{}/v1/realtime", listener.local_addr().unwrap());
         let log = Arc::new(Mutex::new(Vec::new()));
         let record = log.clone();
-        let transcripts = Arc::new(Mutex::new(VecDeque::from(transcripts)));
+        let transcripts = Arc::new(Mutex::new(std::collections::VecDeque::from(transcripts)));
         tokio::spawn(async move {
             let mut n = 0;
             while let Ok((stream, _)) = listener.accept().await {
@@ -726,7 +711,28 @@ pub mod tests {
                 n += 100;
                 let base = n;
                 tokio::spawn(async move {
-                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    use tokio_tungstenite::tungstenite::handshake::server::{
+                        ErrorResponse, Request, Response,
+                    };
+                    let mut resume = None;
+                    // The callback signature is fixed by tungstenite.
+                    #[allow(clippy::result_large_err)]
+                    let note_resume =
+                        |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                            resume = req.uri().query().and_then(|q| {
+                                q.split('&')
+                                    .find_map(|p| p.strip_prefix("conversation_id="))
+                                    .map(str::to_string)
+                            });
+                            Ok(resp)
+                        };
+                    let mut ws = tokio_tungstenite::accept_hdr_async(stream, note_resume)
+                        .await
+                        .unwrap();
+                    if let Some(id) = &resume {
+                        record.lock().unwrap().push(format!("resume {id}"));
+                    }
+                    let conversation = resume.unwrap_or_else(|| format!("c{base}"));
                     let mut turn = base;
                     let tone: Vec<u8> = (0..4800)
                         .flat_map(|i: i32| (if i % 2 == 0 { 8000i16 } else { -8000 }).to_le_bytes())
@@ -740,13 +746,21 @@ pub mod tests {
                         }
                         let mut out = vec![];
                         match kind.as_str() {
-                            "session.update" => out.push(json!({"type": "session.updated"})),
+                            "session.update" => {
+                                if msg["session"]["resumption"]["enabled"] == true {
+                                    out.push(json!({"type": "conversation.created", "conversation": {"id": conversation}}));
+                                }
+                                out.push(json!({"type": "session.updated"}));
+                            }
                             "input_audio_buffer.commit" => {
                                 turn += 1;
                                 let id = format!("u{turn}");
                                 let words = transcripts.lock().unwrap().pop_front().unwrap_or("");
                                 out.push(json!({"type": "input_audio_buffer.committed", "item_id": id}));
-                                out.push(json!({"type": "conversation.item.input_audio_transcription.completed", "item_id": id, "transcript": words}));
+                                // "<none>": the server never transcribes or creates the item.
+                                if words != "<none>" {
+                                    out.push(json!({"type": "conversation.item.input_audio_transcription.completed", "item_id": id, "transcript": words}));
+                                }
                             }
                             "conversation.item.delete" => out.push(json!({"type": "conversation.item.deleted", "item_id": msg["item_id"]})),
                             "response.create" | "conversation.item.create" => {
@@ -770,7 +784,7 @@ pub mod tests {
         (url, log)
     }
 
-    pub fn settings(url: String, history_turns: usize) -> Settings {
+    pub fn settings(url: String) -> Settings {
         Settings {
             rt: RealtimeConfig {
                 url,
@@ -782,7 +796,6 @@ pub mod tests {
             },
             http: crate::http::client(Duration::from_secs(1)),
             web_search: false,
-            history_turns,
             max_transmissions: 3,
             instructions: "Be brief.".into(),
             keyterms: vec!["charlotte".into()],
@@ -798,7 +811,7 @@ pub mod tests {
     #[tokio::test]
     async fn rejected_utterances_are_deleted_before_any_reply() {
         let (url, log) = fake_server(vec!["what time is it"]).await;
-        let mut session = Session::new(settings(url, 4));
+        let mut session = Session::new(settings(url));
         session.connect().await.unwrap();
         session.begin(48_000);
         session.append(&speech()).await.unwrap();
@@ -809,33 +822,42 @@ pub mod tests {
         assert!(!log.contains(&"response.create".to_string()));
     }
 
+    async fn turn(session: &mut Session, radio: Option<Arc<Radio>>) -> Reply {
+        session.begin(48_000);
+        session.append(&speech()).await.unwrap();
+        session.transcript().await.unwrap();
+        session.respond(radio, None).await.unwrap()
+    }
+
     #[tokio::test]
-    async fn accepted_turn_keys_the_radio_and_old_turns_are_pruned() {
-        let (url, log) = fake_server(vec!["charlotte one", "charlotte two"]).await;
+    async fn accepted_turn_keys_the_radio() {
+        let (url, _) = fake_server(vec!["charlotte one"]).await;
         let (line, out) = (FakeLine::default(), FakeOut::default());
         let radio = Arc::new(radio(&line, &out, 5000));
-        let mut session = Session::new(settings(url, 1));
+        let mut session = Session::new(settings(url));
         session.connect().await.unwrap();
-        for _ in 0..2 {
-            session.begin(48_000);
-            session.append(&speech()).await.unwrap();
-            session.transcript().await.unwrap();
-            let reply = session.respond(Some(radio.clone()), None).await.unwrap();
-            assert!(reply.audible && !reply.truncated);
-            assert_eq!(reply.said, "Reply.");
-        }
+        let reply = turn(&mut session, Some(radio)).await;
+        assert!(reply.audible && !reply.truncated);
+        assert_eq!(reply.said, "Reply.");
         assert!(line.changes().contains(&true));
         assert!(!line.keyed());
-        let deletes = log
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|k| *k == "conversation.item.delete")
-            .count();
-        assert_eq!(
-            deletes, 2,
-            "the first turn's user and assistant items are removed"
-        );
+    }
+
+    #[tokio::test]
+    async fn a_long_conversation_stays_on_one_connection_with_nothing_deleted() {
+        let transcripts = vec![
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        ];
+        let (url, log) = fake_server(transcripts).await;
+        let mut session = Session::new(settings(url));
+        session.connect().await.unwrap();
+        for _ in 0..10 {
+            assert_eq!(turn(&mut session, None).await.said, "Reply.");
+        }
+        assert!(session.connected());
+        let log = log.lock().unwrap();
+        assert_eq!(log.iter().filter(|k| *k == "session.update").count(), 1);
+        assert!(!log.contains(&"conversation.item.delete".to_string()));
     }
 
     /// Streams a five-second reply of words and pauses. With `finish`, the
@@ -949,7 +971,7 @@ pub mod tests {
         let (url, log) = long_reply_server(false).await;
         let (line, out) = (FakeLine::default(), FakeOut::default());
         let radio = Arc::new(radio(&line, &out, 1500));
-        let mut session = Session::new(settings(url, 4));
+        let mut session = Session::new(settings(url));
         session.connect().await.unwrap();
         session.begin(48_000);
         session.append(&speech()).await.unwrap();
@@ -976,7 +998,7 @@ pub mod tests {
         let (url, log) = long_reply_server(true).await;
         let (line, out) = (FakeLine::default(), FakeOut::default());
         let radio = Arc::new(radio(&line, &out, 1500));
-        let mut s = settings(url, 4);
+        let mut s = settings(url);
         s.max_transmissions = 2;
         let mut session = Session::new(s);
         session.connect().await.unwrap();
@@ -1000,6 +1022,40 @@ pub mod tests {
         session.begin(48_000);
         session.append(&speech()).await.unwrap();
         assert_eq!(session.transcript().await.unwrap(), "count to ten");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_resumes_the_same_conversation() {
+        let (url, log) = fake_server(vec!["one", "two"]).await;
+        let mut session = Session::new(settings(url));
+        session.connect().await.unwrap();
+        turn(&mut session, None).await;
+        session.reset().await;
+        session.connect().await.unwrap();
+        assert_eq!(turn(&mut session, None).await.said, "Reply.");
+        assert!(log.lock().unwrap().contains(&"resume c100".to_string()));
+    }
+
+    #[tokio::test]
+    async fn audio_that_was_never_transcribed_is_not_deleted_and_the_session_stays() {
+        let (url, log) = fake_server(vec!["<none>", "charlotte hello"]).await;
+        let mut s = settings(url);
+        // Give up on the missing transcript quickly.
+        s.rt.idle_timeout_seconds = 0.3;
+        let mut session = Session::new(s);
+        session.connect().await.unwrap();
+        session.begin(48_000);
+        session.append(&speech()).await.unwrap();
+        let err = session.transcript().await.unwrap_err();
+        assert!(err.downcast_ref::<NoTranscript>().is_some());
+        session.discard().await.unwrap();
+        assert!(
+            !log.lock()
+                .unwrap()
+                .contains(&"conversation.item.delete".to_string())
+        );
+        assert!(session.connected());
+        assert_eq!(turn(&mut session, None).await.said, "Reply.");
     }
 
     #[test]
@@ -1072,7 +1128,7 @@ pub mod tests {
             "expires_at": "2999-01-01T00:00:00Z",
         }});
         std::fs::write(&path, store.to_string()).unwrap();
-        let mut s = settings(url, 4);
+        let mut s = settings(url);
         s.auth = Auth::Login(crate::grok_login::GrokLogin::at(
             path,
             token_server(refreshes.clone()).await,
@@ -1085,7 +1141,7 @@ pub mod tests {
     #[tokio::test]
     async fn refused_key_is_not_retried() {
         let (url, handshakes) = guarded_server().await;
-        let err = settings(url, 4).connect().await.err().unwrap();
+        let err = settings(url).connect().await.err().unwrap();
         assert!(is_auth_error(&err));
         assert!(err.to_string().contains("billed API key"), "{err}");
         assert_eq!(*handshakes.lock().unwrap(), 1);
@@ -1094,9 +1150,7 @@ pub mod tests {
     #[tokio::test]
     async fn fixed_text_is_spoken_on_a_fresh_connection() {
         let (url, log) = fake_server(vec![]).await;
-        let reply = speak(&settings(url, 4), "Standing by.", None)
-            .await
-            .unwrap();
+        let reply = speak(&settings(url), "Standing by.", None).await.unwrap();
         assert!(reply.audible);
         assert!(
             log.lock()

@@ -41,7 +41,7 @@ in this file never selects a backend or enables a fallback.
 | --- | --- | --- |
 | `backend` | `"stub"` | `stub`, `hermes`, `codex`, `grok`, `claude`, `claude-api`, `grok-realtime` (saved Grok login), or `grok-realtime-api` (billed key) |
 | `max_reply_chars` | `600` | Longer text replies are discarded (1 to 2000) |
-| `history_turns` | `8` | Completed request/reply pairs kept as context (1 to 32) |
+| `history_turns` | `8` | Completed request/reply pairs sent to the text agent as context (at least 1). Every request carries them, so more turns mean more memory but slower, costlier replies. The realtime voice keeps its whole conversation while connected. |
 | `timeout_seconds` | `60` | Deadline for one text reply, including login checks and web lookups (up to 300) |
 | `web_search` | `true` | Let the agent look up public web information |
 | `instructions` | `""` | Replaces the built-in guidance |

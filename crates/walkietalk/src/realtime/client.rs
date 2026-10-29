@@ -1,7 +1,6 @@
 //! The xAI realtime WebSocket: connecting, sending commands, and typed
 //! server events. Nothing here touches audio devices or PTT.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -40,17 +39,13 @@ pub struct ServerError(pub String);
 #[error("realtime server went quiet for {0:.0}s")]
 pub struct Quiet(pub f64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    User,
-    Assistant,
-    Other,
-}
-
 /// A server event the bridge acts on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     SessionUpdated,
+    ConversationCreated {
+        id: String,
+    },
     Committed {
         item_id: String,
     },
@@ -60,6 +55,10 @@ pub enum Event {
         done: bool,
     },
     InputTranscriptFailed,
+    /// The server created a conversation item.
+    ItemAdded {
+        item_id: String,
+    },
     ItemDeleted {
         item_id: String,
     },
@@ -88,26 +87,29 @@ pub struct Client {
     sink: SplitSink<Socket, Message>,
     inbox: mpsc::Receiver<anyhow::Result<(Event, Value)>>,
     reader: tokio::task::JoinHandle<()>,
-    /// Conversation items the server holds, by ID.
-    pub items: HashMap<String, Role>,
-    /// Item order, oldest first.
-    pub order: Vec<String>,
+    /// The server's ID for this conversation, once it has said.
+    pub conversation: Option<String>,
 }
 
-/// Add the model as a query parameter, keeping any existing ones.
-pub fn session_url(base: &str, model: &str) -> String {
+/// Add the model, and the conversation to resume, as query parameters,
+/// keeping any existing ones.
+pub fn session_url(base: &str, model: &str, resume: Option<&str>) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
-    format!("{base}{separator}model={model}")
+    match resume {
+        Some(id) => format!("{base}{separator}model={model}&conversation_id={id}"),
+        None => format!("{base}{separator}model={model}"),
+    }
 }
 
 impl Client {
     pub async fn connect(
         url: &str,
         model: &str,
+        resume: Option<&str>,
         key: &Secret,
         timeout: Duration,
     ) -> anyhow::Result<Client> {
-        let mut request = session_url(url, model)
+        let mut request = session_url(url, model, resume)
             .into_client_request()
             .context("invalid realtime URL")?;
         request.headers_mut().insert(
@@ -172,8 +174,7 @@ impl Client {
             sink,
             inbox,
             reader,
-            items: HashMap::new(),
-            order: Vec::new(),
+            conversation: None,
         })
     }
 
@@ -214,8 +215,12 @@ impl Client {
         let received = tokio::time::timeout(timeout, self.inbox.recv())
             .await
             .map_err(|_| Quiet(timeout.as_secs_f64()))?;
-        let (event, raw) = received.context("realtime connection closed")??;
-        self.track(&event, &raw);
+        let (event, _) = received.context("realtime connection closed")??;
+        if let Event::ConversationCreated { id } = &event
+            && !id.is_empty()
+        {
+            self.conversation = Some(id.clone());
+        }
         Ok(event)
     }
 
@@ -264,50 +269,6 @@ impl Client {
         .await
     }
 
-    fn remember(&mut self, id: &str, role: Role) {
-        if self.items.insert(id.to_string(), role).is_none() {
-            self.order.push(id.to_string());
-        }
-    }
-
-    /// Track which conversation items exist, so whole turns can be removed.
-    fn track(&mut self, event: &Event, raw: &Value) {
-        match event {
-            Event::Committed { item_id } => self.remember(item_id, Role::User),
-            Event::ItemDeleted { item_id } => {
-                self.items.remove(item_id);
-                self.order.retain(|id| id != item_id);
-            }
-            _ => {}
-        }
-        let mut items = Vec::new();
-        match raw["type"].as_str() {
-            Some(
-                "conversation.item.added"
-                | "response.output_item.added"
-                | "response.output_item.done",
-            ) => {
-                items.push(&raw["item"]);
-            }
-            Some("response.done") => {
-                if let Some(output) = raw["response"]["output"].as_array() {
-                    items.extend(output.iter());
-                }
-            }
-            _ => {}
-        }
-        for item in items {
-            if let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) {
-                let role = match item["role"].as_str().or(item["type"].as_str()) {
-                    Some("user") => Role::User,
-                    Some("assistant") => Role::Assistant,
-                    _ => Role::Other,
-                };
-                self.remember(id, role);
-            }
-        }
-    }
-
     pub async fn close(mut self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.sink.close()).await;
         self.reader.abort();
@@ -344,6 +305,9 @@ pub fn parse(message: &str) -> anyhow::Result<(Event, Value)> {
         .context("realtime event without a type")?;
     let event = match kind {
         "session.updated" => Event::SessionUpdated,
+        "conversation.created" => Event::ConversationCreated {
+            id: text(&raw["conversation"]["id"]),
+        },
         "input_audio_buffer.committed" => Event::Committed {
             item_id: raw["item_id"]
                 .as_str()
@@ -372,7 +336,9 @@ pub fn parse(message: &str) -> anyhow::Result<(Event, Value)> {
                 })
                 .unwrap_or_default();
             if transcript.is_empty() {
-                Event::Other(kind.into())
+                Event::ItemAdded {
+                    item_id: text(&raw["item"]["id"]),
+                }
             } else {
                 Event::InputTranscript {
                     item_id: text(&raw["item"]["id"]),
@@ -486,9 +452,16 @@ mod tests {
     #[test]
     fn model_is_added_to_the_url() {
         assert_eq!(
-            session_url("wss://x/v1/realtime", "m"),
+            session_url("wss://x/v1/realtime", "m", None),
             "wss://x/v1/realtime?model=m"
         );
-        assert_eq!(session_url("wss://x/rt?a=1", "m"), "wss://x/rt?a=1&model=m");
+        assert_eq!(
+            session_url("wss://x/rt?a=1", "m", None),
+            "wss://x/rt?a=1&model=m"
+        );
+        assert_eq!(
+            session_url("wss://x/rt", "m", Some("c1")),
+            "wss://x/rt?model=m&conversation_id=c1"
+        );
     }
 }
