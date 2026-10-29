@@ -14,7 +14,8 @@
 # (saved Grok login), grok-realtime-api (billed key)
 backend = "stub"
 max_reply_chars = 600         # longer text replies are discarded; 1 to 2000
-history_turns = 8             # request/reply pairs kept as context; 1 to 32
+history_turns = 8             # request/reply pairs sent to the text agent as context;
+                              # at least 1; more is slower (realtime keeps everything)
 timeout_seconds = 60          # deadline for one text reply; up to 300
 web_search = true             # let the agent look up public web information
 # Replaces the built-in guidance. Empty uses short, family-friendly,

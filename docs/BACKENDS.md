@@ -208,11 +208,14 @@ How it works in `talk`:
   transcript goes through the shutdown, sleep, and wake gates.
 - Rejected, control, and empty utterances are deleted from the remote
   conversation before any reply is requested.
-- The transmitter keys only when audible speech arrives, unkeys around tool
-  calls, and the whole reply stays within `max_tx_seconds`. An interrupted
-  reply discards the remote conversation so the next turn starts fresh.
-- The last `history_turns` exchanges are kept; older ones are deleted from the
-  session.
+- The transmitter keys only when audible speech arrives and unkeys around tool
+  calls. A reply longer than `max_tx_seconds` continues in further
+  transmissions, as described under `[radio]` in
+  [CONFIGURATION.md](CONFIGURATION.md).
+- The session keeps the whole conversation; `history_turns` does not apply to
+  it. When the connection drops or is restarted after a failed reply, the next
+  one resumes the same conversation. xAI drops it after 30 minutes without use.
+- Audio that gets no transcript is ignored without ending the session.
 - Confirmations and voice station IDs are spoken by the realtime voice on a
   short separate connection.
 - With messaging enabled, the configured `[tts]` voice still reads contact

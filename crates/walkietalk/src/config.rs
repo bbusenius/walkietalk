@@ -1070,8 +1070,8 @@ impl Config {
         if !(1..=2000).contains(&a.max_reply_chars) {
             v.fail("agent.max_reply_chars must be from 1 through 2000");
         }
-        if !(1..=32).contains(&a.history_turns) {
-            v.fail("agent.history_turns must be from 1 through 32");
+        if a.history_turns == 0 {
+            v.fail("agent.history_turns must be at least 1");
         }
         v.finite_range(
             "agent.timeout_seconds",

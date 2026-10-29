@@ -248,9 +248,7 @@ impl Talk {
             }
         }
         if reply.truncated {
-            ui::warning!(
-                "The transmit cap cut the reply short; the next turn starts a fresh conversation."
-            );
+            ui::warning!("The transmit cap cut the reply short; reconnecting the voice session.");
         }
         // Nothing more goes out over a station that broke in.
         if self.air.is_some() && reply.ending != Ending::BrokenIn {
