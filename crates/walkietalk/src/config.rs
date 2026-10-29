@@ -98,6 +98,12 @@ pub struct RadioConfig {
     pub settle_seconds: f64,
     /// Listening pause after the transmitter is released.
     pub post_tx_mute_seconds: f64,
+    /// Between two transmissions of one long reply, how long to listen for
+    /// another station before continuing. Listening starts after the mute.
+    pub break_in_gap_seconds: f64,
+    /// Most transmissions one reply may use; the rest of a longer reply is
+    /// not sent.
+    pub max_reply_transmissions: usize,
     pub station_id: StationIdConfig,
 }
 
@@ -107,6 +113,8 @@ impl Default for RadioConfig {
             max_tx_seconds: 10.0,
             settle_seconds: 0.2,
             post_tx_mute_seconds: 2.0,
+            break_in_gap_seconds: 1.5,
+            max_reply_transmissions: 3,
             station_id: StationIdConfig::default(),
         }
     }
@@ -123,6 +131,10 @@ impl RadioConfig {
 
     pub fn post_tx_mute(&self) -> Duration {
         Duration::from_secs_f64(self.post_tx_mute_seconds)
+    }
+
+    pub fn break_in_gap(&self) -> Duration {
+        Duration::from_secs_f64(self.break_in_gap_seconds)
     }
 
     /// Audio that fits in one transmission after the settle delay and the
@@ -985,6 +997,16 @@ impl Config {
             30.0,
             true,
         );
+        v.finite_range(
+            "radio.break_in_gap_seconds",
+            r.break_in_gap_seconds,
+            0.5,
+            10.0,
+            true,
+        );
+        if !(1..=20).contains(&r.max_reply_transmissions) {
+            v.fail("radio.max_reply_transmissions must be from 1 through 20");
+        }
         let id = &r.station_id;
         if id.callsign.chars().count() > 64 || id.callsign.chars().any(char::is_control) {
             v.fail("radio.station_id.callsign must be your station ID, at most 64 characters");

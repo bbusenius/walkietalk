@@ -235,8 +235,8 @@ pub async fn voice_agent_check(
     let clip = Clip::new(reply.audio, crate::realtime::tx::RATE);
     clip.write_new_wav(output)?;
     ui::status!("Wrote {} ({:.2}s).", output.display(), clip.seconds());
-    if reply.truncated {
-        ui::warning!("The transmit cap cut the reply short.");
+    if reply.truncated || reply.ending == crate::realtime::Ending::Limit {
+        ui::warning!("The reply did not fit one transmission; the rest was not sent.");
     }
     if !supervised {
         ui::status!("No playback or PTT.");
@@ -264,7 +264,7 @@ async fn station_id_after(
         crate::config::StationIdMethod::Voice => {
             let reply = crate::realtime::speak(settings, &id.callsign, Some(radio)).await?;
             anyhow::ensure!(
-                reply.audible && !reply.truncated,
+                reply.complete(),
                 "the station ID was not transmitted in full"
             );
         }

@@ -130,10 +130,17 @@ See [messaging](MESSAGING.md) for behavior.
 | `max_tx_seconds` | `10` | Hard limit on one transmission, settle included |
 | `settle_seconds` | `0.2` | Delay between keying and audio, so the first word is not clipped (up to 2; `max_tx_seconds` must be at least 1 s longer) |
 | `post_tx_mute_seconds` | `2` | Listening pause after the transmitter is released (0 to 30) |
+| `break_in_gap_seconds` | `1.5` | Listening time between the transmissions of one long reply, after the mute (0.5 to 10) |
+| `max_reply_transmissions` | `3` | Most transmissions one reply may use (1 to 20) |
 
-Speech must fit the speech budget: `max_tx_seconds - settle_seconds`, less
-0.35 s kept free for the audio device to drain. Longer agent replies are
-cropped at that point; station IDs are never cropped.
+Each transmission must fit the speech budget: `max_tx_seconds - settle_seconds`,
+less 0.35 s kept free for the audio device to drain. A longer reply goes out
+in several transmissions, each ending at a pause in the speech. Between them
+the transmitter is released: after the post-transmit mute, the bridge listens
+for `break_in_gap_seconds`. If someone starts talking, the rest of the reply is
+dropped and their speech is handled as a follow-up. A reply that would need
+more than `max_reply_transmissions` stops there. Either way, the conversation
+keeps only what was transmitted. Station IDs are never cropped.
 
 ### `[radio.station_id]`
 
