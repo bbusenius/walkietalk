@@ -30,6 +30,16 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 #[error("{0}")]
 pub struct AuthError(pub String);
 
+/// The server reported an error for one command; the session stays open.
+#[derive(Debug, thiserror::Error)]
+#[error("realtime error: {0}")]
+pub struct ServerError(pub String);
+
+/// No event arrived in time.
+#[derive(Debug, thiserror::Error)]
+#[error("realtime server went quiet for {0:.0}s")]
+pub struct Quiet(pub f64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -53,10 +63,19 @@ pub enum Event {
     ItemDeleted {
         item_id: String,
     },
-    AudioDelta(Vec<i16>),
+    AudioDelta {
+        item_id: String,
+        pcm: Vec<i16>,
+    },
     AudioDone,
-    OutputTranscriptDelta(String),
-    OutputTranscriptDone(String),
+    OutputTranscriptDelta {
+        item_id: String,
+        text: String,
+    },
+    OutputTranscriptDone {
+        item_id: String,
+        text: String,
+    },
     /// A tool call ended a stretch of speech.
     ToolCall,
     ResponseDone {
@@ -128,7 +147,10 @@ impl Client {
                         describe(&err)
                     )),
                 };
-                let stop = parsed.is_err();
+                // A server error answers one command; the connection stays up.
+                let stop = parsed
+                    .as_ref()
+                    .is_err_and(|err| err.downcast_ref::<ServerError>().is_none());
                 match parsed {
                     Ok((Event::Other(kind), _)) if kind == "ping" => continue,
                     other => {
@@ -191,12 +213,7 @@ impl Client {
     pub async fn next(&mut self, timeout: Duration) -> anyhow::Result<Event> {
         let received = tokio::time::timeout(timeout, self.inbox.recv())
             .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "realtime server went quiet for {:.0}s",
-                    timeout.as_secs_f64()
-                )
-            })?;
+            .map_err(|_| Quiet(timeout.as_secs_f64()))?;
         let (event, raw) = received.context("realtime connection closed")??;
         self.track(&event, &raw);
         Ok(event)
@@ -232,6 +249,19 @@ impl Client {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Add a system note to the conversation. It asks for no reply.
+    pub async fn note(&mut self, text: &str) -> anyhow::Result<()> {
+        self.send(json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        }))
+        .await
     }
 
     fn remember(&mut self, id: &str, role: Role) {
@@ -366,22 +396,25 @@ pub fn parse(message: &str) -> anyhow::Result<(Event, Value)> {
                 bytes.len() % 2 == 0,
                 "realtime sent an incomplete audio sample"
             );
-            Event::AudioDelta(
-                bytes
+            Event::AudioDelta {
+                item_id: text(&raw["item_id"]),
+                pcm: bytes
                     .as_chunks::<2>()
                     .0
                     .iter()
                     .map(|b| i16::from_le_bytes([b[0], b[1]]))
                     .collect(),
-            )
+            }
         }
         "response.output_audio.done" => Event::AudioDone,
-        "response.output_audio_transcript.delta" => {
-            Event::OutputTranscriptDelta(text(raw.get("delta").unwrap_or(&raw["transcript"])))
-        }
-        "response.output_audio_transcript.done" => {
-            Event::OutputTranscriptDone(text(&raw["transcript"]))
-        }
+        "response.output_audio_transcript.delta" => Event::OutputTranscriptDelta {
+            item_id: text(&raw["item_id"]),
+            text: text(raw.get("delta").unwrap_or(&raw["transcript"])),
+        },
+        "response.output_audio_transcript.done" => Event::OutputTranscriptDone {
+            item_id: text(&raw["item_id"]),
+            text: text(&raw["transcript"]),
+        },
         "response.function_call_arguments.done" => Event::ToolCall,
         "response.done" => Event::ResponseDone {
             status: raw["response"]["status"]
@@ -413,7 +446,7 @@ pub fn parse(message: &str) -> anyhow::Result<(Event, Value)> {
                     "realtime authentication failed: {detail}"
                 )));
             }
-            bail!("realtime error: {detail}");
+            bail!(ServerError(detail));
         }
         other => Event::Other(other.into()),
     };
@@ -430,7 +463,13 @@ mod tests {
         let (event, _) =
             parse(&json!({"type": "response.output_audio.delta", "delta": b64}).to_string())
                 .unwrap();
-        assert_eq!(event, Event::AudioDelta(vec![1, -1]));
+        assert_eq!(
+            event,
+            Event::AudioDelta {
+                item_id: String::new(),
+                pcm: vec![1, -1]
+            }
+        );
     }
 
     #[test]
@@ -439,6 +478,8 @@ mod tests {
         assert!(auth.downcast_ref::<AuthError>().is_some());
         let other = parse(r#"{"type":"error","error":{"message":"rate limited"}}"#).unwrap_err();
         assert!(other.downcast_ref::<AuthError>().is_none());
+        assert!(other.downcast_ref::<ServerError>().is_some());
+        assert_eq!(other.to_string(), "realtime error: rate limited");
         assert!(parse("not json").is_err());
     }
 

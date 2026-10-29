@@ -48,6 +48,14 @@ impl TxError {
     }
 }
 
+/// The pause between two transmissions of one long reply.
+#[async_trait::async_trait]
+pub trait BreakIn: Send {
+    /// Wait out the pause, listening. True when another station started
+    /// talking, so the rest of the reply should not be sent.
+    async fn listen(&mut self) -> bool;
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Timing {
     pub max_tx: Duration,

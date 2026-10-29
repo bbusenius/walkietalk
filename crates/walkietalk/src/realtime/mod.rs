@@ -21,9 +21,10 @@ use crate::agent::instructions::{self, Limits};
 use crate::audio::stream::StreamResampler;
 use crate::config::{Config, RealtimeConfig};
 use crate::credentials::{Credentials, Secret};
-use crate::radio::{Radio, TxError};
+use crate::radio::{BreakIn, Radio, TxError};
 use crate::xai::Auth;
 use client::{Client, Event, Role};
+pub use tx::Ending;
 use tx::{RATE, StreamTx};
 
 /// About 100 ms of 24 kHz audio per append.
@@ -34,6 +35,10 @@ const RESPONSE_START: Duration = Duration::from_secs(15);
 const TRANSCRIPT_WAIT: Duration = Duration::from_secs(5);
 /// An empty final transcript can arrive just before the real one.
 const EMPTY_GRACE: Duration = Duration::from_millis(400);
+/// Wait for the error that answers a cancel sent after the response ended.
+const CANCEL_ANSWER: Duration = Duration::from_secs(3);
+/// Words of the heard reply quoted in the note about where the radio stopped.
+const NOTE_WORDS: usize = 12;
 
 /// No transcript came back for the committed audio.
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +52,16 @@ pub struct Reply {
     pub said: String,
     pub audio: Vec<i16>,
     pub audible: bool,
+    /// Audio was cut off unexpectedly.
     pub truncated: bool,
+    pub ending: Ending,
+}
+
+impl Reply {
+    /// Audible and transmitted to its end.
+    pub fn complete(&self) -> bool {
+        self.audible && !self.truncated && self.ending == Ending::Complete
+    }
 }
 
 /// Settings for every realtime connection.
@@ -59,6 +73,8 @@ pub struct Settings {
     pub http: reqwest::Client,
     pub web_search: bool,
     pub history_turns: usize,
+    /// Most transmissions one reply may use.
+    pub max_transmissions: usize,
     pub instructions: String,
     pub keyterms: Vec<String>,
 }
@@ -83,6 +99,7 @@ impl Settings {
             http: crate::http::client(config.agent.realtime.connect_timeout()),
             web_search: config.agent.web_search,
             history_turns: config.agent.history_turns,
+            max_transmissions: config.radio.max_reply_transmissions,
             instructions: routing_instructions(&guidance, config),
             keyterms: crate::backends::keyterms(config),
         })
@@ -167,7 +184,11 @@ fn routing_instructions(guidance: &str, config: &Config) -> String {
 }
 
 /// Read a response, driving the transmitter, until `response.done`.
-async fn receive(client: &mut Client, tx: &mut StreamTx, idle: Duration) -> anyhow::Result<Reply> {
+async fn receive(
+    client: &mut Client,
+    tx: &mut StreamTx<'_>,
+    idle: Duration,
+) -> anyhow::Result<Reply> {
     let result = receive_inner(client, tx, idle).await;
     if result.is_err() {
         // Release the radio before anything else.
@@ -178,24 +199,24 @@ async fn receive(client: &mut Client, tx: &mut StreamTx, idle: Duration) -> anyh
 
 async fn receive_inner(
     client: &mut Client,
-    tx: &mut StreamTx,
+    tx: &mut StreamTx<'_>,
     idle: Duration,
 ) -> anyhow::Result<Reply> {
     tx.prepare().await?;
     let mut reply = Reply::default();
-    let mut said = String::new();
+    let mut heard = Heard::default();
     let mut first = true;
+    let mut cancelled = false;
     loop {
         let mut wait = if first { RESPONSE_START } else { idle };
         if let Some(left) = tx.time_left() {
-            wait = wait.min(left + Duration::from_millis(200));
+            wait = wait.min(left.saturating_sub(crate::config::DRAIN_MARGIN));
         }
         let event = match client.next(wait).await {
             Ok(event) => event,
-            Err(_) if tx.keyed() => {
-                tx.truncated = true;
-                tx.abort();
-                break;
+            Err(err) if tx.keyed() && err.downcast_ref::<client::Quiet>().is_some() => {
+                tx.pause().await?;
+                continue;
             }
             Err(err) if first => {
                 return Err(err.context("the voice produced no response; the audio may not have been intelligible speech"));
@@ -204,15 +225,26 @@ async fn receive_inner(
         };
         first = false;
         match event {
-            Event::AudioDelta(pcm) => tx.audio(pcm).await?,
+            Event::AudioDelta { item_id, pcm } => {
+                heard.audio(&item_id, tx.audio.len(), pcm.len());
+                tx.audio(pcm).await?
+            }
             Event::AudioDone | Event::ToolCall => tx.end_segment().await?,
-            Event::OutputTranscriptDelta(text) => said.push_str(&text),
-            Event::OutputTranscriptDone(text) => reply.said = text,
+            Event::OutputTranscriptDelta { item_id, text } => {
+                heard.transcript(&item_id, &text, false)
+            }
+            Event::OutputTranscriptDone { item_id, text } => {
+                heard.transcript(&item_id, &text, true)
+            }
             Event::InputTranscript { text, .. } if !text.is_empty() => reply.heard = text,
             Event::ResponseDone { status } => {
                 tx.end_segment().await?;
-                if status != "completed" {
-                    bail!("the voice response ended with status {status}");
+                match status.as_str() {
+                    "cancelled" if cancelled => {}
+                    // It finished before the cancel arrived, which is refused.
+                    "completed" if cancelled => refused_cancel(client).await?,
+                    "completed" => {}
+                    _ => bail!("the voice response ended with status {status}"),
                 }
                 break;
             }
@@ -222,15 +254,113 @@ async fn receive_inner(
             tx.abort();
             break;
         }
+        // Stop generating; the rest of the response is still read, so the
+        // transcript shows what was cut.
+        if tx.stopped() && !cancelled {
+            client.send(json!({"type": "response.cancel"})).await?;
+            cancelled = true;
+        }
     }
-    if reply.said.is_empty() {
-        reply.said = said;
+    if tx.stopped()
+        && let Some(text) = heard.note(tx.aired())
+    {
+        client.note(&text).await?;
     }
-    reply.said = reply.said.trim().to_string();
+    reply.said = heard.said();
     reply.audio = std::mem::take(&mut tx.audio);
     reply.audible = tx.audible;
     reply.truncated = tx.truncated;
+    reply.ending = tx.ending;
     Ok(reply)
+}
+
+/// Read the error that answers a cancel sent after the response ended.
+async fn refused_cancel(client: &mut Client) -> anyhow::Result<()> {
+    loop {
+        match client.next(CANCEL_ANSWER).await {
+            Ok(_) => {}
+            Err(err)
+                if err.downcast_ref::<client::ServerError>().is_some()
+                    || err.downcast_ref::<client::Quiet>().is_some() =>
+            {
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// What the voice said, item by item, and where its audio sits.
+#[derive(Default)]
+struct Heard {
+    /// Item ID, first sample, samples.
+    spans: Vec<(String, usize, usize)>,
+    transcripts: Vec<(String, String)>,
+}
+
+impl Heard {
+    fn audio(&mut self, item: &str, at: usize, len: usize) {
+        match self.spans.last_mut() {
+            Some((id, _, total)) if id == item => *total += len,
+            _ => self.spans.push((item.to_string(), at, len)),
+        }
+    }
+
+    /// Add a transcript delta, or the item's final transcript.
+    fn transcript(&mut self, item: &str, text: &str, done: bool) {
+        match self.transcripts.iter_mut().find(|(id, _)| id == item) {
+            Some((_, so_far)) if done => *so_far = text.to_string(),
+            Some((_, so_far)) => so_far.push_str(text),
+            None => self.transcripts.push((item.to_string(), text.to_string())),
+        }
+    }
+
+    /// Everything the voice said, in order.
+    fn said(&self) -> String {
+        self.transcripts
+            .iter()
+            .map(|(_, t)| t.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// About what the listener heard when the radio stopped at sample
+    /// `aired`: whole items before it, and the same share of the item it
+    /// stopped in.
+    fn heard(&self, aired: usize) -> String {
+        let mut words: Vec<&str> = Vec::new();
+        for (item, start, len) in &self.spans {
+            let Some((_, text)) = self.transcripts.iter().find(|(id, _)| id == item) else {
+                continue;
+            };
+            let all: Vec<&str> = text.split_whitespace().collect();
+            if aired >= start + len {
+                words.extend(&all);
+            } else if aired > *start {
+                let share = (aired - start) as f64 / *len as f64;
+                words.extend(&all[..(all.len() as f64 * share).round() as usize]);
+                break;
+            } else {
+                break;
+            }
+        }
+        words.join(" ")
+    }
+
+    /// A note telling the model where the radio stopped its reply.
+    fn note(&self, aired: usize) -> Option<String> {
+        let heard = self.heard(aired);
+        let words: Vec<&str> = heard.split_whitespace().collect();
+        if words.is_empty() {
+            return None;
+        }
+        let tail = words[words.len().saturating_sub(NOTE_WORDS)..].join(" ");
+        Some(format!(
+            "Radio bridge note, not spoken by anyone: the radio stopped transmitting your last reply after \
+             \"{tail}\". The listener did not hear anything after that. Do not repeat or mention this note."
+        ))
+    }
 }
 
 /// Speak fixed text in the realtime voice on a fresh connection. Used for
@@ -493,16 +623,21 @@ impl Session {
         }
     }
 
-    /// Ask for a reply to the committed audio and transmit it as it streams.
-    /// An interrupted or silent reply resets the conversation so the next
-    /// turn starts fresh.
-    pub async fn respond(&mut self, radio: Option<Arc<Radio>>) -> anyhow::Result<Reply> {
+    /// Ask for a reply to the committed audio and transmit it as it streams,
+    /// pausing at `break_in` between transmissions. A failed or silent reply
+    /// resets the conversation so the next turn starts fresh.
+    pub async fn respond(
+        &mut self,
+        radio: Option<Arc<Radio>>,
+        break_in: Option<&mut dyn BreakIn>,
+    ) -> anyhow::Result<Reply> {
         anyhow::ensure!(self.committed.is_some(), "no committed audio to answer");
         let idle = self.settings.rt.idle_timeout();
+        let max = self.settings.max_transmissions;
         let result = async {
             let client = self.client()?;
             client.send(json!({"type": "response.create"})).await?;
-            let mut tx = StreamTx::new(radio);
+            let mut tx = StreamTx::reply(radio, max, break_in);
             receive(client, &mut tx, idle).await
         }
         .await;
@@ -648,6 +783,7 @@ pub mod tests {
             http: crate::http::client(Duration::from_secs(1)),
             web_search: false,
             history_turns,
+            max_transmissions: 3,
             instructions: "Be brief.".into(),
             keyterms: vec!["charlotte".into()],
         }
@@ -684,7 +820,7 @@ pub mod tests {
             session.begin(48_000);
             session.append(&speech()).await.unwrap();
             session.transcript().await.unwrap();
-            let reply = session.respond(Some(radio.clone())).await.unwrap();
+            let reply = session.respond(Some(radio.clone()), None).await.unwrap();
             assert!(reply.audible && !reply.truncated);
             assert_eq!(reply.said, "Reply.");
         }
@@ -700,6 +836,185 @@ pub mod tests {
             deletes, 2,
             "the first turn's user and assistant items are removed"
         );
+    }
+
+    /// Streams a five-second reply of words and pauses. With `finish`, the
+    /// response ends at once; otherwise it runs until cancelled. Records every
+    /// command except audio.
+    async fn long_reply_server(finish: bool) -> (String, Arc<Mutex<Vec<Value>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/realtime", listener.local_addr().unwrap());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let record = log.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let encode = |pcm: Vec<i16>| {
+                let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            };
+            let word: Vec<i16> = (0..7200)
+                .map(|i| if i % 2 == 0 { 5000 } else { -5000 })
+                .collect();
+            let pause = vec![0i16; 4800];
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let msg: Value = serde_json::from_str(&text).unwrap();
+                let kind = msg["type"].as_str().unwrap().to_string();
+                if kind != "input_audio_buffer.append" {
+                    record.lock().unwrap().push(msg.clone());
+                }
+                let mut out = vec![];
+                match kind.as_str() {
+                    "session.update" => out.push(json!({"type": "session.updated"})),
+                    "input_audio_buffer.commit" => {
+                        out.push(json!({"type": "input_audio_buffer.committed", "item_id": "u1"}));
+                        out.push(json!({"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "count to ten"}));
+                    }
+                    "response.create" => {
+                        out.push(json!({"type": "response.output_item.added", "item": {"id": "a1", "role": "assistant"}}));
+                        for _ in 0..10 {
+                            out.push(json!({"type": "response.output_audio.delta", "item_id": "a1", "delta": encode(word.clone())}));
+                            out.push(json!({"type": "response.output_audio.delta", "item_id": "a1", "delta": encode(pause.clone())}));
+                        }
+                        out.push(json!({"type": "response.output_audio_transcript.done", "item_id": "a1", "transcript": "one two three four five six seven eight nine ten"}));
+                        if finish {
+                            out.push(json!({"type": "response.output_audio.done"}));
+                            out.push(json!({"type": "response.done", "response": {"status": "completed"}}));
+                        }
+                    }
+                    "response.cancel" if finish => {
+                        out.push(json!({"type": "error", "error": {"message": "Cancellation failed: no active response found"}}));
+                    }
+                    "response.cancel" => {
+                        out.push(
+                            json!({"type": "response.done", "response": {"status": "cancelled"}}),
+                        );
+                    }
+                    "conversation.item.create" => {
+                        out.push(json!({"type": "conversation.item.added", "item": {"id": "n1", "role": "system"}}));
+                    }
+                    _ => {}
+                }
+                for event in out {
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        (url, log)
+    }
+
+    struct Breaks(Vec<bool>);
+
+    #[async_trait::async_trait]
+    impl BreakIn for Breaks {
+        async fn listen(&mut self) -> bool {
+            !self.0.is_empty() && self.0.remove(0)
+        }
+    }
+
+    fn kinds(log: &Mutex<Vec<Value>>) -> Vec<String> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .map(|m| m["type"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// The note the server received, waiting briefly for it to arrive.
+    async fn note(log: &Mutex<Vec<Value>>) -> Option<String> {
+        for _ in 0..50 {
+            let found = log
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "conversation.item.create")
+                .map(|m| {
+                    m["item"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                });
+            if found.is_some() {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn a_break_in_cancels_the_reply_and_notes_where_the_radio_stopped() {
+        let (url, log) = long_reply_server(false).await;
+        let (line, out) = (FakeLine::default(), FakeOut::default());
+        let radio = Arc::new(radio(&line, &out, 1500));
+        let mut session = Session::new(settings(url, 4));
+        session.connect().await.unwrap();
+        session.begin(48_000);
+        session.append(&speech()).await.unwrap();
+        session.transcript().await.unwrap();
+        let mut breaks = Breaks(vec![true]);
+        let reply = session
+            .respond(Some(radio), Some(&mut breaks))
+            .await
+            .unwrap();
+        assert_eq!(reply.ending, Ending::BrokenIn);
+        assert!(reply.audible && !reply.truncated);
+        assert_eq!(line.changes().iter().filter(|k| **k).count(), 1);
+        assert!(kinds(&log).contains(&"response.cancel".to_string()));
+        let note = note(&log)
+            .await
+            .expect("a note about where the radio stopped");
+        assert!(note.contains("\"one two"), "{note}");
+        assert!(!note.contains("three"), "{note}");
+        assert!(session.connected(), "the conversation is kept");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_finished_before_its_cancel_is_noted_and_kept() {
+        let (url, log) = long_reply_server(true).await;
+        let (line, out) = (FakeLine::default(), FakeOut::default());
+        let radio = Arc::new(radio(&line, &out, 1500));
+        let mut s = settings(url, 4);
+        s.max_transmissions = 2;
+        let mut session = Session::new(s);
+        session.connect().await.unwrap();
+        session.begin(48_000);
+        session.append(&speech()).await.unwrap();
+        session.transcript().await.unwrap();
+        let mut breaks = Breaks(vec![]);
+        let reply = session
+            .respond(Some(radio), Some(&mut breaks))
+            .await
+            .unwrap();
+        assert_eq!(reply.ending, Ending::Limit);
+        assert_eq!(line.changes().iter().filter(|k| **k).count(), 2);
+        assert!(kinds(&log).contains(&"response.cancel".to_string()));
+        assert!(note(&log).await.is_some());
+        assert!(
+            session.connected(),
+            "the refused cancel does not end the session"
+        );
+        // The next turn reads cleanly: the error was consumed.
+        session.begin(48_000);
+        session.append(&speech()).await.unwrap();
+        assert_eq!(session.transcript().await.unwrap(), "count to ten");
+    }
+
+    #[test]
+    fn heard_text_follows_the_audio_that_aired() {
+        let mut heard = Heard::default();
+        heard.audio("a", 0, 1000);
+        heard.audio("a", 1000, 1000);
+        heard.audio("b", 2000, 1000);
+        heard.transcript("a", "one two three four", true);
+        heard.transcript("b", "five six", true);
+        assert_eq!(heard.heard(1000), "one two");
+        assert_eq!(heard.heard(2500), "one two three four five");
+        assert_eq!(heard.heard(3000), "one two three four five six");
+        assert!(heard.note(0).is_none());
+        assert_eq!(heard.said(), "one two three four five six");
     }
 
     /// Accepts the handshake only with `Bearer good`, counting attempts.

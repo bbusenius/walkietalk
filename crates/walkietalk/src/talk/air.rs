@@ -1,12 +1,13 @@
 //! Putting speech on the air: confirmations, replies, and station IDs.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
 use crate::audio::morse::morse;
-use crate::audio::{Clip, Fit};
+use crate::audio::{Clip, Fit, TooLong};
 use crate::config::{Config, StationIdMethod};
 use crate::radio::station_id::{self, StationId};
 use crate::radio::{Radio, TxError};
@@ -53,6 +54,107 @@ pub struct Air {
     playback_failures: u32,
 }
 
+/// One transmission's worth of a reply.
+pub struct Part {
+    pub text: String,
+    pub clip: Clip,
+}
+
+/// The parts of one reply, synthesized as they are needed.
+pub struct Parts {
+    voice: Arc<dyn Voice>,
+    budget: Duration,
+    /// The reply, until it has been tried as one part.
+    whole: Option<String>,
+    /// Text not yet synthesized.
+    queue: VecDeque<String>,
+    /// Speech that did not fit the previous part.
+    ahead: Option<(String, Clip)>,
+}
+
+impl Parts {
+    /// The next part, or `None` after the last.
+    pub async fn next(&mut self) -> anyhow::Result<Option<Part>> {
+        if let Some(text) = self.whole.take() {
+            match self.voice.synthesize(&text, Fit::Strict).await {
+                Ok(clip) => return Ok(Some(Part { text, clip })),
+                Err(err) if err.downcast_ref::<TooLong>().is_some() => {
+                    self.queue = sentences(&text).into();
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let mut part: Option<Part> = None;
+        loop {
+            let (text, clip) = match self.ahead.take() {
+                Some(piece) => piece,
+                None => match self.piece().await? {
+                    Some(piece) => piece,
+                    None => break,
+                },
+            };
+            match &mut part {
+                None => part = Some(Part { text, clip }),
+                Some(p) if p.clip.duration() + clip.duration() <= self.budget => {
+                    p.text.push(' ');
+                    p.text.push_str(&text);
+                    p.clip.append(&clip);
+                }
+                Some(_) => {
+                    self.ahead = Some((text, clip));
+                    break;
+                }
+            }
+        }
+        Ok(part)
+    }
+
+    /// Every part has been handed out.
+    pub fn done(&self) -> bool {
+        self.whole.is_none() && self.queue.is_empty() && self.ahead.is_none()
+    }
+
+    /// Speech for the next queued text, halving text that is too long.
+    async fn piece(&mut self) -> anyhow::Result<Option<(String, Clip)>> {
+        while let Some(text) = self.queue.pop_front() {
+            match self.voice.synthesize(&text, Fit::Strict).await {
+                Ok(clip) => return Ok(Some((text, clip))),
+                Err(err) if err.downcast_ref::<TooLong>().is_some() => {
+                    let words: Vec<&str> = text.split_whitespace().collect();
+                    if words.len() < 2 {
+                        return Err(err);
+                    }
+                    let (first, rest) = words.split_at(words.len() / 2);
+                    self.queue.push_front(rest.join(" "));
+                    self.queue.push_front(first.join(" "));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Split text after sentence-ending punctuation.
+fn sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+        let end = word.trim_end_matches(['"', '\'', ')', '”', '’']);
+        if end.ends_with(['.', '!', '?', '…']) {
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 /// Consecutive playback failures that stop `talk`.
 const PLAYBACK_FAILURE_LIMIT: u32 = 3;
 
@@ -86,6 +188,23 @@ impl Air {
 
     pub fn station_id_mut(&mut self) -> &mut StationId {
         &mut self.station_id
+    }
+
+    /// Speech for a reply in parts that each fit one transmission: the
+    /// whole reply when it fits, otherwise sentences (or, for a sentence too
+    /// long on its own, words) packed together.
+    pub fn parts(&self, text: &str) -> anyhow::Result<Parts> {
+        let voice = self
+            .voice
+            .clone()
+            .context("no voice is configured for transmission")?;
+        Ok(Parts {
+            voice,
+            budget: self.budget,
+            whole: Some(text.to_string()),
+            queue: VecDeque::new(),
+            ahead: None,
+        })
     }
 
     /// Synthesize text, cropping speech that would not fit.
@@ -158,6 +277,16 @@ impl Air {
             None => vec![reply],
         };
         let result = self.send_bursts(bursts, id.is_some()).await;
+        let result = self.tally(result)?;
+        // Part of a failed transmission may have been heard: mute as usual.
+        if matches!(result, Ok(()) | Err(AirError::Playback(_))) {
+            self.mute().await;
+        }
+        result
+    }
+
+    /// Count playback failures in a row; too many stop `talk`.
+    fn tally(&mut self, result: Result<(), AirError>) -> Result<Result<(), AirError>, AirError> {
         match &result {
             Ok(()) => self.playback_failures = 0,
             Err(AirError::Playback(err)) => {
@@ -173,11 +302,39 @@ impl Air {
             }
             Err(_) => {}
         }
-        // Part of a failed transmission may have been heard: mute as usual.
-        if matches!(result, Ok(()) | Err(AirError::Playback(_))) {
+        Ok(result)
+    }
+
+    /// Transmit one part of a longer reply, without a station ID. The mute
+    /// follows only a failure, which ends the reply.
+    pub async fn send_part(&mut self, part: Clip) -> Result<(), AirError> {
+        let result = self.send_bursts(vec![part], false).await;
+        let result = self.tally(result)?;
+        if matches!(result, Err(AirError::Playback(_))) {
             self.mute().await;
         }
         result
+    }
+
+    /// End a reply sent in parts: a due station ID in its own transmission,
+    /// then the post-transmit mute.
+    pub async fn finish_reply(&mut self) -> Result<(), AirError> {
+        if let Some(id) = self.due_id().await? {
+            ui::status!("Station ID follows in its own transmission.");
+            tokio::time::sleep(station_id::GAP).await;
+            match self.transmit(id).await {
+                Ok(()) => self.station_id.mark_sent(Instant::now()),
+                Err(err @ TxError::Ptt(_)) => return Err(AirError::fatal(err.to_string(), true)),
+                Err(err) => {
+                    return Err(AirError::fatal(
+                        format!("station ID failed: {err}; stopping"),
+                        true,
+                    ));
+                }
+            }
+        }
+        self.mute().await;
+        Ok(())
     }
 
     async fn send_bursts(&mut self, bursts: Vec<Clip>, with_id: bool) -> Result<(), AirError> {
@@ -242,5 +399,19 @@ impl Air {
             }
             Err(other) => Err(other),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_splits_after_sentences() {
+        assert_eq!(
+            sentences("One. Two? \"Three!\" four five"),
+            vec!["One.", "Two?", "\"Three!\"", "four five"]
+        );
+        assert_eq!(sentences("  "), Vec::<String>::new());
     }
 }

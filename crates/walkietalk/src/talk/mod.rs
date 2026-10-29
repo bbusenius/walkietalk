@@ -3,16 +3,19 @@
 //! Listen for an utterance, transcribe it, apply the shutdown and wake
 //! gates, route the traffic, and speak replies on the air only when the
 //! user consented to transmit. Capture is closed while processing and
-//! transmitting. Recoverable failures are reported and listening resumes.
+//! transmitting; between the transmissions of a long reply it reopens to
+//! listen for another station breaking in. Recoverable failures are reported
+//! and listening resumes.
 
 mod agent;
 mod air;
 mod contacts;
+mod gap;
 mod operator;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,6 +35,7 @@ use crate::radio::{Radio, TransmitConsent};
 use crate::stt::Transcriber;
 use crate::{backends, realtime, signals, ui};
 use air::Air;
+use gap::Carried;
 
 pub struct Options {
     pub wav: Option<PathBuf>,
@@ -120,6 +124,10 @@ struct Talk {
     shutdown: Shutdown,
     messaging: Option<Messaging>,
     input: Input,
+    /// Speech that broke in between the transmissions of a reply.
+    carried: Option<Carried>,
+    /// Frames to hear before reading the source again.
+    replay: VecDeque<Vec<i16>>,
     once: bool,
     wait: Option<Duration>,
     stop: CancellationToken,
@@ -309,6 +317,8 @@ pub async fn run(config: Config, creds: Credentials, options: Options) -> anyhow
             Some(path) => Input::Wav(Some(path)),
             None => Input::Capture,
         },
+        carried: None,
+        replay: VecDeque::new(),
         once,
         wait,
         stop: signals::token(),
@@ -420,19 +430,34 @@ impl Talk {
                 Ok(Some(Event::Heard(utterance)))
             }
             Input::Capture => {
-                let source = Source::Device(Capture::open(&self.config.audio.input).await?);
+                let source = match self.carried.take() {
+                    Some(carried) => self.resume(carried),
+                    None => Source::Device(Capture::open(&self.config.audio.input).await?),
+                };
                 self.capture(source).await.1
             }
             #[cfg(test)]
             Input::Frames(rx) => {
-                let Some(rx) = rx.take() else { return Ok(None) };
-                let (source, result) = self.capture(Source::Frames(rx)).await;
+                let source = match self.carried.take() {
+                    Some(carried) => self.resume(carried),
+                    None => {
+                        let Some(rx) = rx.take() else { return Ok(None) };
+                        Source::Frames(rx)
+                    }
+                };
+                let (source, result) = self.capture(source).await;
                 if let (Source::Frames(rx), Input::Frames(slot)) = (source, &mut self.input) {
                     *slot = Some(rx);
                 }
                 result
             }
         }
+    }
+
+    /// Listen on the source that carried a break-in, from its first frame.
+    fn resume(&mut self, carried: Carried) -> Source {
+        self.replay = carried.frames.into();
+        carried.source
     }
 
     /// Listen until something needs attention; gives the source back.
@@ -457,13 +482,16 @@ impl Talk {
                 ),
                 None => (None, None),
             };
-            let result = tokio::select! {
-                frame = capture.next_frame() => Step::Frame(frame),
-                _ = self.stop.cancelled() => Step::Stop,
-                message = recv(inbox) => Step::Message(message),
-                command = recv(commands), if idle => Step::Command(command),
-                _ = tick.tick(), if idle => Step::Tick,
-                _ = sleep_until(deadline), if idle => Step::Timeout,
+            let result = match self.replay.pop_front() {
+                Some(frame) => Step::Frame(Ok(Some(frame))),
+                None => tokio::select! {
+                    frame = capture.next_frame() => Step::Frame(frame),
+                    _ = self.stop.cancelled() => Step::Stop,
+                    message = recv(inbox) => Step::Message(message),
+                    command = recv(commands), if idle => Step::Command(command),
+                    _ = tick.tick(), if idle => Step::Tick,
+                    _ = sleep_until(deadline), if idle => Step::Timeout,
+                },
             };
             match result {
                 Step::Frame(frame) => {

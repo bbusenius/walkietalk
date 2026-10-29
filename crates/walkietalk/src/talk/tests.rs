@@ -55,7 +55,7 @@ impl crate::tts::Voice for FakeVoice {
             Duration::from_millis(text.chars().count() as u64 * 100),
             48_000,
         );
-        Ok(clip.fit(Duration::from_millis(9_800), fit)?)
+        Ok(clip.fit(Duration::from_millis(9_400), fit)?)
     }
 }
 
@@ -90,10 +90,12 @@ struct Rig {
 }
 
 fn rig(extra: &str, transcripts: Vec<&'static str>, out: FakeOut) -> Rig {
-    // No post-transmit pause, so tests run quickly.
+    // No post-transmit pause and a short break-in gap, so tests run quickly.
     let config = Config::parse(
         // `extra` follows [wake], so it may begin with wake settings.
-        &format!("{MINIMAL}\n{extra}\n[radio]\npost_tx_mute_seconds = 0\n"),
+        &format!(
+            "{MINIMAL}\n{extra}\n[radio]\npost_tx_mute_seconds = 0\nbreak_in_gap_seconds = 0.5\n"
+        ),
         "/".into(),
     )
     .unwrap();
@@ -141,6 +143,8 @@ fn rig(extra: &str, transcripts: Vec<&'static str>, out: FakeOut) -> Rig {
         air: Some(air),
         messaging,
         input: Input::Frames(Some(rx)),
+        carried: None,
+        replay: VecDeque::new(),
         once: false,
         wait: None,
         stop: CancellationToken::new(),
@@ -200,6 +204,124 @@ async fn addressed_question_is_answered_on_air_and_remembered() {
     );
     assert!(r.line.changes().contains(&true));
     assert!(!r.line.keyed(), "the transmitter is released afterwards");
+}
+
+/// About six seconds of speech, so one sentence fits per transmission.
+fn sentence(n: usize) -> String {
+    format!("Sentence {n} keeps talking long enough to need its own turn.")
+}
+
+fn keyings(line: &FakeLine) -> usize {
+    line.changes().iter().filter(|k| **k).count()
+}
+
+#[tokio::test]
+async fn a_long_reply_airs_in_full_over_several_transmissions() {
+    let mut r = rig("", vec!["charlotte tell me everything"], FakeOut::default());
+    let reply: Vec<String> = (1..=3).map(sentence).collect();
+    r.agent
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Ok(reply.join(" ")));
+    speak(&r.frames).await;
+    r.frames = mpsc::channel(1).0;
+    run(&mut r).await.unwrap();
+    assert_eq!(keyings(&r.line), 3, "one transmission per sentence");
+    assert!(!r.line.keyed());
+    let said = r.voice.said.lock().unwrap().clone();
+    assert_eq!(said[0], reply.join(" "), "the whole reply is tried first");
+    assert_eq!(&said[1..], reply.as_slice(), "then sentence by sentence");
+    let history: Vec<_> = r.talk_history();
+    assert_eq!(history, [reply.join(" ")], "the whole reply is remembered");
+}
+
+#[tokio::test]
+async fn a_reply_stops_at_the_transmission_limit_and_keeps_only_what_aired() {
+    let mut r = rig(
+        "",
+        vec!["charlotte tell me everything", "and then?"],
+        FakeOut::default(),
+    );
+    let reply: Vec<String> = (1..=5).map(sentence).collect();
+    r.agent
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Ok(reply.join(" ")));
+    speak(&r.frames).await;
+    r.frames = mpsc::channel(1).0;
+    run(&mut r).await.unwrap();
+    assert_eq!(keyings(&r.line), 3, "the default limit");
+    let history = r.talk_history();
+    assert_eq!(history.len(), 1);
+    assert!(
+        history[0].starts_with(&reply[..3].join(" ")),
+        "{}",
+        history[0]
+    );
+    assert!(
+        !history[0].contains(&reply[3]),
+        "unsent text is not history"
+    );
+    assert!(history[0].contains("did not hear the rest"));
+    assert!(
+        r.talk.gate.window_left(Instant::now()).is_some(),
+        "the follow-up window is open"
+    );
+}
+
+#[tokio::test]
+async fn a_sentence_too_long_for_one_transmission_is_split_between_words() {
+    let mut r = rig("", vec!["charlotte go on"], FakeOut::default());
+    let words = "word ".repeat(30);
+    let reply = words.trim().to_string();
+    r.agent.answers.lock().unwrap().push_back(Ok(reply.clone()));
+    speak(&r.frames).await;
+    r.frames = mpsc::channel(1).0;
+    run(&mut r).await.unwrap();
+    assert_eq!(keyings(&r.line), 2);
+    let said = r.voice.said.lock().unwrap().clone();
+    let half = "word ".repeat(15).trim().to_string();
+    assert_eq!(said, [reply.clone(), reply, half.clone(), half]);
+}
+
+#[tokio::test]
+async fn speech_between_transmissions_stops_the_reply_and_is_answered_as_a_follow_up() {
+    let mut r = rig(
+        "",
+        vec![
+            "charlotte tell me everything",
+            "wait, what about the first one?",
+        ],
+        FakeOut::default(),
+    );
+    let reply: Vec<String> = (1..=3).map(sentence).collect();
+    r.agent
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Ok(reply.join(" ")));
+    // The second utterance is already waiting when the first transmission ends.
+    speak(&r.frames).await;
+    speak(&r.frames).await;
+    r.frames = mpsc::channel(1).0;
+    run(&mut r).await.unwrap();
+    let seen = r.agent.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen.len(),
+        2,
+        "the break-in is accepted without the wake phrase"
+    );
+    assert_eq!(seen[1].1, "wait, what about the first one?");
+    let first = &seen[1].0[0].assistant;
+    assert!(first.starts_with(&reply[0]), "{first}");
+    assert!(
+        !first.contains(&reply[1]),
+        "only the first part aired: {first}"
+    );
+    // One transmission for the first part, one for the short second answer.
+    assert_eq!(keyings(&r.line), 2);
 }
 
 #[tokio::test]
@@ -538,4 +660,17 @@ async fn playback_failures_are_survived_until_they_repeat() {
         "failed replies are never context"
     );
     assert!(!r.line.keyed());
+}
+
+impl Rig {
+    /// The assistant side of the remembered conversation.
+    fn talk_history(&self) -> Vec<String> {
+        let Brain::Text { conversation, .. } = &self.talk.brain else {
+            panic!("text brain")
+        };
+        conversation
+            .history()
+            .map(|t| t.assistant.clone())
+            .collect()
+    }
 }
