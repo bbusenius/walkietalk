@@ -616,6 +616,45 @@ async fn operator_transmit_delivers_one_edited_message_without_a_wake() {
 }
 
 #[tokio::test]
+async fn transmit_behind_an_approved_message_points_to_tab() {
+    let extra = format!("[messaging]\noperator_mode = true\n{CONTACT}");
+    let mut r = rig(&extra, vec![], FakeOut::default());
+    let (tx, shared) = r.operator.clone().unwrap();
+    for (id, text) in [("a", "First"), ("b", "Second")] {
+        r.talk.accept(Inbound {
+            service: Service::Signal,
+            id: id.into(),
+            content: Content::Text(text.into()),
+        });
+    }
+    let mut approve = command(&tx, &shared, Action::Approve, false, None).await;
+    run_pending(&mut r.talk).await;
+    assert!(finished_ok(&mut approve));
+    // The second message is now under review, behind the approved first one.
+    let mut transmit = command(&tx, &shared, Action::Transmit, false, None).await;
+    run_pending(&mut r.talk).await;
+    let mut lines = Vec::new();
+    let mut ok = true;
+    while let Ok(reply) = transmit.try_recv() {
+        match reply {
+            Response::Line { message, .. } => lines.push(message),
+            Response::Done { ok: done, .. } => ok = done,
+            Response::Snapshot { .. } => {}
+        }
+    }
+    assert!(!ok);
+    assert!(
+        lines.contains(
+            &"An earlier approved message from this contact is waiting; press Tab and send it first."
+                .to_string()
+        ),
+        "{lines:?}"
+    );
+    assert!(lines.iter().all(|l| !l.contains("--approved")), "{lines:?}");
+    assert!(crate::operator::lock(&shared).review.dispatched().is_none());
+}
+
+#[tokio::test]
 async fn stale_operator_commands_are_refused() {
     let extra = format!("[messaging]\noperator_mode = true\n{CONTACT}");
     let mut r = rig(&extra, vec![], FakeOut::default());

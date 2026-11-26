@@ -153,11 +153,15 @@ approving"), the latest result, and the keys that work right now:
 ```
 
 **Tab** switches between the review and approved views;
-**Up/Down/PgUp/PgDn/Home/End** scroll a long message. While an action runs,
-the keys pause and the panel says so. The editor uses the terminal's own
-cursor and wraps long text; it accepts typing, **Left/Right**, **Home/End**,
-**Ctrl+A/E**, **Backspace/Delete**, **Ctrl+U** (clear), **Enter** (save), and
-**Esc** (cancel), and warns at once if the message changes while you edit.
+**Up/Down/PgUp/PgDn/Home/End** scroll a long message. When nothing waits for
+review, **T** transmits the approved message without leaving the review view.
+A new message that arrives on an empty approved view switches the panel back
+to review; if an approved message is still showing, the waiting count turns
+yellow instead. While an action runs, the keys pause and the panel says so.
+The editor uses the terminal's own cursor and wraps long text; it accepts
+typing, **Left/Right**, **Home/End**, **Ctrl+A/E**, **Backspace/Delete**,
+**Ctrl+U** (clear), **Enter** (save), and **Esc** (cancel), and warns at once if
+the message changes while you edit.
 Panel actions use the same rules as the commands, which keep working while the
 panel is open. While the panel is open, all other program output goes to its
 log pane; the terminal is restored on exit.
