@@ -229,6 +229,8 @@ fn run(
                 state.last_delivery = delivery;
                 dirty = true;
             }
+            // Decided before drawing, so keys act on the screen that was drawn.
+            dirty |= notice_new_messages(&mut state, drawn.as_ref().map(|(_, s, _)| s), &snapshot);
             let revision = {
                 let log = log.lock().unwrap_or_else(|e| e.into_inner());
                 if drawn.as_ref().is_none_or(|(r, _, _)| *r != log.revision) {
@@ -284,6 +286,28 @@ fn run(
     let _ = execute!(writer, LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
     result
+}
+
+/// React to a rise in the waiting count while the Approved screen is open:
+/// return to Review when nothing approved is left to send, otherwise
+/// highlight the count. Returns whether anything changed.
+fn notice_new_messages(state: &mut State, drawn: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
+    if snapshot.waiting == 0 && state.highlight_waiting {
+        state.highlight_waiting = false;
+        return true;
+    }
+    let rose = drawn.is_some_and(|d| snapshot.waiting > d.waiting);
+    if !rose || !state.approved_view {
+        return false;
+    }
+    if snapshot.approved_item.is_none() {
+        state.approved_view = false;
+        state.highlight_waiting = false;
+        state.status = (Kind::Warn, "New message waiting for review.".into());
+    } else {
+        state.highlight_waiting = true;
+    }
+    true
 }
 
 /// Apply progress from a running action. Returns whether anything changed.
@@ -353,7 +377,10 @@ fn handle_key(
                 "Waiting for the current action to finish.".into(),
             );
         }
-        KeyCode::Tab => state.approved_view = !state.approved_view,
+        KeyCode::Tab => {
+            state.approved_view = !state.approved_view;
+            state.highlight_waiting = false;
+        }
         KeyCode::Char(c) => {
             let action = match c.to_ascii_lowercase() {
                 'r' => Action::Read,
@@ -379,11 +406,16 @@ fn handle_key(
                 }
                 _ => return,
             };
+            // An empty Review screen transmits the approved message instead.
             if action == Action::Transmit && !state.approved_view && snapshot.item.is_none() {
-                state.status = (
-                    Kind::Warn,
-                    "Nothing waits for review; press Tab to transmit an approved message.".into(),
-                );
+                if snapshot.approved_item.is_none() {
+                    state.status = (Kind::Status, "Nothing is waiting.".into());
+                    return;
+                }
+                // Bound to the approved view; the panel stays on Review.
+                state.approved_view = true;
+                submit(state, snapshot, shared, commands, action, None, None);
+                state.approved_view = false;
                 return;
             }
             submit(state, snapshot, shared, commands, action, None, None);
@@ -448,6 +480,171 @@ fn kind_of(kind: &str) -> Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Service};
+    use crate::operator::Board;
+    use crate::operator::review::{Direction, ItemView, Review};
+
+    fn shared() -> Shared {
+        let text = format!(
+            "{}\n[messaging]\noperator_mode = true\n[messaging.signal]\nwake_phrase = \"grandma\"\nto = \"+1555\"\n",
+            crate::config::tests_support::MINIMAL
+        );
+        let config = Config::parse(&text, "/".into()).unwrap();
+        Arc::new(Mutex::new(Board {
+            review: Review::new(&config),
+            conversation: "asleep".into(),
+            delivery: String::new(),
+        }))
+    }
+
+    fn snapshot(shared: &Shared) -> Snapshot {
+        lock(shared).review.snapshot("asleep".into())
+    }
+
+    /// Press `c` and return the command it queued, if any.
+    fn press(state: &mut State, shared: &Shared, c: char) -> Option<Command> {
+        let (tx, mut rx) = mpsc::channel(1);
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        handle_key(key, state, &snapshot(shared), shared, &tx);
+        rx.try_recv().ok()
+    }
+
+    #[test]
+    fn t_on_review_with_a_message_transmits_that_message() {
+        let shared = shared();
+        lock(&shared)
+            .review
+            .add_incoming(Service::Signal, "a", false, "Dinner at six");
+        let review_revision = lock(&shared).review.revision(false);
+        let mut state = State::new();
+        let command = press(&mut state, &shared, 't').expect("a queued command");
+        assert_eq!(command.action, Action::Transmit);
+        assert!(!command.approved_view);
+        assert_eq!(command.revision, review_revision);
+        assert!(!state.approved_view);
+    }
+
+    #[test]
+    fn t_on_an_empty_review_screen_transmits_the_approved_message() {
+        let shared = shared();
+        let number = {
+            let mut board = lock(&shared);
+            let number = board
+                .review
+                .add_incoming(Service::Signal, "a", false, "Dinner at six");
+            board.review.approve(number);
+            number
+        };
+        let mut state = State::new();
+        let command = press(&mut state, &shared, 't').expect("a queued command");
+        assert_eq!(command.action, Action::Transmit);
+        assert!(command.approved_view);
+        assert_eq!(command.revision, lock(&shared).review.revision(true));
+        assert_eq!(
+            lock(&shared)
+                .review
+                .current(command.approved_view, command.revision)
+                .map(|i| i.number),
+            Some(number),
+            "the command passes the stale-item guard for the approved message"
+        );
+        assert!(!state.approved_view, "the panel stays on Review");
+        assert!(!state.status.1.contains("Tab"), "{:?}", state.status);
+    }
+
+    #[test]
+    fn t_with_nothing_waiting_says_so() {
+        let shared = shared();
+        let mut state = State::new();
+        assert!(press(&mut state, &shared, 't').is_none());
+        assert_eq!(state.status, (Kind::Status, "Nothing is waiting.".into()));
+    }
+
+    /// A snapshot with `waiting` messages and, if `approved`, one to send.
+    fn counts(waiting: usize, approved: bool) -> Snapshot {
+        let item = ItemView {
+            number: 1,
+            direction: Direction::Incoming,
+            service: Service::Signal,
+            alias: "Nana".into(),
+            voice: false,
+            content: "Dinner at six".into(),
+            readable: true,
+            original: None,
+            edit_block: None,
+        };
+        Snapshot {
+            waiting,
+            approved: approved as usize,
+            approved_item: approved.then_some(item),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_new_message_returns_an_empty_approved_screen_to_review() {
+        let mut state = State::new();
+        state.approved_view = true;
+        assert!(notice_new_messages(
+            &mut state,
+            Some(&counts(0, false)),
+            &counts(1, false)
+        ));
+        assert!(!state.approved_view);
+        assert_eq!(
+            state.status,
+            (Kind::Warn, "New message waiting for review.".into())
+        );
+    }
+
+    #[test]
+    fn a_new_message_highlights_the_count_while_an_approved_message_waits() {
+        let mut state = State::new();
+        state.approved_view = true;
+        assert!(notice_new_messages(
+            &mut state,
+            Some(&counts(0, true)),
+            &counts(1, true)
+        ));
+        assert!(state.approved_view);
+        assert!(state.highlight_waiting);
+        // Tab clears the highlight.
+        let (tx, _rx) = mpsc::channel(1);
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        handle_key(tab, &mut state, &counts(1, true), &shared(), &tx);
+        assert!(!state.approved_view);
+        assert!(!state.highlight_waiting);
+    }
+
+    #[test]
+    fn the_approved_screen_stays_open_without_a_new_message() {
+        let mut state = State::new();
+        state.approved_view = true;
+        // Tab onto an empty Approved screen while messages already wait.
+        for drawn in [None, Some(counts(2, false))] {
+            assert!(!notice_new_messages(
+                &mut state,
+                drawn.as_ref(),
+                &counts(2, false)
+            ));
+            assert!(state.approved_view);
+        }
+        // Fewer waiting is not a new message.
+        assert!(!notice_new_messages(
+            &mut state,
+            Some(&counts(2, false)),
+            &counts(1, false)
+        ));
+        assert!(state.approved_view);
+        // On the Review screen nothing changes.
+        state.approved_view = false;
+        assert!(!notice_new_messages(
+            &mut state,
+            Some(&counts(1, false)),
+            &counts(2, false)
+        ));
+        assert_eq!(state.status, (Kind::Status, String::new()));
+    }
 
     #[test]
     fn meter_lines_collapse_into_one() {

@@ -36,6 +36,8 @@ pub struct State {
     pub body_rows: usize,
     /// The delivery result last shown, so a new one replaces the status.
     pub last_delivery: String,
+    /// A new message arrived while the Approved screen was open.
+    pub highlight_waiting: bool,
 }
 
 impl State {
@@ -49,6 +51,7 @@ impl State {
             scroll_key: None,
             body_rows: 1,
             last_delivery: String::new(),
+            highlight_waiting: false,
         }
     }
 }
@@ -251,14 +254,19 @@ fn draw_review(frame: &mut Frame, area: Rect, snapshot: &Snapshot, state: &mut S
         line(format!("Conversation: {conversation_text}"), Kind::Status),
         conversation,
     );
+    let waiting_kind = if state.approved_view && state.highlight_waiting {
+        Kind::Warn
+    } else {
+        Kind::Status
+    };
     frame.render_widget(
-        line(
-            format!(
-                "Waiting for review: {}    Approved for delivery: {}",
-                snapshot.waiting, snapshot.approved
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("Waiting for review: {}", snapshot.waiting),
+                style(waiting_kind),
             ),
-            Kind::Status,
-        ),
+            Span::raw(format!("    Approved for delivery: {}", snapshot.approved)),
+        ])),
         counts,
     );
     frame.render_widget(Paragraph::new(hints), keys);
@@ -606,6 +614,43 @@ mod tests {
         };
         let text = screen(&render(&snapshot, &[], &mut state, (MIN_COLS, MIN_ROWS)));
         assert!(text.contains("Approved delivery blocked"), "{text}");
+    }
+
+    /// The colour of the first cell of `needle` on screen.
+    fn colour_of(term: &Terminal<TestBackend>, needle: &str) -> Option<Color> {
+        let buffer = term.backend().buffer();
+        let (row, column) = screen(term)
+            .lines()
+            .enumerate()
+            .find_map(|(y, line)| line.find(needle).map(|x| (y, line[..x].chars().count())))?;
+        Some(buffer[(column as u16, row as u16)].fg)
+    }
+
+    #[test]
+    fn a_new_message_highlights_the_waiting_count_on_the_approved_screen() {
+        let mut state = State::new();
+        state.approved_view = true;
+        let snapshot = Snapshot {
+            waiting: 1,
+            approved: 1,
+            approved_item: Some(item("Dinner at six")),
+            ..Default::default()
+        };
+        let term = render(&snapshot, &[], &mut state, (MIN_COLS, MIN_ROWS));
+        assert_eq!(
+            colour_of(&term, "Waiting for review: 1"),
+            Some(Color::Reset)
+        );
+        state.highlight_waiting = true;
+        let term = render(&snapshot, &[], &mut state, (MIN_COLS, MIN_ROWS));
+        assert_eq!(
+            colour_of(&term, "Waiting for review: 1"),
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            colour_of(&term, "Approved for delivery"),
+            Some(Color::Reset)
+        );
     }
 
     #[test]

@@ -382,7 +382,7 @@ impl Talk {
                 if !first {
                     say(
                         "warn",
-                        "An earlier message from this contact is waiting; review it first or use --approved.",
+                        "An earlier approved message from this contact is waiting; press Tab and send it first.",
                     );
                     return Ok(false);
                 }
